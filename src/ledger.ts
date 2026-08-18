@@ -126,7 +126,7 @@ export class TransparentLedger {
     };
     state.opLog.push(entry);
     this.consumeNonce(obligor, nameHex);
-    return entry;
+    return copyOpEntry(entry);
   }
 
   /** Transfer: holder-signed, moves units, touches no total. Returns the log entry. */
@@ -159,7 +159,7 @@ export class TransparentLedger {
     };
     state.opLog.push(entry);
     this.consumeNonce(op.from, nameHex);
-    return entry;
+    return copyOpEntry(entry);
   }
 
   /** Burn: holder-signed, the only operation that lowers outstanding. Returns the log entry. */
@@ -185,7 +185,7 @@ export class TransparentLedger {
     };
     state.opLog.push(entry);
     this.consumeNonce(op.holder, nameHex);
-    return entry;
+    return copyOpEntry(entry);
   }
 
   issued(backing: Backing): bigint {

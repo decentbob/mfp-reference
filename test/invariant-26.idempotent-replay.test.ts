@@ -100,6 +100,17 @@ describe("invariant 26: a repeated request returns the identical prior response"
     };
     expect(receiptProvenBy(issueReceipt, tampered)).toBe(false);
   });
+
+  it("a malformed served entry fails the proof rather than throwing", () => {
+    const { sequencer, issueReceipt } = setup();
+    const snapshot = sequencer.snapshot()[0]!;
+    // A hostile operator serves an out-of-range quantity at the position.
+    const hostile = {
+      ...snapshot,
+      opLog: snapshot.opLog.map((e) => ({ ...e, quantity: 0n })),
+    };
+    expect(receiptProvenBy(issueReceipt, hostile)).toBe(false);
+  });
 });
 
 describe("a sequencer serves only the backings whose E names it", () => {

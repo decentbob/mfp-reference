@@ -84,5 +84,13 @@ export function receiptProvenBy(receipt: Receipt, snapshot: BackingSnapshot): bo
   const index = Number(receipt.position);
   const entry = snapshot.opLog[index];
   if (entry === undefined || BigInt(entry.position) !== receipt.position) return false;
-  return compareBytes(opHashOfEntry(snapshot.name, entry), receipt.opHash) === 0;
+  // The snapshot may come from an untrusted operator, so a malformed entry
+  // (out-of-range quantity, wrong-length key) is a failed proof, never a throw.
+  let hash: Uint8Array;
+  try {
+    hash = opHashOfEntry(snapshot.name, entry);
+  } catch {
+    return false;
+  }
+  return compareBytes(hash, receipt.opHash) === 0;
 }
