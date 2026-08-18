@@ -39,10 +39,6 @@ export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   return a.length - b.length;
 }
 
-export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  return compareBytes(a, b) === 0;
-}
-
 export class ByteWriter {
   private chunks: Uint8Array[] = [];
 
@@ -122,7 +118,10 @@ export class ByteReader {
 
   raw(length: number): Uint8Array {
     if (this.offset + length > this.bytes.length) throw new EncodingError("truncated");
-    const out = this.bytes.slice(this.offset, this.offset + length);
+    // Uint8Array.prototype.slice copies, but Node's Buffer overrides slice to
+    // return a view sharing memory. Force the copying form so a decoded value
+    // never aliases (and cannot be mutated by) the caller's input buffer.
+    const out = Uint8Array.prototype.slice.call(this.bytes, this.offset, this.offset + length);
     this.offset += length;
     return out;
   }

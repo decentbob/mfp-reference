@@ -1,10 +1,12 @@
+import { ed25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 import {
   backingName,
   decodeBacking,
   encodeBacking,
-  type Backing,
+  makeBacking,
+  type BackingFields,
 } from "../src/backing.js";
 import { EncodingError } from "../src/bytes.js";
 
@@ -13,12 +15,15 @@ import { EncodingError } from "../src/bytes.js";
 // on every machine, forever; any field change must change the name; and no
 // second byte-spelling of the same backing may be accepted.
 
-const OBLIGOR = new Uint8Array(32).fill(0x11);
-const OPERATOR = new Uint8Array(32).fill(0x22);
-const TARGET_A = new Uint8Array(32).fill(0x33);
+// Obligors must be real, non-small-order Ed25519 points, so fixtures derive
+// them from fixed seeds rather than using arbitrary bytes.
+const OBLIGOR = ed25519.getPublicKey(new Uint8Array(32).fill(0x01));
+const OBLIGOR_2 = ed25519.getPublicKey(new Uint8Array(32).fill(0x02));
+const OPERATOR = new Uint8Array(32).fill(0x22); // a key, validated by length only
+const TARGET_A = new Uint8Array(32).fill(0x33); // a backing name (hash), any 32 bytes
 const TARGET_B = new Uint8Array(32).fill(0x44);
 
-function baseBacking(): Backing {
+function baseFields(): BackingFields {
   return {
     obligor: OBLIGOR,
     payout: { thing: "EUR", quantumExponent: -2, perUnit: 100n },
@@ -27,53 +32,66 @@ function baseBacking(): Backing {
   };
 }
 
-// The layout stated independently of src/backing.ts, so the format itself is
-// pinned by tests: if the implementation's byte layout drifts, this breaks.
-function manualEncoding(options?: { relianceOrder?: "swapped"; trailingByte?: boolean }): Uint8Array {
-  const parts: string[] = [];
-  parts.push("4d465042"); // "MFPB"
-  parts.push("01"); // version
-  parts.push("01", bytesToHex(OBLIGOR)); // K: tag, key
-  parts.push("01", "00000003", "455552", "fe", "00000001", "64"); // P: tag, "EUR", exp -2, perUnit 100
-  const entryA = "01" + bytesToHex(TARGET_A) + "0000000101"; // tag, target, count 1
-  const entryB = "01" + bytesToHex(TARGET_B) + "0000000102"; // tag, target, count 2
-  parts.push("00000002"); // R: two entries
-  parts.push(...(options?.relianceOrder === "swapped" ? [entryB, entryA] : [entryA, entryB]));
-  parts.push("01", bytesToHex(OPERATOR)); // E: tag, operator
-  if (options?.trailingByte) parts.push("00");
-  return hexToBytes(parts.join(""));
-}
-
-const twoEntryBacking: Backing = {
-  ...baseBacking(),
+const twoEntry = makeBacking({
+  ...baseFields(),
   reliance: [
     { target: TARGET_A, count: 1n },
     { target: TARGET_B, count: 2n },
   ],
-};
+});
+
+// The layout stated independently of src/backing.ts, so the format itself is
+// pinned by tests: if the implementation's byte layout drifts, this breaks.
+function manualEncoding(options?: {
+  relianceOrder?: "swapped";
+  trailingByte?: boolean;
+  nonMinimalPerUnit?: boolean;
+  unknownEvidenceTag?: boolean;
+}): Uint8Array {
+  const parts: string[] = [];
+  parts.push("4d465042"); // "MFPB"
+  parts.push("01"); // version
+  parts.push("01", bytesToHex(OBLIGOR)); // K: tag, key
+  const perUnit = options?.nonMinimalPerUnit ? "000000020064" : "0000000164";
+  parts.push("01", "00000003", "455552", "fe", perUnit); // P: tag, "EUR", exp -2, perUnit 100
+  const entryA = "01" + bytesToHex(TARGET_A) + "0000000101"; // tag, target, count 1
+  const entryB = "01" + bytesToHex(TARGET_B) + "0000000102"; // tag, target, count 2
+  parts.push("00000002"); // R: two entries
+  parts.push(...(options?.relianceOrder === "swapped" ? [entryB, entryA] : [entryA, entryB]));
+  parts.push(options?.unknownEvidenceTag ? "02" : "01", bytesToHex(OPERATOR)); // E: tag, operator
+  if (options?.trailingByte) parts.push("00");
+  return hexToBytes(parts.join(""));
+}
 
 describe("invariant 1: the name is the hash of a canonical encoding", () => {
   it("identical fields give identical bytes and an identical name", () => {
-    expect(encodeBacking(baseBacking())).toEqual(encodeBacking(baseBacking()));
-    expect(backingName(baseBacking())).toEqual(backingName(baseBacking()));
+    expect(encodeBacking(makeBacking(baseFields()))).toEqual(
+      encodeBacking(makeBacking(baseFields())),
+    );
+    expect(backingName(makeBacking(baseFields()))).toEqual(
+      backingName(makeBacking(baseFields())),
+    );
   });
 
-  it("the encoding matches the documented byte layout exactly", () => {
-    expect(bytesToHex(encodeBacking(twoEntryBacking))).toBe(bytesToHex(manualEncoding()));
+  it("the implementation's encoding matches the documented byte layout", () => {
+    expect(bytesToHex(encodeBacking(twoEntry))).toBe(bytesToHex(manualEncoding()));
   });
 
   it("reliance list order does not affect the name", () => {
-    const reordered: Backing = {
-      ...twoEntryBacking,
-      reliance: [...twoEntryBacking.reliance].reverse(),
-    };
-    expect(backingName(reordered)).toEqual(backingName(twoEntryBacking));
+    const reordered = makeBacking({
+      ...baseFields(),
+      reliance: [
+        { target: TARGET_B, count: 2n },
+        { target: TARGET_A, count: 1n },
+      ],
+    });
+    expect(backingName(reordered)).toEqual(backingName(twoEntry));
   });
 
   it("every field change changes the name", () => {
-    const base = baseBacking();
-    const variants: Backing[] = [
-      { ...base, obligor: new Uint8Array(32).fill(0x99) },
+    const base = baseFields();
+    const variants: BackingFields[] = [
+      { ...base, obligor: OBLIGOR_2 },
       { ...base, payout: { ...base.payout, thing: "USD" } },
       { ...base, payout: { ...base.payout, quantumExponent: -3 } },
       { ...base, payout: { ...base.payout, perUnit: 101n } },
@@ -82,76 +100,102 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
       { ...base, reliance: [] },
       { ...base, evidence: { setting: "transparent", operator: new Uint8Array(32).fill(0x55) } },
     ];
-    const names = new Set([bytesToHex(backingName(base))]);
+    const names = new Set([bytesToHex(backingName(makeBacking(base)))]);
     for (const variant of variants) {
-      names.add(bytesToHex(backingName(variant)));
+      names.add(bytesToHex(backingName(makeBacking(variant))));
     }
     expect(names.size).toBe(variants.length + 1);
   });
 
   it("decode is the inverse of encode", () => {
-    const decoded = decodeBacking(encodeBacking(twoEntryBacking));
-    expect(decoded).toEqual(twoEntryBacking);
-    expect(encodeBacking(decoded)).toEqual(encodeBacking(twoEntryBacking));
+    const decoded = decodeBacking(encodeBacking(twoEntry));
+    expect(encodeBacking(decoded)).toEqual(encodeBacking(twoEntry));
+    expect(decoded.payout).toEqual(twoEntry.payout);
+    expect(decoded.reliance).toEqual(twoEntry.reliance);
+  });
+
+  it("a decoded backing does not alias its source buffer", () => {
+    // Node Buffer.slice returns a view; decoding from one must still copy, or
+    // a reused socket buffer would silently mutate an accepted backing.
+    const buffer = Buffer.from(encodeBacking(twoEntry));
+    const decoded = decodeBacking(buffer);
+    const nameBefore = bytesToHex(backingName(decoded));
+    buffer.fill(0xff);
+    expect(bytesToHex(backingName(decoded))).toBe(nameBefore);
   });
 
   it("rejects a second spelling of the same backing", () => {
     expect(() => decodeBacking(manualEncoding({ relianceOrder: "swapped" }))).toThrow(
       EncodingError,
     );
-    expect(() => decodeBacking(manualEncoding({ trailingByte: true }))).toThrow(
+    expect(() => decodeBacking(manualEncoding({ trailingByte: true }))).toThrow(EncodingError);
+    // A non-minimal integer (leading zero byte) is the strongest second
+    // spelling: same value, different bytes. It must be rejected.
+    expect(() => decodeBacking(manualEncoding({ nonMinimalPerUnit: true }))).toThrow(
       EncodingError,
     );
   });
 
   it("rejects bytes that are not a backing at all", () => {
-    const encoded = encodeBacking(baseBacking());
+    const encoded = encodeBacking(baseFieldsBacking());
     const badMagic = encoded.slice();
     badMagic[0] = 0x00;
     expect(() => decodeBacking(badMagic)).toThrow(EncodingError);
     const badVersion = encoded.slice();
     badVersion[4] = 0x02;
     expect(() => decodeBacking(badVersion)).toThrow(EncodingError);
-    expect(() => decodeBacking(encoded.slice(0, encoded.length - 1))).toThrow(
+    expect(() => decodeBacking(encoded.slice(0, encoded.length - 1))).toThrow(EncodingError);
+    expect(() => decodeBacking(manualEncoding({ unknownEvidenceTag: true }))).toThrow(
       EncodingError,
     );
   });
 
+  it("rejects a payout thing with unpaired surrogates", () => {
+    expect(() =>
+      makeBacking({ ...baseFields(), payout: { thing: "EUR\uD800", quantumExponent: -2, perUnit: 100n } }),
+    ).toThrow(EncodingError);
+  });
+
   it("rejects duplicate reliance targets", () => {
-    const duplicated: Backing = {
-      ...baseBacking(),
-      reliance: [
-        { target: TARGET_A, count: 1n },
-        { target: TARGET_A, count: 2n },
-      ],
-    };
-    expect(() => encodeBacking(duplicated)).toThrow(EncodingError);
+    expect(() =>
+      makeBacking({
+        ...baseFields(),
+        reliance: [
+          { target: TARGET_A, count: 1n },
+          { target: TARGET_A, count: 2n },
+        ],
+      }),
+    ).toThrow(EncodingError);
   });
 
   it("rejects zero and negative quantities", () => {
-    const base = baseBacking();
+    const base = baseFields();
+    expect(() => makeBacking({ ...base, payout: { ...base.payout, perUnit: 0n } })).toThrow(
+      EncodingError,
+    );
     expect(() =>
-      encodeBacking({ ...base, payout: { ...base.payout, perUnit: 0n } }),
+      makeBacking({ ...base, reliance: [{ target: TARGET_A, count: 0n }] }),
     ).toThrow(EncodingError);
-    expect(() =>
-      encodeBacking({ ...base, reliance: [{ target: TARGET_A, count: 0n }] }),
-    ).toThrow(EncodingError);
-    expect(() =>
-      encodeBacking({ ...base, payout: { ...base.payout, perUnit: -1n } }),
-    ).toThrow(EncodingError);
+    expect(() => makeBacking({ ...base, payout: { ...base.payout, perUnit: -1n } })).toThrow(
+      EncodingError,
+    );
   });
 
-  it("golden vector: encoding and name are frozen", () => {
-    // These hex strings are the contract with every future implementation.
-    // If this test ever fails, the format changed — that is a breaking event,
-    // not a refactor.
-    expect(bytesToHex(encodeBacking(twoEntryBacking))).toBe(GOLDEN_ENCODING_HEX);
-    expect(bytesToHex(backingName(twoEntryBacking))).toBe(GOLDEN_NAME_HEX);
+  it("golden vector: the layout and name are frozen", () => {
+    // GOLDEN_ENCODING_HEX freezes the documented layout as a literal contract;
+    // manualEncoding is the single expected-bytes source checked against the
+    // implementation above. GOLDEN_NAME_HEX is SHA-256 of those exact bytes.
+    // If either fails, the format changed — a breaking event, not a refactor.
+    expect(bytesToHex(manualEncoding())).toBe(GOLDEN_ENCODING_HEX);
+    expect(bytesToHex(backingName(twoEntry))).toBe(GOLDEN_NAME_HEX);
   });
 });
 
+function baseFieldsBacking() {
+  return makeBacking(baseFields());
+}
+
 const GOLDEN_ENCODING_HEX =
-  "4d465042010111111111111111111111111111111111111111111111111111111111111111110100000003455552fe0000000164000000020133333333333333333333333333333333333333333333333333333333333333330000000101014444444444444444444444444444444444444444444444444444444444444444" +
+  "4d46504201018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c0100000003455552fe0000000164000000020133333333333333333333333333333333333333333333333333333333333333330000000101014444444444444444444444444444444444444444444444444444444444444444" +
   "0000000102012222222222222222222222222222222222222222222222222222222222222222";
-const GOLDEN_NAME_HEX =
-  "26379f3da4f22100b957e411445e18db9dd96f329cb5374075bff9d4a4ab4399";
+const GOLDEN_NAME_HEX = "9be9c2da6e525a84f632d0ff4ca502a03c66e9a693f8aa59089dc5fd36fcb5c9";

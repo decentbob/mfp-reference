@@ -4,6 +4,11 @@
 // canonical encoding of (K, P, R, E). Invariant 2: a backing exists only
 // with a valid signature by K over its own name.
 //
+// A Backing is produced only by makeBacking, which validates every field,
+// canonicalizes the reliance list, and takes private copies of all byte
+// arrays. The type is branded so the rest of the system cannot fabricate an
+// unvalidated backing structurally; encode/hash/sign therefore trust it.
+//
 // Canonical encoding v1 (all lengths u32 big-endian, hash = SHA-256):
 //
 //   magic    "MFPB" (4 bytes)
@@ -43,11 +48,18 @@ const TAG_EVIDENCE_TRANSPARENT = 0x01;
 
 const KEY_LENGTH = 32;
 const NAME_LENGTH = 32;
+const SIGNATURE_LENGTH = 64;
 const MAX_THING_BYTES = 1024;
 const MAX_QUANTITY_BYTES = 32; // quantities are < 2^256
+const MAX_QUANTITY_EXCLUSIVE = 1n << (8n * BigInt(MAX_QUANTITY_BYTES));
 const MAX_RELIANCE_ENTRIES = 4096;
 
-const SIGNATURE_CONTEXT = new TextEncoder().encode("mfp/backing-signature/v1");
+const textEncoder = new TextEncoder();
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const SIGNATURE_CONTEXT = textEncoder.encode("mfp/backing-signature/v1");
+
+/** Raised when a signing key does not match the obligor, or is malformed. */
+export class SigningError extends Error {}
 
 export interface ConstantPayout {
   /** The named thing one unit pays, compared as exact bytes. */
@@ -71,7 +83,8 @@ export interface TransparentEvidence {
   readonly operator: Uint8Array;
 }
 
-export interface Backing {
+/** The unvalidated input shape accepted by makeBacking. */
+export interface BackingFields {
   /** K: the Ed25519 verification key that owes. */
   readonly obligor: Uint8Array;
   /** P: what one unit pays. */
@@ -82,59 +95,114 @@ export interface Backing {
   readonly evidence: TransparentEvidence;
 }
 
-function validateQuantity(n: bigint, what: string): void {
-  if (n < 1n) throw new EncodingError(`${what} must be at least 1`);
-  if (bigintToMinimalBytes(n).length > MAX_QUANTITY_BYTES) {
-    throw new EncodingError(`${what} too large`);
-  }
+declare const validated: unique symbol;
+
+/**
+ * A validated, canonical backing. Only makeBacking (and decodeBacking, which
+ * routes through it) can produce one, so any Backing value is safe to encode,
+ * hash, and sign without re-checking.
+ */
+export type Backing = BackingFields & { readonly [validated]: true };
+
+function copyBytes(bytes: Uint8Array): Uint8Array {
+  return Uint8Array.prototype.slice.call(bytes);
 }
 
-function validateKey(key: Uint8Array, what: string): void {
+function validateQuantity(n: bigint, what: string): void {
+  if (n < 1n) throw new EncodingError(`${what} must be at least 1`);
+  if (n >= MAX_QUANTITY_EXCLUSIVE) throw new EncodingError(`${what} too large`);
+}
+
+/**
+ * K must be a valid, non-small-order Ed25519 point. Without this, an obligor
+ * set to a small-order point (e.g. the identity) accepts a forged signature
+ * over any name, defeating invariant 2. See DECISIONS.md.
+ */
+function validateObligorKey(key: Uint8Array): void {
   if (key.length !== KEY_LENGTH) {
-    throw new EncodingError(`${what} must be ${KEY_LENGTH} bytes`);
+    throw new EncodingError(`obligor key must be ${KEY_LENGTH} bytes`);
+  }
+  let point;
+  try {
+    point = ed25519.Point.fromHex(key);
+  } catch {
+    throw new EncodingError("obligor key is not a valid Ed25519 point");
+  }
+  if (point.isSmallOrder()) {
+    throw new EncodingError("obligor key is a small-order point");
   }
 }
 
 /**
- * Reliance is canonicalized here, not by the caller: entries are sorted by
- * target bytes, so two backings differing only in list order get one name.
+ * The one constructor for a Backing: validate every field, reject a
+ * non-canonical payout string, canonicalize the reliance list (sorted, no
+ * duplicates), and snapshot every byte array so the value cannot be mutated
+ * through the caller's references afterwards.
  */
-export function encodeBacking(backing: Backing): Uint8Array {
-  validateKey(backing.obligor, "obligor key");
-  validateKey(backing.evidence.operator, "operator key");
+export function makeBacking(fields: BackingFields): Backing {
+  validateObligorKey(fields.obligor);
 
-  const thingBytes = new TextEncoder().encode(backing.payout.thing);
-  if (thingBytes.length === 0) throw new EncodingError("payout thing is empty");
-  if (thingBytes.length > MAX_THING_BYTES) {
-    throw new EncodingError("payout thing too long");
+  if (fields.evidence.setting !== "transparent") {
+    throw new EncodingError(`unsupported evidence setting ${String(fields.evidence.setting)}`);
   }
+  if (fields.evidence.operator.length !== KEY_LENGTH) {
+    throw new EncodingError(`operator key must be ${KEY_LENGTH} bytes`);
+  }
+
+  const { thing, quantumExponent, perUnit } = fields.payout;
+  // Unpaired surrogates would silently become U+FFFD on encode, collapsing
+  // two distinct things to one name; reject them rather than lose them.
+  if (!thing.isWellFormed()) {
+    throw new EncodingError("payout thing contains unpaired surrogates");
+  }
+  const thingByteLength = textEncoder.encode(thing).length;
+  if (thingByteLength === 0) throw new EncodingError("payout thing is empty");
+  if (thingByteLength > MAX_THING_BYTES) throw new EncodingError("payout thing too long");
   if (
-    !Number.isInteger(backing.payout.quantumExponent) ||
-    backing.payout.quantumExponent < -128 ||
-    backing.payout.quantumExponent > 127
+    !Number.isInteger(quantumExponent) ||
+    quantumExponent < -128 ||
+    quantumExponent > 127
   ) {
     throw new EncodingError("quantum exponent out of range");
   }
-  validateQuantity(backing.payout.perUnit, "payout per unit");
+  validateQuantity(perUnit, "payout per unit");
 
-  if (backing.reliance.length > MAX_RELIANCE_ENTRIES) {
+  if (fields.reliance.length > MAX_RELIANCE_ENTRIES) {
     throw new EncodingError("too many reliance entries");
   }
-  for (const entry of backing.reliance) {
+  for (const entry of fields.reliance) {
     if (entry.target.length !== NAME_LENGTH) {
       throw new EncodingError(`reliance target must be ${NAME_LENGTH} bytes`);
     }
     validateQuantity(entry.count, "reliance count");
   }
-  const sorted = [...backing.reliance].sort((a, b) => compareBytes(a.target, b.target));
-  for (let i = 1; i < sorted.length; i++) {
-    const previous = sorted[i - 1] as RelianceEntry;
-    const current = sorted[i] as RelianceEntry;
+  const reliance = fields.reliance
+    .map((entry) => ({ target: copyBytes(entry.target), count: entry.count }))
+    .sort((a, b) => compareBytes(a.target, b.target));
+  for (let i = 1; i < reliance.length; i++) {
+    const previous = reliance[i - 1] as RelianceEntry;
+    const current = reliance[i] as RelianceEntry;
     if (compareBytes(previous.target, current.target) === 0) {
       throw new EncodingError("duplicate reliance target");
     }
   }
 
+  const backing: BackingFields = {
+    obligor: copyBytes(fields.obligor),
+    payout: { thing, quantumExponent, perUnit },
+    reliance,
+    evidence: { setting: "transparent", operator: copyBytes(fields.evidence.operator) },
+  };
+  // The brand is a phantom type with no runtime property, so the cast goes
+  // through unknown. makeBacking is the only place that mints it.
+  return backing as unknown as Backing;
+}
+
+/**
+ * Serialize a validated backing. Because Backing is canonical by
+ * construction, this writes fields in the order they already hold.
+ */
+export function encodeBacking(backing: Backing): Uint8Array {
   const w = new ByteWriter();
   w.raw(MAGIC);
   w.u8(VERSION);
@@ -143,12 +211,12 @@ export function encodeBacking(backing: Backing): Uint8Array {
   w.raw(backing.obligor);
 
   w.u8(TAG_PAYOUT_CONSTANT);
-  w.lengthPrefixed(thingBytes);
+  w.lengthPrefixed(textEncoder.encode(backing.payout.thing));
   w.i8(backing.payout.quantumExponent);
   w.lengthPrefixed(bigintToMinimalBytes(backing.payout.perUnit));
 
-  w.u32(sorted.length);
-  for (const entry of sorted) {
+  w.u32(backing.reliance.length);
+  for (const entry of backing.reliance) {
     w.u8(TAG_TARGET_BACKING);
     w.raw(entry.target);
     w.lengthPrefixed(bigintToMinimalBytes(entry.count));
@@ -167,8 +235,10 @@ function expectTag(r: ByteReader, expected: number, what: string): void {
 
 /**
  * Strict inverse of encodeBacking: accepts exactly the canonical bytes and
- * nothing else, so decode(bytes) succeeding proves bytes is THE encoding of
- * the result.
+ * nothing else, then routes the parsed fields through makeBacking so wire
+ * data gets the same validation (including the small-order key check) as
+ * locally constructed backings. decode(bytes) succeeding proves bytes is THE
+ * encoding of the result.
  */
 export function decodeBacking(bytes: Uint8Array): Backing {
   const r = new ByteReader(bytes);
@@ -184,10 +254,9 @@ export function decodeBacking(bytes: Uint8Array): Backing {
   expectTag(r, TAG_PAYOUT_CONSTANT, "payout");
   const thingBytes = r.lengthPrefixed(MAX_THING_BYTES);
   if (thingBytes.length === 0) throw new EncodingError("payout thing is empty");
-  const thing = new TextDecoder("utf-8", { fatal: true }).decode(thingBytes);
+  const thing = utf8Decoder.decode(thingBytes);
   const quantumExponent = r.i8();
   const perUnit = minimalBytesToBigint(r.lengthPrefixed(MAX_QUANTITY_BYTES));
-  validateQuantity(perUnit, "payout per unit");
 
   const entryCount = r.u32();
   if (entryCount > MAX_RELIANCE_ENTRIES) {
@@ -203,7 +272,6 @@ export function decodeBacking(bytes: Uint8Array): Backing {
     }
     previousTarget = target;
     const count = minimalBytesToBigint(r.lengthPrefixed(MAX_QUANTITY_BYTES));
-    validateQuantity(count, "reliance count");
     reliance.push({ target, count });
   }
 
@@ -211,12 +279,12 @@ export function decodeBacking(bytes: Uint8Array): Backing {
   const operator = r.raw(KEY_LENGTH);
 
   r.expectEnd();
-  return {
+  return makeBacking({
     obligor,
     payout: { thing, quantumExponent, perUnit },
     reliance,
     evidence: { setting: "transparent", operator },
-  };
+  });
 }
 
 /** The backing's name: SHA-256 of its canonical encoding (invariant 1). */
@@ -233,9 +301,14 @@ function signedMessage(name: Uint8Array): Uint8Array {
 
 /** Sign a backing's name with the obligor's secret key (invariant 2). */
 export function signBacking(secretKey: Uint8Array, backing: Backing): Uint8Array {
-  const publicKey = ed25519.getPublicKey(secretKey);
+  let publicKey: Uint8Array;
+  try {
+    publicKey = ed25519.getPublicKey(secretKey);
+  } catch {
+    throw new SigningError("invalid secret key");
+  }
   if (compareBytes(publicKey, backing.obligor) !== 0) {
-    throw new EncodingError("secret key does not belong to the obligor");
+    throw new SigningError("secret key does not belong to the obligor");
   }
   return ed25519.sign(signedMessage(backingName(backing)), secretKey);
 }
@@ -243,10 +316,16 @@ export function signBacking(secretKey: Uint8Array, backing: Backing): Uint8Array
 /**
  * A backing without this check passing does not exist (invariant 2): anyone
  * could publish well-formed terms naming somebody else's key as obligor.
+ * Returns false (never throws) for a wrong-length signature, so a malformed
+ * signature from a peer is rejected rather than crashing the caller.
+ * Verification is strict (non-ZIP215); see DECISIONS.md.
  */
 export function verifyBackingSignature(
   backing: Backing,
   signature: Uint8Array,
 ): boolean {
-  return ed25519.verify(signature, signedMessage(backingName(backing)), backing.obligor);
+  if (signature.length !== SIGNATURE_LENGTH) return false;
+  return ed25519.verify(signature, signedMessage(backingName(backing)), backing.obligor, {
+    zip215: false,
+  });
 }

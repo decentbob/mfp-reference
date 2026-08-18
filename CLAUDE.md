@@ -50,8 +50,10 @@ the rule still stands.
   (inv 1). The encoding must be byte-deterministic: same fields, same bytes,
   on every machine, forever. No `JSON.stringify` of objects with unordered
   keys.
-- **A backing exists only with a valid signature by K over its own name**
-  (inv 2).
+- **A backing exists only with a valid signature by K over its own name**,
+  under a fixed domain-separation tag (inv 2; see [[DECISIONS.md]]). K must be
+  a valid, non-small-order Ed25519 point, and verification is strict
+  (non-ZIP215).
 - **Issuance and reissuance never share a code path** (inv 7). Issuance
   changes the outstanding count and needs the backer's signature; reissuance
   preserves the count and needs none.
