@@ -66,6 +66,20 @@ export class ByteWriter {
     );
   }
 
+  /** Fixed 8-byte big-endian unsigned integer (used for nonces). */
+  u64(n: bigint): void {
+    if (n < 0n || n > 0xffffffffffffffffn) {
+      throw new EncodingError("u64 out of range");
+    }
+    const out = new Uint8Array(8);
+    let value = n;
+    for (let i = 7; i >= 0; i--) {
+      out[i] = Number(value & 0xffn);
+      value >>= 8n;
+    }
+    this.chunks.push(out);
+  }
+
   raw(bytes: Uint8Array): void {
     this.chunks.push(bytes);
   }

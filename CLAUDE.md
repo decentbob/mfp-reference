@@ -56,7 +56,9 @@ the rule still stands.
   (non-ZIP215).
 - **Issuance and reissuance never share a code path** (inv 7). Issuance
   changes the outstanding count and needs the backer's signature; reissuance
-  preserves the count and needs none.
+  preserves the count and needs none. In the transparent slice this reads as
+  issuance vs. movement (transfer/burn); reissuance proper (denomination
+  swaps) arrives with blinding. See [[DECISIONS.md]].
 - **No clawback, no reversal, no privileged party who can move claims**
   (inv 8). The rule is not "don't call it" — the code path must not exist.
 - **Fees are ordinary transfers alongside a swap, never a shaved reissue**
@@ -77,7 +79,10 @@ the rule still stands.
 - **An unaccompanied claim is inert, never invalid, and still transferable**
   (inv 17).
 - **Swaps and presentation are idempotent** (inv 26). A repeated request
-  returns the identical prior response. A crash must lose nothing.
+  returns the identical prior response. A crash must lose nothing. Until the
+  sequencer slice, the transparent ledger rejects a replayed message (per
+  (signer, backing) nonce) rather than returning the prior response;
+  idempotent replay arrives with the sequencer. See [[DECISIONS.md]].
 - **Settling a published demand voids the exact claims offered, and only on
   the holder's release signature** (inv 27). A backer must never void
   unilaterally.

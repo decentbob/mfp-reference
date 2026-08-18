@@ -38,6 +38,8 @@ import {
   EncodingError,
   minimalBytesToBigint,
 } from "./bytes.js";
+import { isValidPublicKey, KEY_LENGTH, verifySignatureStrict } from "./keys.js";
+import { MAX_QUANTITY_BYTES, validateQuantity } from "./quantity.js";
 
 const MAGIC = Uint8Array.of(0x4d, 0x46, 0x50, 0x42); // "MFPB"
 const VERSION = 0x01;
@@ -46,12 +48,8 @@ const TAG_PAYOUT_CONSTANT = 0x01;
 const TAG_TARGET_BACKING = 0x01;
 const TAG_EVIDENCE_TRANSPARENT = 0x01;
 
-const KEY_LENGTH = 32;
 const NAME_LENGTH = 32;
-const SIGNATURE_LENGTH = 64;
 const MAX_THING_BYTES = 1024;
-const MAX_QUANTITY_BYTES = 32; // quantities are < 2^256
-const MAX_QUANTITY_EXCLUSIVE = 1n << (8n * BigInt(MAX_QUANTITY_BYTES));
 const MAX_RELIANCE_ENTRIES = 4096;
 
 const textEncoder = new TextEncoder();
@@ -108,31 +106,6 @@ function copyBytes(bytes: Uint8Array): Uint8Array {
   return Uint8Array.prototype.slice.call(bytes);
 }
 
-function validateQuantity(n: bigint, what: string): void {
-  if (n < 1n) throw new EncodingError(`${what} must be at least 1`);
-  if (n >= MAX_QUANTITY_EXCLUSIVE) throw new EncodingError(`${what} too large`);
-}
-
-/**
- * K must be a valid, non-small-order Ed25519 point. Without this, an obligor
- * set to a small-order point (e.g. the identity) accepts a forged signature
- * over any name, defeating invariant 2. See DECISIONS.md.
- */
-function validateObligorKey(key: Uint8Array): void {
-  if (key.length !== KEY_LENGTH) {
-    throw new EncodingError(`obligor key must be ${KEY_LENGTH} bytes`);
-  }
-  let point;
-  try {
-    point = ed25519.Point.fromHex(key);
-  } catch {
-    throw new EncodingError("obligor key is not a valid Ed25519 point");
-  }
-  if (point.isSmallOrder()) {
-    throw new EncodingError("obligor key is a small-order point");
-  }
-}
-
 /**
  * The one constructor for a Backing: validate every field, reject a
  * non-canonical payout string, canonicalize the reliance list (sorted, no
@@ -140,7 +113,12 @@ function validateObligorKey(key: Uint8Array): void {
  * through the caller's references afterwards.
  */
 export function makeBacking(fields: BackingFields): Backing {
-  validateObligorKey(fields.obligor);
+  // K must be a valid, non-small-order Ed25519 point. Without this, an
+  // obligor set to a small-order point (e.g. the identity) accepts a forged
+  // signature over any name, defeating invariant 2. See DECISIONS.md.
+  if (!isValidPublicKey(fields.obligor)) {
+    throw new EncodingError("obligor key is not a valid non-small-order Ed25519 point");
+  }
 
   if (fields.evidence.setting !== "transparent") {
     throw new EncodingError(`unsupported evidence setting ${String(fields.evidence.setting)}`);
@@ -177,7 +155,7 @@ export function makeBacking(fields: BackingFields): Backing {
     validateQuantity(entry.count, "reliance count");
   }
   const reliance = fields.reliance
-    .map((entry) => ({ target: copyBytes(entry.target), count: entry.count }))
+    .map((entry) => Object.freeze({ target: copyBytes(entry.target), count: entry.count }))
     .sort((a, b) => compareBytes(a.target, b.target));
   for (let i = 1; i < reliance.length; i++) {
     const previous = reliance[i - 1] as RelianceEntry;
@@ -187,15 +165,27 @@ export function makeBacking(fields: BackingFields): Backing {
     }
   }
 
-  const backing: BackingFields = {
+  // Freeze the object graph so a validated backing cannot be structurally
+  // mutated (e.g. reliance.push, or reassigning obligor) into terms its name
+  // no longer describes. The raw bytes inside each Uint8Array cannot be
+  // frozen in JS; mutating them is unsupported (see DECISIONS.md).
+  const backing: BackingFields = Object.freeze({
     obligor: copyBytes(fields.obligor),
-    payout: { thing, quantumExponent, perUnit },
-    reliance,
-    evidence: { setting: "transparent", operator: copyBytes(fields.evidence.operator) },
-  };
+    payout: Object.freeze({ thing, quantumExponent, perUnit }),
+    reliance: Object.freeze(reliance),
+    evidence: Object.freeze({
+      setting: "transparent" as const,
+      operator: copyBytes(fields.evidence.operator),
+    }),
+  });
   // The brand is a phantom type with no runtime property, so the cast goes
   // through unknown. makeBacking is the only place that mints it.
-  return backing as unknown as Backing;
+  const branded = backing as unknown as Backing;
+  // Compute and cache the name now, so identity is truly fixed at
+  // construction: a later (unsupported) raw byte mutation cannot shift the
+  // name the ledger keys on.
+  backingName(branded);
+  return branded;
 }
 
 /**
@@ -287,9 +277,21 @@ export function decodeBacking(bytes: Uint8Array): Backing {
   });
 }
 
+// A backing is immutable by construction (makeBacking freezes it and warms
+// this cache before returning), so its name is fixed for the object's
+// lifetime. Memoizing avoids re-encoding and re-hashing on the hot path
+// (every ledger operation resolves state and signs by name).
+const nameCache = new WeakMap<Backing, Uint8Array>();
+
 /** The backing's name: SHA-256 of its canonical encoding (invariant 1). */
 export function backingName(backing: Backing): Uint8Array {
-  return sha256(encodeBacking(backing));
+  let name = nameCache.get(backing);
+  if (name === undefined) {
+    name = sha256(encodeBacking(backing));
+    nameCache.set(backing, name);
+  }
+  // Return a copy so a caller mutating the result cannot poison the cache.
+  return copyBytes(name);
 }
 
 function signedMessage(name: Uint8Array): Uint8Array {
@@ -318,14 +320,10 @@ export function signBacking(secretKey: Uint8Array, backing: Backing): Uint8Array
  * could publish well-formed terms naming somebody else's key as obligor.
  * Returns false (never throws) for a wrong-length signature, so a malformed
  * signature from a peer is rejected rather than crashing the caller.
- * Verification is strict (non-ZIP215); see DECISIONS.md.
  */
 export function verifyBackingSignature(
   backing: Backing,
   signature: Uint8Array,
 ): boolean {
-  if (signature.length !== SIGNATURE_LENGTH) return false;
-  return ed25519.verify(signature, signedMessage(backingName(backing)), backing.obligor, {
-    zip215: false,
-  });
+  return verifySignatureStrict(signature, signedMessage(backingName(backing)), backing.obligor);
 }

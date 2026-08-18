@@ -124,6 +124,23 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
     expect(bytesToHex(backingName(decoded))).toBe(nameBefore);
   });
 
+  it("backingName returns a fresh array each call (cache cannot be poisoned)", () => {
+    const b = makeBacking(baseFields());
+    const first = backingName(b);
+    first.fill(0);
+    expect(backingName(b)).toEqual(backingName(makeBacking(baseFields())));
+  });
+
+  it("a validated backing is frozen against structural mutation", () => {
+    const b = makeBacking(baseFields());
+    expect(Object.isFrozen(b)).toBe(true);
+    expect(Object.isFrozen(b.reliance)).toBe(true);
+    expect(Object.isFrozen(b.payout)).toBe(true);
+    expect(Object.isFrozen(b.evidence)).toBe(true);
+    // A frozen array rejects structural mutation under ESM strict mode.
+    expect(() => (b.reliance as unknown as unknown[]).push(0)).toThrow();
+  });
+
   it("rejects a second spelling of the same backing", () => {
     expect(() => decodeBacking(manualEncoding({ relianceOrder: "swapped" }))).toThrow(
       EncodingError,
