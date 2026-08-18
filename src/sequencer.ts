@@ -26,7 +26,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { backingName, type Backing } from "./backing.js";
 import { type BackingSnapshot, type Commitment, signCommitment, stateRoot } from "./commitment.js";
-import { compareBytes } from "./bytes.js";
+import { compareBytes, EncodingError } from "./bytes.js";
 import { isValidPublicKey } from "./keys.js";
 import {
   encodeBurn,
@@ -36,7 +36,7 @@ import {
   type IssuanceOp,
   type TransferOp,
 } from "./messages.js";
-import { TransparentLedger } from "./ledger.js";
+import { TransparentLedger, type OpLogEntry } from "./ledger.js";
 import { signReceipt, type Receipt } from "./receipt.js";
 import { Venue } from "./venue.js";
 
@@ -45,9 +45,10 @@ export class SequencerError extends Error {}
 export class Sequencer {
   private readonly ledger = new TransparentLedger();
   private readonly served: Backing[] = [];
-  /** opHash (hex) -> the receipt returned when it was first accepted. */
+  // opHash (hex) -> the receipt returned when it was first accepted. Retained
+  // to make replays idempotent (invariant 26); a later slice prunes entries an
+  // eventual commitment has finalized.
   private readonly receipts = new Map<string, Receipt>();
-  private opIndex = 0n;
   private commitIndex = 0n;
   private lastCommitment: Commitment | undefined;
 
@@ -76,15 +77,21 @@ export class Sequencer {
   }
 
   submitIssue(op: IssuanceOp, signature: Uint8Array): Receipt {
-    return this.submit(op.backing, encodeIssuance(op), () => this.ledger.issue(op, signature));
+    return this.submit(op.backing, op.backing.obligor, op.nonce, () => encodeIssuance(op), () =>
+      this.ledger.issue(op, signature),
+    );
   }
 
   submitTransfer(op: TransferOp, signature: Uint8Array): Receipt {
-    return this.submit(op.backing, encodeTransfer(op), () => this.ledger.transfer(op, signature));
+    return this.submit(op.backing, op.from, op.nonce, () => encodeTransfer(op), () =>
+      this.ledger.transfer(op, signature),
+    );
   }
 
   submitBurn(op: BurnOp, signature: Uint8Array): Receipt {
-    return this.submit(op.backing, encodeBurn(op), () => this.ledger.burn(op, signature));
+    return this.submit(op.backing, op.holder, op.nonce, () => encodeBurn(op), () =>
+      this.ledger.burn(op, signature),
+    );
   }
 
   /** Publish a commitment over the served state at the next venue index. */
@@ -127,26 +134,53 @@ export class Sequencer {
   }
 
   /**
-   * The shared submit path: idempotency first, then the ledger, then the
-   * co-signed receipt. A replay of an accepted operation returns the identical
-   * prior receipt without touching the ledger (invariant 26). A ledger
-   * rejection (bad signature, insufficient balance, or a different operation
-   * at an already-spent nonce) propagates as a LedgerError and records
-   * nothing.
+   * The shared submit path. The sequencer owns routing and refusal
+   * (SequencerError); the ledger owns authentication and funds (LedgerError):
+   *   - not served, malformed operation, or a nonce that is not the signer's
+   *     next: SequencerError (a nonce below the next is a second spend at an
+   *     already-used nonce — the sequencer "declines to sign");
+   *   - a well-formed, correctly-nonced operation that fails signature or
+   *     balance: LedgerError, from the ledger.
+   * A replay of an accepted operation returns the identical prior receipt
+   * without touching the ledger (invariant 26), and a rejected operation
+   * records nothing, so a later valid operation at that nonce still succeeds.
    */
-  private submit(backing: Backing, opMessage: Uint8Array, apply: () => void): Receipt {
+  private submit(
+    backing: Backing,
+    signer: Uint8Array,
+    nonce: bigint,
+    encode: () => Uint8Array,
+    apply: () => OpLogEntry,
+  ): Receipt {
     const name = backingName(backing);
     if (!this.served.some((b) => compareBytes(backingName(b), name) === 0)) {
       throw new SequencerError("backing not served by this sequencer");
+    }
+
+    let opMessage: Uint8Array;
+    try {
+      opMessage = encode();
+    } catch (error) {
+      if (error instanceof EncodingError) {
+        throw new SequencerError(`malformed operation: ${error.message}`);
+      }
+      throw error;
     }
     const opHash = sha256(opMessage);
     const key = bytesToHex(opHash);
     const existing = this.receipts.get(key);
     if (existing !== undefined) return existing;
 
-    apply();
-    const receipt = signReceipt(this.operatorSecret, name, opHash, this.opIndex);
-    this.opIndex += 1n;
+    const expected = this.ledger.nextNonce(signer, backing);
+    if (nonce < expected) {
+      throw new SequencerError("refused: nonce already spent on a different operation");
+    }
+    if (nonce > expected) {
+      throw new SequencerError("out-of-order nonce");
+    }
+
+    const entry = apply();
+    const receipt = signReceipt(this.operatorSecret, name, opHash, BigInt(entry.position));
     this.receipts.set(key, receipt);
     return receipt;
   }

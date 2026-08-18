@@ -1,29 +1,20 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
-import { makeBacking, signBacking, type Backing } from "../src/backing.js";
+import { signBacking } from "../src/backing.js";
 import { stateRoot } from "../src/commitment.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { Sequencer } from "../src/sequencer.js";
-import { KEYS, SECRETS } from "./support.js";
+import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 // Invariant 23: a commitment commits to the issuance log, the spent set, and
 // running totals. In the transparent subset that means the root must move
 // when issued, burned, balances, or the operation log change — and two
 // sequencers with identical served state must produce the identical root.
 
-function servedBacking(obligorSecret: Uint8Array, thing = "EUR"): Backing {
-  return makeBacking({
-    obligor: ed25519.getPublicKey(obligorSecret),
-    payout: { thing, quantumExponent: -2, perUnit: 100n },
-    reliance: [],
-    evidence: { setting: "transparent", operator: KEYS.operator },
-  });
-}
-
 function fresh() {
   const sequencer = new Sequencer(SECRETS.operator);
-  const backing = servedBacking(SECRETS.backer);
+  const backing = makeTransparentBacking(SECRETS.backer);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
   return { sequencer, backing };
 }
@@ -75,8 +66,8 @@ describe("invariant 23: the commitment commits to totals, balances, and the log"
   });
 
   it("the root is independent of the order backings were registered", () => {
-    const eur = servedBacking(SECRETS.backer, "EUR");
-    const kwh = servedBacking(SECRETS.backer2, "kWh");
+    const eur = makeTransparentBacking(SECRETS.backer, "EUR");
+    const kwh = makeTransparentBacking(SECRETS.backer2, "kWh");
     const a = new Sequencer(SECRETS.operator);
     a.register(eur, signBacking(SECRETS.backer, eur));
     a.register(kwh, signBacking(SECRETS.backer2, kwh));
