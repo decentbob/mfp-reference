@@ -155,7 +155,7 @@ export function makeBacking(fields: BackingFields): Backing {
     validateQuantity(entry.count, "reliance count");
   }
   const reliance = fields.reliance
-    .map((entry) => ({ target: copyBytes(entry.target), count: entry.count }))
+    .map((entry) => Object.freeze({ target: copyBytes(entry.target), count: entry.count }))
     .sort((a, b) => compareBytes(a.target, b.target));
   for (let i = 1; i < reliance.length; i++) {
     const previous = reliance[i - 1] as RelianceEntry;
@@ -165,12 +165,20 @@ export function makeBacking(fields: BackingFields): Backing {
     }
   }
 
-  const backing: BackingFields = {
+  // Freeze the object graph so a validated backing cannot be structurally
+  // mutated (e.g. reliance.push, or reassigning obligor) into terms its name
+  // no longer describes. The raw bytes inside each Uint8Array cannot be
+  // frozen in JS; mutating them is unsupported (see DECISIONS.md), and the
+  // backingName memo below means identity is fixed at construction regardless.
+  const backing: BackingFields = Object.freeze({
     obligor: copyBytes(fields.obligor),
-    payout: { thing, quantumExponent, perUnit },
-    reliance,
-    evidence: { setting: "transparent", operator: copyBytes(fields.evidence.operator) },
-  };
+    payout: Object.freeze({ thing, quantumExponent, perUnit }),
+    reliance: Object.freeze(reliance),
+    evidence: Object.freeze({
+      setting: "transparent" as const,
+      operator: copyBytes(fields.evidence.operator),
+    }),
+  });
   // The brand is a phantom type with no runtime property, so the cast goes
   // through unknown. makeBacking is the only place that mints it.
   return backing as unknown as Backing;
@@ -265,9 +273,21 @@ export function decodeBacking(bytes: Uint8Array): Backing {
   });
 }
 
+// A backing is immutable by construction (makeBacking freezes it), so its
+// name is fixed for the object's lifetime. Memoize it: backingName is on the
+// hot path (every ledger operation resolves state and signs by name), and
+// caching also fixes identity at construction, so raw byte mutation of a key
+// array cannot silently re-home an already-registered backing.
+const nameCache = new WeakMap<Backing, Uint8Array>();
+
 /** The backing's name: SHA-256 of its canonical encoding (invariant 1). */
 export function backingName(backing: Backing): Uint8Array {
-  return sha256(encodeBacking(backing));
+  let name = nameCache.get(backing);
+  if (name === undefined) {
+    name = sha256(encodeBacking(backing));
+    nameCache.set(backing, name);
+  }
+  return name;
 }
 
 function signedMessage(name: Uint8Array): Uint8Array {
