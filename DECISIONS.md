@@ -16,6 +16,55 @@ Format:
 
 ---
 
+## 2026-08-18 — Slice 3 scoping: the transparent sequencer
+
+**Question:** §C2 (sequencing) is large and mostly concerns the shielded and
+Chaumian settings, dated instruments, revocation, and recovery. What is the
+coherent transparent-only core, and how are the pieces the spec assumes
+(a witnessing venue, the operator key in E) modelled?
+
+**Decisions (Bob):**
+
+- **Scope: the coherent core.** Witnessed indices, operator co-signed
+  receipts, idempotent replay (inv 26), interval commitments over state
+  (inv 22/23, transparent subset), and equivocation detection. Deferred to
+  later slices: the recovery path — snapshot redemption and non-membership
+  proofs (§C2b) — silence and non-service grades, key revocation, successor
+  sequencers, dated instruments and standing lock requests, multi-sequencer
+  transfers, and presentation/dishonour (§C3).
+
+- **The venue is an in-memory append-only log with immediate finality.** The
+  spec publishes commitments to "a widely-witnessed venue, typically a public
+  chain", named with a finality rule. A reference implementation has no chain;
+  `Venue` is the honest stand-in, with a seam where a real venue and its
+  depth/gadget finality plug in later.
+
+- **The commitment is over the whole served state.** Invariant 23's objects,
+  transparent subset: per backing, its name, issued/burned totals, current
+  balances, and the full operation log. Verifying a state against a commitment
+  means being given that state and recomputing the root — the spec's
+  availability point ("somebody has to serve" the trail). Per-element
+  membership / non-membership proofs (the Merkle machinery) are deferred with
+  the recovery path.
+
+- **Idempotency is keyed by the operation hash.** A resubmission of the exact
+  signed operation returns the identical prior receipt (inv 26). A different
+  operation at an already-spent nonce is declined by the ledger's nonce
+  rejection — the sequencer "refuses a second spend by declining to sign".
+
+- **Operator-key validity is enforced at the sequencer boundary**, revisiting
+  the slice-1 note that E's operator "carries no verification weight in the
+  transparent core yet". `makeBacking` still validates the operator by length
+  only (so the slice-1 canonical name format is untouched), but a `Sequencer`
+  serves a backing only if E names a valid, non-small-order point equal to its
+  own key. A backing naming a bogus operator is simply unsequenceable — the
+  backer's setting, self-consistently.
+
+**Spec change:** none needed — all are implementation stances within what the
+paper leaves open for the transparent setting.
+
+---
+
 ## 2026-08-18 — Transparent-slice scoping: nonces, replay, the operation log, and inv 7/26
 
 **Question:** Slice 2 (the transparent claim layer) had to take several
