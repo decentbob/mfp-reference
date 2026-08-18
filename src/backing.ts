@@ -168,8 +168,7 @@ export function makeBacking(fields: BackingFields): Backing {
   // Freeze the object graph so a validated backing cannot be structurally
   // mutated (e.g. reliance.push, or reassigning obligor) into terms its name
   // no longer describes. The raw bytes inside each Uint8Array cannot be
-  // frozen in JS; mutating them is unsupported (see DECISIONS.md), and the
-  // backingName memo below means identity is fixed at construction regardless.
+  // frozen in JS; mutating them is unsupported (see DECISIONS.md).
   const backing: BackingFields = Object.freeze({
     obligor: copyBytes(fields.obligor),
     payout: Object.freeze({ thing, quantumExponent, perUnit }),
@@ -181,7 +180,12 @@ export function makeBacking(fields: BackingFields): Backing {
   });
   // The brand is a phantom type with no runtime property, so the cast goes
   // through unknown. makeBacking is the only place that mints it.
-  return backing as unknown as Backing;
+  const branded = backing as unknown as Backing;
+  // Compute and cache the name now, so identity is truly fixed at
+  // construction: a later (unsupported) raw byte mutation cannot shift the
+  // name the ledger keys on.
+  backingName(branded);
+  return branded;
 }
 
 /**
@@ -273,11 +277,10 @@ export function decodeBacking(bytes: Uint8Array): Backing {
   });
 }
 
-// A backing is immutable by construction (makeBacking freezes it), so its
-// name is fixed for the object's lifetime. Memoize it: backingName is on the
-// hot path (every ledger operation resolves state and signs by name), and
-// caching also fixes identity at construction, so raw byte mutation of a key
-// array cannot silently re-home an already-registered backing.
+// A backing is immutable by construction (makeBacking freezes it and warms
+// this cache before returning), so its name is fixed for the object's
+// lifetime. Memoizing avoids re-encoding and re-hashing on the hot path
+// (every ledger operation resolves state and signs by name).
 const nameCache = new WeakMap<Backing, Uint8Array>();
 
 /** The backing's name: SHA-256 of its canonical encoding (invariant 1). */
@@ -287,7 +290,8 @@ export function backingName(backing: Backing): Uint8Array {
     name = sha256(encodeBacking(backing));
     nameCache.set(backing, name);
   }
-  return name;
+  // Return a copy so a caller mutating the result cannot poison the cache.
+  return copyBytes(name);
 }
 
 function signedMessage(name: Uint8Array): Uint8Array {

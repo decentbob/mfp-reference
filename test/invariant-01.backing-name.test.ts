@@ -124,6 +124,13 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
     expect(bytesToHex(backingName(decoded))).toBe(nameBefore);
   });
 
+  it("backingName returns a fresh array each call (cache cannot be poisoned)", () => {
+    const b = makeBacking(baseFields());
+    const first = backingName(b);
+    first.fill(0);
+    expect(backingName(b)).toEqual(backingName(makeBacking(baseFields())));
+  });
+
   it("a validated backing is frozen against structural mutation", () => {
     const b = makeBacking(baseFields());
     expect(Object.isFrozen(b)).toBe(true);
