@@ -1,3 +1,5 @@
 node_modules/
 dist/
 *.log
+# root-level scratch verification scripts (real code is .ts)
+/*.mjs
