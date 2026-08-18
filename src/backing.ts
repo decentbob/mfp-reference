@@ -38,6 +38,8 @@ import {
   EncodingError,
   minimalBytesToBigint,
 } from "./bytes.js";
+import { isValidPublicKey, KEY_LENGTH, verifySignatureStrict } from "./keys.js";
+import { MAX_QUANTITY_BYTES, validateQuantity } from "./quantity.js";
 
 const MAGIC = Uint8Array.of(0x4d, 0x46, 0x50, 0x42); // "MFPB"
 const VERSION = 0x01;
@@ -46,12 +48,8 @@ const TAG_PAYOUT_CONSTANT = 0x01;
 const TAG_TARGET_BACKING = 0x01;
 const TAG_EVIDENCE_TRANSPARENT = 0x01;
 
-const KEY_LENGTH = 32;
 const NAME_LENGTH = 32;
-const SIGNATURE_LENGTH = 64;
 const MAX_THING_BYTES = 1024;
-const MAX_QUANTITY_BYTES = 32; // quantities are < 2^256
-const MAX_QUANTITY_EXCLUSIVE = 1n << (8n * BigInt(MAX_QUANTITY_BYTES));
 const MAX_RELIANCE_ENTRIES = 4096;
 
 const textEncoder = new TextEncoder();
@@ -108,31 +106,6 @@ function copyBytes(bytes: Uint8Array): Uint8Array {
   return Uint8Array.prototype.slice.call(bytes);
 }
 
-function validateQuantity(n: bigint, what: string): void {
-  if (n < 1n) throw new EncodingError(`${what} must be at least 1`);
-  if (n >= MAX_QUANTITY_EXCLUSIVE) throw new EncodingError(`${what} too large`);
-}
-
-/**
- * K must be a valid, non-small-order Ed25519 point. Without this, an obligor
- * set to a small-order point (e.g. the identity) accepts a forged signature
- * over any name, defeating invariant 2. See DECISIONS.md.
- */
-function validateObligorKey(key: Uint8Array): void {
-  if (key.length !== KEY_LENGTH) {
-    throw new EncodingError(`obligor key must be ${KEY_LENGTH} bytes`);
-  }
-  let point;
-  try {
-    point = ed25519.Point.fromHex(key);
-  } catch {
-    throw new EncodingError("obligor key is not a valid Ed25519 point");
-  }
-  if (point.isSmallOrder()) {
-    throw new EncodingError("obligor key is a small-order point");
-  }
-}
-
 /**
  * The one constructor for a Backing: validate every field, reject a
  * non-canonical payout string, canonicalize the reliance list (sorted, no
@@ -140,7 +113,12 @@ function validateObligorKey(key: Uint8Array): void {
  * through the caller's references afterwards.
  */
 export function makeBacking(fields: BackingFields): Backing {
-  validateObligorKey(fields.obligor);
+  // K must be a valid, non-small-order Ed25519 point. Without this, an
+  // obligor set to a small-order point (e.g. the identity) accepts a forged
+  // signature over any name, defeating invariant 2. See DECISIONS.md.
+  if (!isValidPublicKey(fields.obligor)) {
+    throw new EncodingError("obligor key is not a valid non-small-order Ed25519 point");
+  }
 
   if (fields.evidence.setting !== "transparent") {
     throw new EncodingError(`unsupported evidence setting ${String(fields.evidence.setting)}`);
@@ -318,14 +296,10 @@ export function signBacking(secretKey: Uint8Array, backing: Backing): Uint8Array
  * could publish well-formed terms naming somebody else's key as obligor.
  * Returns false (never throws) for a wrong-length signature, so a malformed
  * signature from a peer is rejected rather than crashing the caller.
- * Verification is strict (non-ZIP215); see DECISIONS.md.
  */
 export function verifyBackingSignature(
   backing: Backing,
   signature: Uint8Array,
 ): boolean {
-  if (signature.length !== SIGNATURE_LENGTH) return false;
-  return ed25519.verify(signature, signedMessage(backingName(backing)), backing.obligor, {
-    zip215: false,
-  });
+  return verifySignatureStrict(signature, signedMessage(backingName(backing)), backing.obligor);
 }
