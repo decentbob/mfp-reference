@@ -54,36 +54,76 @@ function key(bytes: Uint8Array, what: string): Uint8Array {
   return bytes;
 }
 
-export function encodeIssuance(op: IssuanceOp): Uint8Array {
-  validateQuantity(op.quantity, "issuance quantity");
+function name(bytes: Uint8Array): Uint8Array {
+  if (bytes.length !== KEY_LENGTH) {
+    throw new EncodingError(`backing name must be ${KEY_LENGTH} bytes`);
+  }
+  return bytes;
+}
+
+// Field-level encoders take the backing NAME (not the Backing object), so a
+// verifier holding only a committed operation-log entry can reconstruct the
+// exact signed message and hence its hash (see receipt.ts). The op-shaped
+// wrappers below feed them backingName(op.backing).
+
+export function encodeIssuanceMessage(
+  backingName: Uint8Array,
+  recipient: Uint8Array,
+  quantity: bigint,
+  nonce: bigint,
+): Uint8Array {
+  validateQuantity(quantity, "issuance quantity");
   const w = new ByteWriter();
   w.raw(ISSUANCE_CONTEXT);
-  w.raw(backingName(op.backing));
-  w.raw(key(op.recipient, "recipient key"));
-  w.lengthPrefixed(bigintToMinimalBytes(op.quantity));
-  w.u64(op.nonce);
+  w.raw(name(backingName));
+  w.raw(key(recipient, "recipient key"));
+  w.lengthPrefixed(bigintToMinimalBytes(quantity));
+  w.u64(nonce);
   return w.finish();
+}
+
+export function encodeTransferMessage(
+  backingName: Uint8Array,
+  from: Uint8Array,
+  to: Uint8Array,
+  quantity: bigint,
+  nonce: bigint,
+): Uint8Array {
+  validateQuantity(quantity, "transfer quantity");
+  const w = new ByteWriter();
+  w.raw(TRANSFER_CONTEXT);
+  w.raw(name(backingName));
+  w.raw(key(from, "from key"));
+  w.raw(key(to, "to key"));
+  w.lengthPrefixed(bigintToMinimalBytes(quantity));
+  w.u64(nonce);
+  return w.finish();
+}
+
+export function encodeBurnMessage(
+  backingName: Uint8Array,
+  holder: Uint8Array,
+  quantity: bigint,
+  nonce: bigint,
+): Uint8Array {
+  validateQuantity(quantity, "burn quantity");
+  const w = new ByteWriter();
+  w.raw(BURN_CONTEXT);
+  w.raw(name(backingName));
+  w.raw(key(holder, "holder key"));
+  w.lengthPrefixed(bigintToMinimalBytes(quantity));
+  w.u64(nonce);
+  return w.finish();
+}
+
+export function encodeIssuance(op: IssuanceOp): Uint8Array {
+  return encodeIssuanceMessage(backingName(op.backing), op.recipient, op.quantity, op.nonce);
 }
 
 export function encodeTransfer(op: TransferOp): Uint8Array {
-  validateQuantity(op.quantity, "transfer quantity");
-  const w = new ByteWriter();
-  w.raw(TRANSFER_CONTEXT);
-  w.raw(backingName(op.backing));
-  w.raw(key(op.from, "from key"));
-  w.raw(key(op.to, "to key"));
-  w.lengthPrefixed(bigintToMinimalBytes(op.quantity));
-  w.u64(op.nonce);
-  return w.finish();
+  return encodeTransferMessage(backingName(op.backing), op.from, op.to, op.quantity, op.nonce);
 }
 
 export function encodeBurn(op: BurnOp): Uint8Array {
-  validateQuantity(op.quantity, "burn quantity");
-  const w = new ByteWriter();
-  w.raw(BURN_CONTEXT);
-  w.raw(backingName(op.backing));
-  w.raw(key(op.holder, "holder key"));
-  w.lengthPrefixed(bigintToMinimalBytes(op.quantity));
-  w.u64(op.nonce);
-  return w.finish();
+  return encodeBurnMessage(backingName(op.backing), op.holder, op.quantity, op.nonce);
 }

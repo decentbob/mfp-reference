@@ -95,8 +95,8 @@ export class TransparentLedger {
     });
   }
 
-  /** Issuance: backer-signed, raises issued and the recipient's balance. */
-  issue(op: IssuanceOp, signature: Uint8Array): void {
+  /** Issuance: backer-signed, raises issued and the recipient's balance. Returns the log entry. */
+  issue(op: IssuanceOp, signature: Uint8Array): OpLogEntry {
     const { state, nameHex } = this.resolve(op.backing);
     if (!isValidPublicKey(op.recipient)) {
       throw new LedgerError("recipient key is not a valid Ed25519 point");
@@ -117,18 +117,20 @@ export class TransparentLedger {
 
     state.issued += op.quantity;
     this.credit(state, op.recipient, op.quantity);
-    state.opLog.push({
+    const entry: OpLogEntry = {
       position: state.opLog.length,
       kind: "issue",
       recipient: copyBytes(op.recipient),
       quantity: op.quantity,
       nonce: op.nonce,
-    });
+    };
+    state.opLog.push(entry);
     this.consumeNonce(obligor, nameHex);
+    return copyOpEntry(entry);
   }
 
-  /** Transfer: holder-signed, moves units, touches no total. */
-  transfer(op: TransferOp, signature: Uint8Array): void {
+  /** Transfer: holder-signed, moves units, touches no total. Returns the log entry. */
+  transfer(op: TransferOp, signature: Uint8Array): OpLogEntry {
     const { state, nameHex } = this.resolve(op.backing);
     if (!isValidPublicKey(op.from)) {
       throw new LedgerError("from key is not a valid Ed25519 point");
@@ -147,19 +149,21 @@ export class TransparentLedger {
 
     this.debit(state, op.from, op.quantity);
     this.credit(state, op.to, op.quantity);
-    state.opLog.push({
+    const entry: OpLogEntry = {
       position: state.opLog.length,
       kind: "transfer",
       from: copyBytes(op.from),
       to: copyBytes(op.to),
       quantity: op.quantity,
       nonce: op.nonce,
-    });
+    };
+    state.opLog.push(entry);
     this.consumeNonce(op.from, nameHex);
+    return copyOpEntry(entry);
   }
 
-  /** Burn: holder-signed, the only operation that lowers outstanding. */
-  burn(op: BurnOp, signature: Uint8Array): void {
+  /** Burn: holder-signed, the only operation that lowers outstanding. Returns the log entry. */
+  burn(op: BurnOp, signature: Uint8Array): OpLogEntry {
     const { state, nameHex } = this.resolve(op.backing);
     if (!isValidPublicKey(op.holder)) {
       throw new LedgerError("holder key is not a valid Ed25519 point");
@@ -172,14 +176,16 @@ export class TransparentLedger {
 
     this.debit(state, op.holder, op.quantity);
     state.burned += op.quantity;
-    state.opLog.push({
+    const entry: OpLogEntry = {
       position: state.opLog.length,
       kind: "burn",
       holder: copyBytes(op.holder),
       quantity: op.quantity,
       nonce: op.nonce,
-    });
+    };
+    state.opLog.push(entry);
     this.consumeNonce(op.holder, nameHex);
+    return copyOpEntry(entry);
   }
 
   issued(backing: Backing): bigint {
