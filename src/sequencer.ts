@@ -32,15 +32,23 @@
 // EncodingError from the encoder. No layer re-checks or relabels another's
 // verdict.
 //
-// NOTE (later slices, see DECISIONS.md): recovery / snapshot redemption /
-// non-membership proofs (§C2b), silence and non-service grades, revocation,
+// **Coming back from silence.** §C2b: "a sequencer returning from silence adopts
+// every nullifier witnessed during the gap before co-signing again." Adoption is
+// enforced structurally rather than by a flag: `submit` adopts before it applies
+// anything, and `commit` before it snapshots, so there is no order of calls in
+// which this operator co-signs while ignoring what the venue witnessed without
+// it. Each adopted operation is judged at the index the VENUE stamped it with,
+// so adoption is reproducible by anyone holding the same record — the sequencer
+// asserts nothing about when.
+//
+// NOTE (later slices, see DECISIONS.md): non-service grades, revocation,
 // successor sequencers, dated instruments, multi-sequencer transfers, and
 // prepare–decide–commit (§C3's atomicity across operators) are out of scope.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { type Backing } from "./backing.js";
+import { makeBacking, type Backing } from "./backing.js";
 import { compareBytes, copyBytes } from "./bytes.js";
 import { signCommitment, stateRoot, type Commitment } from "./commitment.js";
 import {
@@ -56,7 +64,7 @@ import {
   type IssuanceOp,
   type TransferOp,
 } from "./messages.js";
-import { type OpLogEntry } from "./oplog.js";
+import { opHashOfEntry, type OpLogEntry, type PublishedOp } from "./oplog.js";
 import {
   encodeAcceptance,
   encodeDemand,
@@ -68,6 +76,7 @@ import {
   type WithdrawalOp,
 } from "./presentation.js";
 import { copyReceipt, signReceipt, type Receipt } from "./receipt.js";
+import { gapLegsFor } from "./recovery.js";
 import { Venue } from "./venue.js";
 
 /** This operator declines to serve you. */
@@ -79,6 +88,12 @@ export class Sequencer {
   // to make replays idempotent (invariant 26); a later slice prunes entries an
   // eventual commitment has finalized.
   private readonly receipts = new Map<string, Receipt>();
+
+  // Backing name hex -> this sequencer's own copy. Adoption needs the terms —
+  // the silence duration in E is what dates a gap — and `commit` needs to reach
+  // every backing it serves without the ledger handing out a Backing object,
+  // which would be handing out the obligor key that authorises issuance.
+  private readonly backings = new Map<string, Backing>();
 
   private readonly operatorSecret: Uint8Array;
   private readonly operatorKey: Uint8Array;
@@ -113,6 +128,48 @@ export class Sequencer {
       throw new SequencerError("this sequencer does not serve that backing");
     }
     this.ledger.register(backing, backingSignature);
+    this.backings.set(backing.nameHex, makeBacking(backing));
+  }
+
+  /**
+   * Take on everything the venue witnessed against this backing while this
+   * operator was dark (§C2b), in the order it was witnessed. Each operation is
+   * applied at the index the venue stamped it with, never at the index adoption
+   * happens to run at — a leg is judged by when it was published, and by the
+   * time a sequencer can adopt it the silence has ended by definition.
+   *
+   * A publication the law refuses is skipped rather than fatal: anyone may
+   * publish anything at the venue, so noise there is ordinary and must not stop
+   * this operator serving. Idempotent for the same reason a resubmission is —
+   * an operation already in the log fails on its own spent nonce.
+   */
+  adopt(backing: Backing): void {
+    this.requireServed(backing);
+    const served = this.backings.get(backing.nameHex) as Backing;
+    for (const witnessed of gapLegsFor(this.venue, served)) {
+      this.adoptOne(served, witnessed.op, witnessed.at);
+    }
+  }
+
+  /**
+   * One adopted operation, co-signed as if it had been submitted. The holder had
+   * to publish it at the venue because this operator was not there to take it,
+   * and invariant 26 does not care where a request arrived: it is an accepted
+   * operation, so it gets the receipt it would have got.
+   */
+  private adoptOne(backing: Backing, op: PublishedOp, at: bigint): void {
+    const key = bytesToHex(opHashOfEntry(backing.name, op));
+    if (this.receipts.has(key)) return;
+    let entry: OpLogEntry;
+    try {
+      entry = this.ledger.apply(backing, op, at);
+    } catch {
+      return;
+    }
+    this.receipts.set(
+      key,
+      signReceipt(this.operatorSecret, backing.name, opHashOfEntry(backing.name, op), BigInt(entry.position)),
+    );
   }
 
   submitIssue(op: IssuanceOp, signature: Uint8Array): Receipt {
@@ -184,6 +241,7 @@ export class Sequencer {
    * venue's record of this operator, so a failed publish does not burn one.
    */
   commit(): Commitment {
+    for (const backing of this.backings.values()) this.adopt(backing);
     const root = stateRoot(this.snapshot());
     const commitment = signCommitment(
       this.operatorSecret,
@@ -250,6 +308,10 @@ export class Sequencer {
    * nonce still succeeds.
    */
   private submit(backing: Backing, opMessage: Uint8Array, apply: () => OpLogEntry): Receipt {
+    // Before anything is co-signed, and before an idempotent replay is answered:
+    // what the venue witnessed during a gap comes first, or this operator would
+    // be serving a history the record has already moved past.
+    this.adopt(backing);
     const opHash = sha256(opMessage);
     const key = bytesToHex(opHash);
     const existing = this.receipts.get(key);
