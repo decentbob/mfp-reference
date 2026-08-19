@@ -1,5 +1,6 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
+import { EncodingError } from "../src/bytes.js";
 import { LedgerError, TransparentLedger } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { KEYS, register, SECRETS } from "./support.js";
@@ -86,12 +87,30 @@ describe("the law: nothing you hold leaves without your signature", () => {
     expect(ledger.balance(backing, KEYS.alice)).toBe(100n);
   });
 
-  it("a malformed holder key is a LedgerError, not an escaping EncodingError", () => {
+  it("a malformed signer key is an EncodingError, from the encoder that saw it", () => {
+    // The ledger used to pre-check signer keys and raise a LedgerError, which is
+    // the one thing CLAUDE.md's boundary rule forbids: "does not pre-check in
+    // order to relabel an error — give the lower layer a distinguishable error
+    // type instead." It also made the two entry points disagree, since the
+    // sequencer encodes first and so always surfaced the encoder's refusal.
+    // Either way the key moves nothing and nothing crashes.
     const { ledger, backing } = ledgerWithAliceHolding100();
     const shortKey = new Uint8Array(31);
     const badTransfer = { backing, from: shortKey, to: KEYS.bob, quantity: 1n, nonce: 0n };
-    expect(() => ledger.transfer(badTransfer, new Uint8Array(64))).toThrow(LedgerError);
+    expect(() => ledger.transfer(badTransfer, new Uint8Array(64))).toThrow(EncodingError);
     const badBurn = { backing, holder: shortKey, quantity: 1n, nonce: 0n };
-    expect(() => ledger.burn(badBurn, new Uint8Array(64))).toThrow(LedgerError);
+    expect(() => ledger.burn(badBurn, new Uint8Array(64))).toThrow(EncodingError);
+    expect(ledger.balance(backing, KEYS.alice)).toBe(100n);
+  });
+
+  it("a key that signs nothing is still checked, because nothing else sees it", () => {
+    // A recipient or a destination is not a signer, so no signature proves it is
+    // a real point, and a balance under an invalid point is unspendable garbage.
+    const { ledger, backing } = ledgerWithAliceHolding100();
+    const dead = new Uint8Array(32).fill(0x04);
+    const op = { backing, from: KEYS.alice, to: dead, quantity: 1n, nonce: 0n };
+    expect(() => ledger.transfer(op, ed25519.sign(encodeTransfer(op), SECRETS.alice))).toThrow(
+      /not a valid Ed25519 point/,
+    );
   });
 });

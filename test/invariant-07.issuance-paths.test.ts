@@ -77,7 +77,7 @@ describe("invariant 7: issuance and movement are separate paths", () => {
 
     expect(ledger.opLog(backing).map((e) => e.kind)).toEqual(["issue", "transfer", "burn"]);
     // Issuance is logged in the open with quantity and recipient (§C1).
-    const log = ledger.issuanceLog(backing);
+    const log = ledger.opLog(backing).filter((entry) => entry.kind === "issue");
     expect(log.length).toBe(1);
     expect(log[0]?.quantity).toBe(100n);
     expect(log[0]?.recipient).toEqual(KEYS.alice);

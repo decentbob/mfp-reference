@@ -11,7 +11,7 @@ import {
   encodeWithdrawal,
 } from "../src/presentation.js";
 import { receiptProvenBy, verifyReceipt } from "../src/receipt.js";
-import { replayLog } from "../src/oplog.js";
+import { replayLog } from "../src/ledger.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
 import { Venue } from "../src/venue.js";
 import { advanceWitnessedIndex, KEYS, makeTransparentBacking, SECRETS } from "./support.js";
@@ -225,7 +225,7 @@ describe("invariant 26: a presentation receipt proves against committed state", 
     advanceWitnessedIndex(f.venue, 11n);
     const { receipt } = withdraw(f, hash);
     const snapshot = f.sequencer.snapshot()[0]!;
-    expect(replayLog(f.backing, snapshot.opLog)!.demands).toHaveLength(0);
+    expect([...replayLog(f.backing, snapshot.opLog)!.demands.values()]).toHaveLength(0);
     expect(receiptProvenBy(receipt, snapshot)).toBe(true);
   });
 
@@ -235,7 +235,7 @@ describe("invariant 26: a presentation receipt proves against committed state", 
     accept(f, hash);
     release(f, hash);
     const snapshot = f.sequencer.snapshot()[0]!;
-    expect(replayLog(f.backing, snapshot.opLog)!.demands).toHaveLength(0);
+    expect([...replayLog(f.backing, snapshot.opLog)!.demands.values()]).toHaveLength(0);
     const logged = snapshot.opLog.find((entry) => entry.kind === "demand");
     expect(logged).toMatchObject({ quantity: 40n, instant: 5n, deadline: 10n });
   });
