@@ -5,7 +5,7 @@ import { signBacking, type Backing } from "../src/backing.js";
 import { compareBytes } from "../src/bytes.js";
 import { equivocatingSigner, isDoubleAcceptance, isDoublePosition } from "../src/fault.js";
 import { encodeIssuanceMessage, encodeTransferMessage } from "../src/messages.js";
-import { type PublishedOp } from "../src/oplog.js";
+import { opHashOfEntry, type PublishedOp } from "../src/oplog.js";
 import { encodeDemandMessage, encodeReleaseMessage } from "../src/presentation.js";
 import { receiptCovers, signReceipt, type Receipt } from "../src/receipt.js";
 import { Sequencer } from "../src/sequencer.js";
@@ -213,7 +213,7 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
     // backing, one position, two operation hashes.
     const { a, b } = splitBrain();
     expect(a.receipt.position).toBe(b.receipt.position);
-    expect(isDoublePosition(a.receipt, b.receipt)).toBe(true);
+    expect(isDoublePosition(backing, a.receipt, b.receipt)).toBe(true);
   });
 
   it("refuses a receipt paired with an operation it does not cover", () => {
@@ -222,11 +222,62 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
     expect(isDoubleAcceptance(backing, { op: b.op, receipt: a.receipt }, b)).toBe(false);
   });
 
+  it("refuses receipts the operator issued on another backing", () => {
+    // One operator serves many backings (§C2), and an operation object carries
+    // no backing name — the name comes from whoever encodes it. So a receipt
+    // from a DIFFERENT backing covers the operation just as well, and pairing
+    // one with an equivocation here accuses an operator that did nothing.
+    const venue = new Venue();
+    const server = new Sequencer(SECRETS.operator, venue);
+    const other = makeTransparentBacking(SECRETS.backer, "USD");
+    for (const b of [backing, other]) {
+      server.register(b, signBacking(SECRETS.backer, b));
+      server.submitIssue(
+        { backing: b, recipient: KEYS.alice, quantity: 100n, nonce: 0n },
+        ed25519.sign(encodeIssuanceMessage(b.name, KEYS.alice, 100n, 0n), SECRETS.backer),
+      );
+    }
+    const alice2 = pub(new Uint8Array(32).fill(0x09));
+    // Alice equivocates on `backing`; the operator correctly takes only one.
+    const toBob = op("transfer", SECRETS.alice, backing, { to: KEYS.bob, nonce: 0n });
+    const toAlice2 = op("transfer", SECRETS.alice, backing, { to: alice2, nonce: 0n });
+    const here = server.submitTransfer(
+      { backing, from: KEYS.alice, to: KEYS.bob, quantity: 100n, nonce: 0n },
+      ed25519.sign(encodeTransferMessage(backing.name, KEYS.alice, KEYS.bob, 100n, 0n), SECRETS.alice),
+    );
+    // And makes an ordinary, honest payment on the other backing.
+    const elsewhere = server.submitTransfer(
+      { backing: other, from: KEYS.alice, to: alice2, quantity: 100n, nonce: 0n },
+      ed25519.sign(encodeTransferMessage(other.name, KEYS.alice, alice2, 100n, 0n), SECRETS.alice),
+    );
+
+    expect(equivocatingSigner(backing, toBob, toAlice2)).toBeDefined();
+    expect(
+      isDoubleAcceptance(backing, { op: toBob, receipt: here }, { op: toAlice2, receipt: elsewhere }),
+    ).toBe(false);
+  });
+
+  it("refuses receipts signed by a key E does not name as the operator", () => {
+    // "The operator is at fault" is what a caller reads off these, so the key
+    // has to be the one the backing declares. A stranger co-signing both halves
+    // of a real equivocation has framed nobody but themselves, and must not
+    // read as a fault against the operator of this backing.
+    const alice2 = pub(new Uint8Array(32).fill(0x09));
+    const a = op("transfer", SECRETS.alice, backing, { to: KEYS.bob, nonce: 0n });
+    const b = op("transfer", SECRETS.alice, backing, { to: alice2, nonce: 0n });
+    const ra = signReceipt(SECRETS.mallory, backing.name, opHashOfEntry(backing.name, a), 1n);
+    const rb = signReceipt(SECRETS.mallory, backing.name, opHashOfEntry(backing.name, b), 1n);
+
+    expect(equivocatingSigner(backing, a, b)).toBeDefined();
+    expect(isDoubleAcceptance(backing, { op: a, receipt: ra }, { op: b, receipt: rb })).toBe(false);
+    expect(isDoublePosition(backing, ra, rb)).toBe(false);
+  });
+
   it("refuses two receipts by different operators", () => {
     const { a, b } = splitBrain();
     const stranger = signReceipt(SECRETS.mallory, backing.name, b.receipt.opHash, b.receipt.position);
     expect(isDoubleAcceptance(backing, a, { op: b.op, receipt: stranger })).toBe(false);
-    expect(isDoublePosition(a.receipt, stranger)).toBe(false);
+    expect(isDoublePosition(backing, a.receipt, stranger)).toBe(false);
   });
 
   it("refuses operations that are not an equivocation", () => {
@@ -248,28 +299,28 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
     const a = { op: issueOp(backing, KEYS.alice, 100n, 0n), receipt: first };
     const b = { op: op("transfer", SECRETS.alice, backing, { to: KEYS.bob, quantity: 30n, nonce: 0n }), receipt: second };
     expect(isDoubleAcceptance(backing, a, b)).toBe(false);
-    expect(isDoublePosition(a.receipt, b.receipt)).toBe(false);
+    expect(isDoublePosition(backing, a.receipt, b.receipt)).toBe(false);
   });
 
   it("refuses a receipt whose signature does not verify", () => {
     const { a, b } = splitBrain();
     const torn: Receipt = { ...b.receipt, signature: new Uint8Array(64) };
     expect(isDoubleAcceptance(backing, a, { op: b.op, receipt: torn })).toBe(false);
-    expect(isDoublePosition(a.receipt, torn)).toBe(false);
+    expect(isDoublePosition(backing, a.receipt, torn)).toBe(false);
   });
 
   it("refuses one receipt exhibited against itself", () => {
     const { a } = splitBrain();
     expect(isDoubleAcceptance(backing, a, { ...a })).toBe(false);
-    expect(isDoublePosition(a.receipt, { ...a.receipt })).toBe(false);
+    expect(isDoublePosition(backing, a.receipt, { ...a.receipt })).toBe(false);
   });
 
   it("never throws on malformed receipts", () => {
     const { a, b } = splitBrain();
     const broken: Receipt = { ...b.receipt, opHash: new Uint8Array(2) };
     expect(() => isDoubleAcceptance(backing, a, { op: b.op, receipt: broken })).not.toThrow();
-    expect(() => isDoublePosition(a.receipt, broken)).not.toThrow();
-    expect(isDoublePosition(a.receipt, broken)).toBe(false);
+    expect(() => isDoublePosition(backing, a.receipt, broken)).not.toThrow();
+    expect(isDoublePosition(backing, a.receipt, broken)).toBe(false);
   });
 });
 
@@ -287,30 +338,33 @@ describe("a receipt covers exactly one operation", () => {
 
   it("holds for the operation the sequencer accepted", () => {
     const { receipt, op: accepted_ } = accepted();
-    expect(receiptCovers(accepted_, receipt)).toBe(true);
+    expect(receiptCovers(backing.name, accepted_, receipt)).toBe(true);
   });
 
   it("fails for a different operation", () => {
     const { receipt } = accepted();
-    expect(receiptCovers(issueOp(backing, KEYS.bob, 100n, 0n), receipt)).toBe(false);
+    expect(receiptCovers(backing.name, issueOp(backing, KEYS.bob, 100n, 0n), receipt)).toBe(false);
   });
 
   it("fails where the receipt names another backing", () => {
     const { receipt, op: accepted_ } = accepted();
     const other = makeTransparentBacking(SECRETS.backer, "USD");
     const elsewhere = signReceipt(SECRETS.operator, other.name, receipt.opHash, receipt.position);
-    expect(receiptCovers(accepted_, elsewhere)).toBe(false);
+    expect(receiptCovers(backing.name, accepted_, elsewhere)).toBe(false);
+    // And the operation it really does cover is still refused against the
+    // backing the caller asked about.
+    expect(receiptCovers(other.name, accepted_, elsewhere)).toBe(false);
   });
 
   it("fails on an invalid operator signature", () => {
     const { receipt, op: accepted_ } = accepted();
-    expect(receiptCovers(accepted_, { ...receipt, signature: new Uint8Array(64) })).toBe(false);
+    expect(receiptCovers(backing.name, accepted_, { ...receipt, signature: new Uint8Array(64) })).toBe(false);
   });
 
   it("never throws on malformed input", () => {
     const { receipt } = accepted();
     const broken = { ...receipt, backingName: new Uint8Array(1) };
-    expect(() => receiptCovers(issueOp(backing, KEYS.alice, 100n, 0n), broken)).not.toThrow();
-    expect(receiptCovers(issueOp(backing, KEYS.alice, 100n, 0n), broken)).toBe(false);
+    expect(() => receiptCovers(backing.name, issueOp(backing, KEYS.alice, 100n, 0n), broken)).not.toThrow();
+    expect(receiptCovers(backing.name, issueOp(backing, KEYS.alice, 100n, 0n), broken)).toBe(false);
   });
 });

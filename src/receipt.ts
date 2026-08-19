@@ -100,10 +100,21 @@ export function verifyReceipt(receipt: Receipt): boolean {
  * A verifier: the receipt and the operation both come from whoever exhibits
  * them, so anything malformed is a pairing that does not hold.
  */
-export function receiptCovers(op: PublishedOp, receipt: Receipt): boolean {
+export function receiptCovers(
+  backingName: Uint8Array,
+  op: PublishedOp,
+  receipt: Receipt,
+): boolean {
   try {
     if (!verifyReceipt(receipt)) return false;
-    return compareBytes(opHashOfEntry(receipt.backingName, op), receipt.opHash) === 0;
+    // The backing is the caller's to name, not the receipt's to assert. An
+    // operation carries no backing name — the name comes from whoever encodes
+    // it — so taking it from the receipt would let a receipt issued on ANOTHER
+    // backing cover this operation perfectly, and one operator commonly serves
+    // many (§C2). It is a parameter for the same reason it is one on
+    // opMessageOfEntry: the binding is structural rather than remembered.
+    if (compareBytes(receipt.backingName, backingName) !== 0) return false;
+    return compareBytes(opHashOfEntry(backingName, op), receipt.opHash) === 0;
   } catch {
     return false;
   }

@@ -112,10 +112,17 @@ export function equivocatingSigner(
 export function isDoubleAcceptance(backing: Backing, a: AcceptedOp, b: AcceptedOp): boolean {
   try {
     if (equivocatingSigner(backing, a.op, b.op) === undefined) return false;
-    if (compareBytes(a.receipt.operator, b.receipt.operator) !== 0) return false;
-    // Each receipt has to cover the operation it is exhibited with, or an
-    // accuser pins any operator's signature to any operation it likes.
-    return receiptCovers(a.op, a.receipt) && receiptCovers(b.op, b.receipt);
+    if (!isTheOperator(backing, a.receipt)) return false;
+    if (!isTheOperator(backing, b.receipt)) return false;
+    // Each receipt has to cover the operation it is exhibited with, ON THIS
+    // BACKING, or an accuser pins any operator's signature to any operation it
+    // likes — including a receipt the operator issued perfectly correctly
+    // somewhere else, since one operator serves many backings and an operation
+    // object carries no backing name.
+    return (
+      receiptCovers(backing.name, a.op, a.receipt) &&
+      receiptCovers(backing.name, b.op, b.receipt)
+    );
   } catch {
     return false;
   }
@@ -129,19 +136,39 @@ export function isDoubleAcceptance(backing: Backing, a: AcceptedOp, b: AcceptedO
  * operation to its committed position", §C2).
  *
  * Needs no operations at all: the receipts alone carry backing, position and
- * operation hash, and the operator signed over all three.
+ * operation hash, and the operator signed over all three. The backing is passed
+ * so that the claim is about THIS backing's declared operator rather than about
+ * whichever key the receipts happen to name.
  */
-export function isDoublePosition(a: Receipt, b: Receipt): boolean {
+export function isDoublePosition(backing: Backing, a: Receipt, b: Receipt): boolean {
   try {
     return (
-      compareBytes(a.operator, b.operator) === 0 &&
-      compareBytes(a.backingName, b.backingName) === 0 &&
+      isTheOperator(backing, a) &&
+      isTheOperator(backing, b) &&
       a.position === b.position &&
-      compareBytes(a.opHash, b.opHash) !== 0 &&
-      verifyReceipt(a) &&
-      verifyReceipt(b)
+      compareBytes(a.opHash, b.opHash) !== 0
     );
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether this receipt is a valid co-signature by the key **E names as this
+ * backing's operator**, over this backing.
+ *
+ * Both halves matter and neither is enough. Without the backing name, a receipt
+ * the operator issued perfectly correctly on another backing covers an
+ * operation here, since an operation carries no name of its own. Without the
+ * operator key, a stranger signs both halves of somebody's real equivocation
+ * and it reads as a fault by the operator of this backing — which is what a
+ * caller takes these predicates to mean, and under §C2's backer-run default
+ * names the party that owes the money.
+ */
+function isTheOperator(backing: Backing, receipt: Receipt): boolean {
+  return (
+    compareBytes(receipt.backingName, backing.name) === 0 &&
+    compareBytes(receipt.operator, backing.evidence.operator) === 0 &&
+    verifyReceipt(receipt)
+  );
 }

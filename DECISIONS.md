@@ -117,6 +117,36 @@ declining to sign"), with invariant 22 losing its singular "this backing's
 operator" as well. Making it work means a consensus protocol between them, at
 which point they are one logical sequencer with extra round trips.
 
+**Found by `/code-review high`, and both the same shape - a proof that names
+the wrong party:**
+
+- **A receipt from another backing covered the operation.** `isDoubleAcceptance`
+  derived the operations' messages from its `backing` argument while
+  `receiptCovers` derived its own from `receipt.backingName`, and nothing checked
+  the two agreed. An operation object carries no backing name, so a receipt the
+  operator had issued perfectly correctly on a second backing - and one operator
+  serves many (§C2) - covered the operation here exactly. Demonstrated in
+  `review-false-accusation.mjs`: an honest operator proved at fault for something
+  it did not do. The backing is now a parameter of `receiptCovers`, as it already
+  is of `opMessageOfEntry`, so the binding is structural rather than remembered.
+- **The split lost a compile-time guarantee.** `signerOf` had been exhaustive
+  over the seven kinds and returned `Uint8Array`, so a missing case was a compile
+  error. `signerFromTerms` returns `Uint8Array | undefined`, which absorbs a
+  missing case silently - the new kind would compile and be refused at runtime
+  for no visible reason. Confirmed by deleting a case and watching it build. A
+  `never` assertion after the switch puts the error back at the place that has to
+  decide.
+
+**And two more found reviewing those fixes, which is six rounds out of six, and
+again the recurring shape: the fix bound one input and left the adjacent one
+open.** Binding the backing NAME left the operator IDENTITY unbound, so a
+stranger who signs receipts over both halves of somebody's real equivocation read
+as a fault by *this backing's* operator - which is what a caller takes the
+predicate to mean, and under backer-run names the party that owes the money.
+`isTheOperator` now asks both questions in one place, and `isDoublePosition`
+takes the backing for the same reason rather than trusting whichever key its
+receipts happen to name.
+
 **Spec change:** none needed. The wording fix from slice 8 is filed as
 money-from-first-principles#1.
 

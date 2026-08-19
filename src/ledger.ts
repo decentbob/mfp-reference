@@ -234,15 +234,28 @@ export function signerFromTerms(backing: Backing, entry: PublishedOp): Uint8Arra
     case "withdrawal":
       return undefined;
   }
+  // Exhaustive, and asserted rather than assumed: the return type admits
+  // undefined, so a kind added to PublishedOp and forgotten here would compile
+  // and then be refused at runtime for no visible reason. This line makes it a
+  // compile error at the place that has to decide.
+  const unreachable: never = entry;
+  return unreachable;
 }
 
-/** Who the law requires to have signed, reading the state where it must. */
+/**
+ * Who the law requires to have signed, reading the state where it must. Only a
+ * release and a withdrawal need it, and they are narrowed by kind rather than
+ * cast: a cast would compile for an eighth operation kind that had no demand to
+ * read, and `standingDemand` would then throw a TypeError where every caller of
+ * applyEntry expects a LedgerError.
+ */
 function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uint8Array {
+  if (entry.kind === "release" || entry.kind === "withdrawal") {
+    return standingDemand(state, entry.demandHash).holder;
+  }
   const fromTerms = signerFromTerms(backing, entry);
-  if (fromTerms !== undefined) return fromTerms;
-  // Only a release or a withdrawal reaches here, and both name a demand.
-  const demandHash = (entry as { demandHash: Uint8Array }).demandHash;
-  return standingDemand(state, demandHash).holder;
+  if (fromTerms === undefined) throw new LedgerError("no signer for this operation");
+  return fromTerms;
 }
 
 const SIGNATURE_REFUSAL: Record<PublishedOp["kind"], string> = {
