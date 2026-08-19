@@ -127,6 +127,12 @@ one open:
   reconsidered: whoever was quickest decided who was paid. Folded in sequence
   order now, with the witnessed index settling the case it is actually for, which
   is two requests at one nonce - the claimant equivocating, earliest wins.
+- And reviewing *that*: a transfer the claimant makes to **herself** moves
+  nothing, but folded it consumed the contested nonce, so every genuine request
+  behind it found that nonce spent. One free signature shut the window against
+  the party it exists for - and the claimant knows about her own double-spend
+  before her payee does, so she is always first. A request that pays the
+  claimant is no evidence that anything was spent, and no longer folds.
 
 **Consequences.** `OpLogEntry` is now `PublishedOp & { position }`: an operation
 and where it landed, separated because §C2b needs the operation before it has a
@@ -145,6 +151,16 @@ judges neither beyond refusing bytes that do not encode.
 - **The residue.** A request for more than was claimed redirects only what the
   redemption pays, so a payee owed more than the claim is short the difference,
   and the claim layer cannot make it up because the request's nonce is spent.
+- **A claimant with an accomplice still picks which of her own two signatures
+  counts**, by publishing a transfer to the accomplice at the contested nonce
+  before the honest payee reaches the venue. The redemption then pays the
+  accomplice, and the honest payee finds the nonce spent. That is not a defect in
+  the implementation of §C2b's rule but the reach of the rule itself: where a
+  double-signature is resolved by publication order, the party who signed both
+  knows first. It costs the claimant an accomplice they must trust, where the
+  self-transfer above cost nothing, and closing it properly needs evidence of
+  which signature the operator actually served - which is what the operator went
+  dark holding.
 - **`snapshotRedemptions` stops resolving once the operator has adopted and
   committed the legs**, because they are then in the log and the ordinary
   presentation record covers them. The redemption is still a fact; it is the

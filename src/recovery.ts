@@ -423,7 +423,18 @@ function paymentsFor(
  */
 function inSequenceOrder(requests: readonly WitnessedOp[], holder: Uint8Array): WitnessedOp[] {
   return requests
-    .filter((w) => w.op.kind === "transfer" && compareBytes(w.op.from, holder) === 0)
+    .filter(
+      (w) =>
+        w.op.kind === "transfer" &&
+        compareBytes(w.op.from, holder) === 0 &&
+        // A request that pays the claimant moved nothing away from them, so it
+        // is no evidence that anything was spent. Folded, it would consume the
+        // contested nonce and leave every genuine request behind it finding
+        // that nonce spent — and the claimant knows about their own
+        // double-spend before their payee does, so they can always be first.
+        // One free signature to shut the window against the party it is for.
+        compareBytes(w.op.to, holder) !== 0,
+    )
     .sort((a, b) => {
       if (a.op.nonce !== b.op.nonce) return a.op.nonce < b.op.nonce ? -1 : 1;
       return a.at < b.at ? -1 : a.at > b.at ? 1 : 0;

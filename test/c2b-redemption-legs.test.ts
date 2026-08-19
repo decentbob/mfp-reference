@@ -550,6 +550,24 @@ describe("§C2b: the challenge window substitutes the payee, and voids nothing",
     expect(compareBytes(redemption.payments[2]!.payee, KEYS.alice)).toBe(0);
   });
 
+  it("cannot be shut by the claimant publishing a request to themselves", () => {
+    // Alice knows about her own double-spend before her payee does, so she can
+    // always reach the venue first. A transfer to herself moves nothing and is
+    // no evidence of a spend, but folded it consumes the contested nonce and
+    // every genuine request behind it finds that nonce spent — the claimant
+    // shutting the window against the party it exists for, for free.
+    const { venue, sequencer, backing } = setup();
+    const served = goDark(venue, sequencer);
+    redeemAtVenue(venue, backing);
+    publishAt(venue, 14n, backing, transfer(backing, SECRETS.alice, KEYS.alice, KEYS.alice, 100n, 0n));
+    publishAt(venue, 15n, backing, challengeOf(backing, 100n));
+
+    const redemption = snapshotRedemptions(venue, backing, served)[0]!;
+    expect(redemption.payments).toHaveLength(1);
+    expect(compareBytes(redemption.payments[0]!.payee, KEYS.bob)).toBe(0);
+    expect(redemption.payments[0]!.quantity).toBe(100n);
+  });
+
   it("hears the claimant's spends in sequence order, however they were published", () => {
     // Publication order across DIFFERENT nonces is whoever got to the venue
     // first, and must not decide who is paid. Only two requests at ONE nonce
