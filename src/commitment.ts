@@ -32,7 +32,7 @@ import {
 } from "./bytes.js";
 import { COMMITMENT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
-import type { BackingSnapshot, OpLogEntry } from "./ledger.js";
+import type { BackingSnapshot, DemandRecord, OpLogEntry } from "./ledger.js";
 
 export type { BackingSnapshot } from "./ledger.js";
 
@@ -88,6 +88,29 @@ function writeOpEntry(w: ByteWriter, entry: OpLogEntry, index: number): void {
   w.u64(entry.nonce);
 }
 
+/**
+ * The demand's own fields, not the hash it declares. Committing a
+ * self-declared identity would commit nothing: an operator could publish a
+ * genuine hash beside a different quantity and the state would still verify.
+ * Committing the fields commits the hash too, since the hash is derived from
+ * them - and a verifier can recompute it, which is the point.
+ */
+function writeDemand(w: ByteWriter, record: DemandRecord): void {
+  w.key32(record.holder, "holder key");
+  writeAmount(w, record.quantity, "demand quantity");
+  w.u64(record.instant);
+  w.u64(record.deadline);
+  w.u64(record.nonce);
+  // A presence byte, then the value only when present: unambiguous, because
+  // the byte decides whether the next eight belong to this field.
+  if (record.acceptedDeadline === undefined) {
+    w.u8(0);
+  } else {
+    w.u8(1);
+    w.u64(record.acceptedDeadline);
+  }
+}
+
 function encodeSnapshot(snapshot: BackingSnapshot): Uint8Array {
   const w = new ByteWriter();
   w.key32(snapshot.name, "backing name");
@@ -109,6 +132,23 @@ function encodeSnapshot(snapshot: BackingSnapshot): Uint8Array {
   }
   w.u32(snapshot.opLog.length);
   snapshot.opLog.forEach((entry, i) => writeOpEntry(w, entry, i));
+  // Invariant 23: the commitment commits to the standing demand record too,
+  // so a holder can prove their claims are committed against payment.
+  // Ordered by (holder, nonce): both are committed fields and the pair is
+  // unique per demand, so the order is a function of the committed data rather
+  // than of anything the operator declares separately.
+  const demands = [...snapshot.demands].sort(
+    (a, b) => compareBytes(a.holder, b.holder) || (a.nonce < b.nonce ? -1 : a.nonce > b.nonce ? 1 : 0),
+  );
+  for (let i = 1; i < demands.length; i++) {
+    const previous = demands[i - 1] as DemandRecord;
+    const current = demands[i] as DemandRecord;
+    if (compareBytes(previous.holder, current.holder) === 0 && previous.nonce === current.nonce) {
+      throw new EncodingError("duplicate demand in state");
+    }
+  }
+  w.u32(demands.length);
+  for (const record of demands) writeDemand(w, record);
   return w.finish();
 }
 

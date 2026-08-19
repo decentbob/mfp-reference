@@ -1,4 +1,5 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 import { signBacking } from "../src/backing.js";
 import {
@@ -126,6 +127,7 @@ describe("invariant 22: the state root is injective", () => {
         burned: 0n,
         balances: [],
         opLog: [{ position: 0, kind: "transfer" as const, from, to, quantity: 7n, nonce: 0n }],
+        demands: [],
       },
     ];
     expect(() => stateRoot(state(bytes.slice(0, 32), bytes.slice(32)))).not.toThrow();
@@ -135,12 +137,12 @@ describe("invariant 22: the state root is injective", () => {
   it("rejects an over-long balance key that would swallow later fields", () => {
     const long = new Uint8Array(87).fill(0xbb);
     expect(() =>
-      stateRoot([{ name, issued: 5n, burned: 0n, balances: [[long, 0n]], opLog: [] }]),
+      stateRoot([{ name, issued: 5n, burned: 0n, balances: [[long, 0n]], opLog: [], demands: [] }]),
     ).toThrow(EncodingError);
   });
 
   it("rejects two snapshots for one backing", () => {
-    const one = { name, issued: 0n, burned: 0n, balances: [], opLog: [] };
+    const one = { name, issued: 0n, burned: 0n, balances: [], opLog: [], demands: [] };
     expect(() => stateRoot([one, one])).toThrow(EncodingError);
   });
 });
@@ -164,13 +166,14 @@ describe("verifiers return false on hostile input, never throw", () => {
       burned: 0n,
       balances: [],
       opLog: [{ position: 1.5, kind: "burn" as const, holder: name, quantity: 1n, nonce: 0n }],
+      demands: [],
     };
     const receipt = { backingName: name, opHash: name, position: 0n, operator: name, signature: sig };
     expect(receiptProvenBy(receipt, hostile)).toBe(false);
   });
 
   it("a negative served amount fails the commitment check instead of crashing", () => {
-    const bad = [{ name, issued: -1n, burned: 0n, balances: [], opLog: [] }];
+    const bad = [{ name, issued: -1n, burned: 0n, balances: [], opLog: [], demands: [] }];
     expect(stateProvesCommitment(bad, { index: 0n, root: name, operator: name, signature: sig })).toBe(false);
   });
 });
@@ -188,7 +191,7 @@ describe("invariant 22: committed state has exactly one meaning", () => {
     // signature, and no second root exists to prove a fault.
     expect(() =>
       stateRoot([
-        { name, issued: 100n, burned: 0n, balances: [[holder, 100n], [holder, 0n]], opLog: [] },
+        { name, issued: 100n, burned: 0n, balances: [[holder, 100n], [holder, 0n]], opLog: [], demands: [] },
       ]),
     ).toThrow(EncodingError);
   });
@@ -204,7 +207,7 @@ describe("invariant 22: committed state has exactly one meaning", () => {
       nonce: 0n,
     });
     expect(() =>
-      stateRoot([{ name, issued: 2n, burned: 2n, balances: [], opLog: [entry(0), entry(5)] }]),
+      stateRoot([{ name, issued: 2n, burned: 2n, balances: [], opLog: [entry(0), entry(5)] , demands: [] }]),
     ).toThrow(EncodingError);
   });
 
@@ -213,7 +216,7 @@ describe("invariant 22: committed state has exactly one meaning", () => {
     // proof" into a hang.
     const started = Date.now();
     expect(
-      stateProvesCommitment([{ name, issued: 1n << 200000n, burned: 0n, balances: [], opLog: [] }], {
+      stateProvesCommitment([{ name, issued: 1n << 200000n, burned: 0n, balances: [], opLog: [], demands: [] }], {
         index: 0n,
         root: name,
         operator: name,
@@ -221,5 +224,77 @@ describe("invariant 22: committed state has exactly one meaning", () => {
       }),
     ).toBe(false);
     expect(Date.now() - started).toBeLessThan(1000);
+  });
+});
+
+describe("a hostile standing demand record fails the proof, never throws", () => {
+  const name = new Uint8Array(32).fill(0x01);
+  const base = { name, issued: 0n, burned: 0n, balances: [], opLog: [] };
+  const commitment = {
+    index: 0n,
+    root: name,
+    operator: name,
+    signature: new Uint8Array(64),
+  };
+  const demand = (over: Record<string, unknown>) => [
+    {
+      ...base,
+      demands: [
+        {
+          hash: name,
+          holder: name,
+          quantity: 1n,
+          instant: 0n,
+          deadline: 0n,
+          nonce: 0n,
+          acceptedDeadline: undefined,
+          ...over,
+        },
+      ],
+    },
+  ];
+
+  it("rejects malformed demand fields at the encoder", () => {
+    expect(() => stateRoot(demand({ holder: new Uint8Array(31) }))).toThrow(EncodingError);
+    expect(() => stateRoot(demand({ quantity: -5n }))).toThrow(EncodingError);
+    expect(() => stateRoot(demand({ deadline: -1n }))).toThrow(EncodingError);
+    expect(() => stateRoot(demand({ nonce: -1n }))).toThrow(EncodingError);
+  });
+
+  it("does not commit the self-declared hash, so it cannot be lied about", () => {
+    // The hash is derived from the committed fields. Committing it instead
+    // would let an operator publish a genuine hash beside a false quantity.
+    const a = demand({ hash: new Uint8Array(32).fill(0xaa) });
+    const b = demand({ hash: new Uint8Array(32).fill(0xbb) });
+    expect(bytesToHex(stateRoot(a))).toBe(bytesToHex(stateRoot(b)));
+    // The fields themselves still move it.
+    expect(bytesToHex(stateRoot(demand({ quantity: 2n })))).not.toBe(bytesToHex(stateRoot(a)));
+  });
+
+  it("rejects one demand appearing twice", () => {
+    expect(() =>
+      stateRoot([
+        {
+          ...base,
+          demands: [
+            { hash: name, holder: name, quantity: 1n, instant: 0n, deadline: 0n, nonce: 0n, acceptedDeadline: undefined },
+            { hash: name, holder: name, quantity: 2n, instant: 0n, deadline: 0n, nonce: 0n, acceptedDeadline: undefined },
+          ],
+        },
+      ]),
+    ).toThrow(EncodingError);
+  });
+
+  it("the verifier returns false rather than propagating the throw", () => {
+    expect(stateProvesCommitment(demand({ quantity: -5n }), commitment)).toBe(false);
+    expect(stateProvesCommitment(demand({ nonce: -1n }), commitment)).toBe(false);
+  });
+
+  it("an unanswered demand does not encode like one accepted at index 0", () => {
+    // The presence byte must actually separate the two, or a backer could be
+    // shown as having answered when it has not.
+    expect(bytesToHex(stateRoot(demand({ acceptedDeadline: undefined })))).not.toBe(
+      bytesToHex(stateRoot(demand({ acceptedDeadline: 0n }))),
+    );
   });
 });
