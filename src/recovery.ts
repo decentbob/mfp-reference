@@ -38,11 +38,13 @@
 
 import { type Backing } from "./backing.js";
 import { compareBytes, isValidQuantity } from "./bytes.js";
+import { entriesAreAuthentic, foldBalances } from "./oplog.js";
 import {
   stateProvesCommitment,
   type BackingSnapshot,
   type Commitment,
 } from "./commitment.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { Venue } from "./venue.js";
 
 /** A served state and the commitment it must prove against — what a holder is handed. */
@@ -74,14 +76,50 @@ export function isSilent(venue: Venue, backing: Backing): boolean {
 }
 
 /**
+ * The one check on served state, and what everything else here rests on: it is
+ * the state this backing's operator committed to, its balances follow from its
+ * own operation log, and every operation in that log carries the signature that
+ * authorised it.
+ *
+ * Three properties because an operator can lie in three places, and closing any
+ * two leaves the third open. Committed-but-inconsistent is the sweep: reassign
+ * the balances and conservation still passes, because nothing was destroyed.
+ * Consistent-but-unauthorised is the fabricated append: add the transfers you
+ * want, and the fold agrees with them. Both were demonstrated before this slice.
+ *
+ * A verifier: the state comes from an operator with a motive, so any malformed
+ * field is a failed check rather than a crash.
+ */
+export function stateIsAuthentic(backing: Backing, served: ServedState): boolean {
+  try {
+    const operator = backing.evidence.operator;
+    // Signed by the operator E names — anyone can sign a valid commitment over
+    // any state they like, and a stranger's says nothing about this backing.
+    if (compareBytes(served.commitment.operator, operator) !== 0) return false;
+    if (!stateProvesCommitment(served.snapshots, served.commitment)) return false;
+
+    const snapshot = served.snapshots.find((s) => compareBytes(s.name, backing.name) === 0);
+    if (snapshot === undefined) return false;
+    if (!entriesAreAuthentic(backing, snapshot.opLog)) return false;
+
+    const folded = foldBalances(backing, snapshot.opLog);
+    if (folded.size !== snapshot.balances.length) return false;
+    for (const [key, units] of snapshot.balances) {
+      if (folded.get(bytesToHex(key)) !== units) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether the served state proves this holder held at least `quantity` of this
  * backing as of the operator's LAST witnessed commitment.
  *
  * "Last" is load-bearing rather than decorative: against an older commitment a
  * holder who has since spent the units would still prove the state that shows
- * them. And the commitment must be signed by the operator E names — anyone can
- * sign a valid commitment over any state they like, and a stranger's proves
- * nothing about this backing.
+ * them.
  *
  * It answers the holding, not the policy: whether a standing demand on the same
  * units blocks redemption is a question for the redemption legs, where the
@@ -96,13 +134,11 @@ export function provesHolding(
 ): boolean {
   try {
     if (!isValidQuantity(quantity)) return false;
-    const operator = backing.evidence.operator;
-    if (compareBytes(served.commitment.operator, operator) !== 0) return false;
-    const latest = venue.latestFor(operator);
+    if (!stateIsAuthentic(backing, served)) return false;
+    const latest = venue.latestFor(backing.evidence.operator);
     if (latest === undefined) return false;
     if (latest.sequence !== served.commitment.sequence) return false;
     if (compareBytes(latest.root, served.commitment.root) !== 0) return false;
-    if (!stateProvesCommitment(served.snapshots, served.commitment)) return false;
 
     const snapshot = served.snapshots.find((s) => compareBytes(s.name, backing.name) === 0);
     if (snapshot === undefined) return false;

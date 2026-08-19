@@ -17,6 +17,10 @@
 // backer, who is then simply their holder, and only an explicit burn lowers the
 // count.
 //
+// Every logged operation carries the signature that authorised it, so a served
+// state can be checked for authenticity and not only for consistency (oplog.ts).
+// The signature is stored beside the entry, not inside its canonical bytes.
+//
 // Every operation is atomic: all checks run before any mutation, so it either
 // fully applies or throws with no state change. Every operation — the three that
 // move value and the four of presentation — appends exactly one entry to the
@@ -230,6 +234,7 @@ export class TransparentLedger {
       recipient: copyBytes(op.recipient),
       quantity: op.quantity,
       nonce: op.nonce,
+      signature: copyBytes(signature),
     });
   }
 
@@ -260,6 +265,7 @@ export class TransparentLedger {
       to: copyBytes(op.to),
       quantity: op.quantity,
       nonce: op.nonce,
+      signature: copyBytes(signature),
     });
   }
 
@@ -283,6 +289,7 @@ export class TransparentLedger {
       holder: copyBytes(op.holder),
       quantity: op.quantity,
       nonce: op.nonce,
+      signature: copyBytes(signature),
     });
   }
 
@@ -332,6 +339,7 @@ export class TransparentLedger {
       instant: op.instant,
       deadline: op.deadline,
       nonce: op.nonce,
+      signature: copyBytes(signature),
     });
   }
 
@@ -375,6 +383,7 @@ export class TransparentLedger {
       instant: op.instant,
       deadline: op.deadline,
       nonce: op.nonce,
+      signature: copyBytes(signature),
     });
   }
 
@@ -417,6 +426,7 @@ export class TransparentLedger {
       kind: "release",
       demandHash: copyBytes(record.hash),
       nonce: op.nonce,
+      signature: copyBytes(signature),
     });
   }
 
@@ -444,6 +454,7 @@ export class TransparentLedger {
       kind: "withdrawal",
       demandHash: copyBytes(record.hash),
       nonce: op.nonce,
+      signature: copyBytes(signature),
     });
   }
 
