@@ -41,7 +41,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { type Backing } from "./backing.js";
-import { compareBytes } from "./bytes.js";
+import { compareBytes, copyBytes } from "./bytes.js";
 import { signCommitment, stateRoot, type Commitment } from "./commitment.js";
 import { isValidPublicKey } from "./keys.js";
 import {
@@ -81,13 +81,22 @@ export class Sequencer {
   // eventual commitment has finalized.
   private readonly receipts = new Map<string, Receipt>();
 
-  readonly operator: Uint8Array;
+  private readonly operatorKey: Uint8Array;
 
   constructor(
     private readonly operatorSecret: Uint8Array,
     private readonly venue: Venue,
   ) {
-    this.operator = ed25519.getPublicKey(operatorSecret);
+    this.operatorKey = ed25519.getPublicKey(operatorSecret);
+  }
+
+  /**
+   * This operator's verification key, as a copy. A public Uint8Array field would
+   * be a write path into the key this sequencer routes and commits by — and
+   * `readonly` is erased at runtime, so it is no boundary at all.
+   */
+  get operator(): Uint8Array {
+    return copyBytes(this.operatorKey);
   }
 
   /**
@@ -99,7 +108,7 @@ export class Sequencer {
     if (!isValidPublicKey(backing.evidence.operator)) {
       throw new SequencerError("backing operator key is not a valid Ed25519 point");
     }
-    if (compareBytes(backing.evidence.operator, this.operator) !== 0) {
+    if (compareBytes(backing.evidence.operator, this.operatorKey) !== 0) {
       throw new SequencerError("this sequencer does not serve that backing");
     }
     this.ledger.register(backing, backingSignature);
@@ -171,7 +180,7 @@ export class Sequencer {
     const root = stateRoot(this.snapshot());
     const commitment = signCommitment(
       this.operatorSecret,
-      this.venue.nextSequenceFor(this.operator),
+      this.venue.nextSequenceFor(this.operatorKey),
       root,
     );
     this.venue.publish(commitment);

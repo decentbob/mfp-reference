@@ -5,6 +5,8 @@ import { NonceError, TransparentLedger } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { makeTransparentBacking, KEYS, register, SECRETS } from "./support.js";
 import { signBacking } from "../src/backing.js";
+import { Sequencer } from "../src/sequencer.js";
+import { Venue } from "../src/venue.js";
 
 // Invariant 8: no clawback, no reversal, no privileged party who can move
 // claims. The rule is not "don't call it" — the path must not exist. These
@@ -93,6 +95,23 @@ describe("invariant 8: accessors expose no mutation path into ledger state", () 
     expect(ledger.opLog(backing).length).toBe(1);
     expect(ledger.issuanceLog(backing)[0]!.recipient).toEqual(KEYS.alice);
     expect(ledger.outstanding(backing)).toBe(100n);
+  });
+
+  it("mutating the key from Sequencer.operator cannot derail the operator", () => {
+    // The rule is absolute: no accessor hands out a write path into state. A
+    // public Uint8Array field is one, even where the blast radius is only the
+    // operator's own service.
+    const venue = new Venue();
+    const sequencer = new Sequencer(SECRETS.operator, venue);
+    const backing = makeTransparentBacking(SECRETS.backer);
+    sequencer.register(backing, signBacking(SECRETS.backer, backing));
+    sequencer.commit();
+
+    sequencer.operator.fill(0xff);
+    expect(sequencer.operator).toEqual(KEYS.operator);
+    // Still routes and still commits, on the next sequence.
+    expect(sequencer.commit().sequence).toBe(1n);
+    expect(venue.nextSequenceFor(KEYS.operator)).toBe(2n);
   });
 
   it("mutating a registered backing's key bytes does not re-home its state", () => {
