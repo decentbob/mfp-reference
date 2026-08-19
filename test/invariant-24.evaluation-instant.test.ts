@@ -21,8 +21,8 @@ import {
 //
 // Slice 4 enforced only the agreement half, because the ledger has no clock and
 // witnessed indices come from the operator's commitments at the venue. The
-// sequencer now supplies the index from its own latest published commitment, so
-// the "no later than the latest witnessed index" half is enforced too.
+// sequencer now supplies the index from the venue, so the "no later than the
+// latest witnessed index" half is enforced too.
 //
 // One check covers both signatures: the demand's instant is pinned to a
 // witnessed index at filing, and the acceptance must repeat that exact value,
@@ -35,8 +35,8 @@ function sequencerAt(index: bigint) {
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
   const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
   sequencer.submitIssue(issue, ed25519.sign(encodeIssuance(issue), SECRETS.backer));
-  advanceWitnessedIndex(sequencer, index);
-  return { sequencer, backing };
+  advanceWitnessedIndex(venue, index);
+  return { sequencer, backing, venue };
 }
 
 describe("invariant 24: the instant is no later than the latest witnessed index", () => {
@@ -73,8 +73,8 @@ describe("invariant 24: the instant is no later than the latest witnessed index"
     expect(sequencer.openDemands(backing)).toHaveLength(0);
   });
 
-  it("the same instant becomes fileable once the operator has published further", () => {
-    const { sequencer, backing } = sequencerAt(5n);
+  it("the same instant becomes fileable once the venue has moved on", () => {
+    const { sequencer, backing, venue } = sequencerAt(5n);
     const op = {
       backing,
       holder: KEYS.alice,
@@ -85,7 +85,7 @@ describe("invariant 24: the instant is no later than the latest witnessed index"
     };
     const signature = ed25519.sign(encodeDemand(op), SECRETS.alice);
     expect(() => sequencer.submitDemand(op, signature)).toThrow(LedgerError);
-    advanceWitnessedIndex(sequencer, 6n);
+    advanceWitnessedIndex(venue, 6n);
     expect(sequencer.submitDemand(op, signature).position).toBe(1n);
   });
 

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { makeBacking, signBacking } from "../src/backing.js";
 import { LedgerError, NonceError } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
-import { receiptProvenBy, verifyReceipt } from "../src/receipt.js";
+import { receiptProvenBy, signReceipt, verifyReceipt } from "../src/receipt.js";
 import { EncodingError } from "../src/bytes.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
 import { Venue } from "../src/venue.js";
@@ -89,6 +89,35 @@ describe("invariant 26: a repeated request returns the identical prior response"
     const { sequencer, backing } = setup();
     const zeroQuantity = { backing, from: KEYS.alice, to: KEYS.bob, quantity: 0n, nonce: 0n };
     expect(() => sequencer.submitTransfer(zeroQuantity, new Uint8Array(64))).toThrow(EncodingError);
+  });
+
+  it("a mutated receipt cannot poison the sequencer's stored answer", () => {
+    // "The identical prior response" has to survive whoever held the first one.
+    // The store hands out copies, so a receipt nobody can trust cannot be
+    // installed as the answer to everyone else's replay.
+    const { sequencer, backing } = setup();
+    const move = { backing, from: KEYS.alice, to: KEYS.bob, quantity: 30n, nonce: 0n };
+    const signature = ed25519.sign(encodeTransfer(move), SECRETS.alice);
+    const first = sequencer.submitTransfer(move, signature);
+    first.signature.fill(0);
+    first.backingName.fill(0);
+    first.opHash.fill(0);
+
+    const replayed = sequencer.submitTransfer(move, signature);
+    expect(verifyReceipt(replayed)).toBe(true);
+    expect(replayed.backingName).toEqual(backing.name);
+    expect(receiptProvenBy(replayed, sequencer.snapshot()[0]!)).toBe(true);
+  });
+
+  it("signReceipt owns the bytes it signs over", () => {
+    // Handed backing.name and an op hash; storing either by reference would let
+    // the caller rewrite what the operator co-signed.
+    const name = new Uint8Array(32).fill(0x01);
+    const opHash = new Uint8Array(32).fill(0x02);
+    const receipt = signReceipt(SECRETS.operator, name, opHash, 3n);
+    name.fill(0xff);
+    opHash.fill(0xff);
+    expect(verifyReceipt(receipt)).toBe(true);
   });
 
   it("a receipt is proven by the committed state at its position", () => {

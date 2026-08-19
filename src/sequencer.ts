@@ -17,10 +17,9 @@
 //     state, so a third party can verify state without trusting the
 //     operator's live word;
 //   - a witnessed clock: presentation (§C3) turns on indices, and invariant 21
-//     forbids a time a party asserts alone, so the index comes from this
-//     operator's own latest published commitment at the venue. Before it has
-//     published anything it has no clock, and declines to serve an operation
-//     that needs one.
+//     forbids a time a party asserts alone, so the index comes from the venue —
+//     which advances whether or not this operator publishes, so a sequencer
+//     cannot freeze a deadline by going quiet.
 //
 // One venue per sequencer, taken at construction. The spec names the venue in E
 // beside the operator; E carries only the operator key here, so one venue for
@@ -42,7 +41,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { type Backing } from "./backing.js";
-import { compareBytes } from "./bytes.js";
+import { compareBytes, copyBytes } from "./bytes.js";
 import { signCommitment, stateRoot, type Commitment } from "./commitment.js";
 import { isValidPublicKey } from "./keys.js";
 import {
@@ -69,7 +68,7 @@ import {
   type ReleaseOp,
   type WithdrawalOp,
 } from "./presentation.js";
-import { signReceipt, type Receipt } from "./receipt.js";
+import { copyReceipt, signReceipt, type Receipt } from "./receipt.js";
 import { Venue } from "./venue.js";
 
 /** This operator declines to serve you. */
@@ -82,13 +81,25 @@ export class Sequencer {
   // eventual commitment has finalized.
   private readonly receipts = new Map<string, Receipt>();
 
-  readonly operator: Uint8Array;
+  private readonly operatorSecret: Uint8Array;
+  private readonly operatorKey: Uint8Array;
 
-  constructor(
-    private readonly operatorSecret: Uint8Array,
-    private readonly venue: Venue,
-  ) {
-    this.operator = ed25519.getPublicKey(operatorSecret);
+  constructor(operatorSecret: Uint8Array, private readonly venue: Venue) {
+    // The sequencer's own copy of both halves of its identity. Retaining the
+    // caller's secret array would let a later mutation split signing from
+    // routing: it would keep serving as the operator E names while co-signing as
+    // another, so its declared identity would read as having gone quiet.
+    this.operatorSecret = copyBytes(operatorSecret);
+    this.operatorKey = ed25519.getPublicKey(this.operatorSecret);
+  }
+
+  /**
+   * This operator's verification key, as a copy. A public Uint8Array field would
+   * be a write path into the key this sequencer routes and commits by — and
+   * `readonly` is erased at runtime, so it is no boundary at all.
+   */
+  get operator(): Uint8Array {
+    return copyBytes(this.operatorKey);
   }
 
   /**
@@ -100,7 +111,7 @@ export class Sequencer {
     if (!isValidPublicKey(backing.evidence.operator)) {
       throw new SequencerError("backing operator key is not a valid Ed25519 point");
     }
-    if (compareBytes(backing.evidence.operator, this.operator) !== 0) {
+    if (compareBytes(backing.evidence.operator, this.operatorKey) !== 0) {
       throw new SequencerError("this sequencer does not serve that backing");
     }
     this.ledger.register(backing, backingSignature);
@@ -172,7 +183,7 @@ export class Sequencer {
     const root = stateRoot(this.snapshot());
     const commitment = signCommitment(
       this.operatorSecret,
-      this.venue.nextIndexFor(this.operator),
+      this.venue.nextSequenceFor(this.operatorKey),
       root,
     );
     this.venue.publish(commitment);
@@ -180,17 +191,13 @@ export class Sequencer {
   }
 
   /**
-   * The index every time-dependent decision is read at: this operator's latest
-   * published commitment (§C2b, "Finality means witnessed rather than
-   * co-signed"). An operator that has published nothing has no witnessed time,
-   * and says so rather than substituting a number of its own.
+   * The index every time-dependent decision is read at: the venue's, never this
+   * operator's own publication history. "Finality means witnessed rather than
+   * co-signed" (§C2b) — and a clock an operator could stop by going quiet would
+   * hand it every deadline in its book.
    */
   witnessedIndex(): bigint {
-    const latest = this.venue.latestFor(this.operator);
-    if (latest === undefined) {
-      throw new SequencerError("no witnessed index yet: publish a commitment first");
-    }
-    return latest.index;
+    return this.venue.witnessedIndex();
   }
 
   /** The served state, as it would be published for a verifier (invariant 23). */
@@ -236,11 +243,14 @@ export class Sequencer {
     const opHash = sha256(opMessage);
     const key = bytesToHex(opHash);
     const existing = this.receipts.get(key);
-    if (existing !== undefined) return existing;
+    // A copy on both paths: the stored receipt is the operator's record of what
+    // it co-signed, and a caller that could reach into it would decide what
+    // every later replay is answered with.
+    if (existing !== undefined) return copyReceipt(existing);
 
     const entry = apply();
     const receipt = signReceipt(this.operatorSecret, backing.name, opHash, BigInt(entry.position));
     this.receipts.set(key, receipt);
-    return receipt;
+    return copyReceipt(receipt);
   }
 }

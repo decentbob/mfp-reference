@@ -5,6 +5,8 @@ import { NonceError, TransparentLedger } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { makeTransparentBacking, KEYS, register, SECRETS } from "./support.js";
 import { signBacking } from "../src/backing.js";
+import { Sequencer } from "../src/sequencer.js";
+import { Venue } from "../src/venue.js";
 
 // Invariant 8: no clawback, no reversal, no privileged party who can move
 // claims. The rule is not "don't call it" — the path must not exist. These
@@ -93,6 +95,40 @@ describe("invariant 8: accessors expose no mutation path into ledger state", () 
     expect(ledger.opLog(backing).length).toBe(1);
     expect(ledger.issuanceLog(backing)[0]!.recipient).toEqual(KEYS.alice);
     expect(ledger.outstanding(backing)).toBe(100n);
+  });
+
+  it("mutating the key from Sequencer.operator cannot derail the operator", () => {
+    // The rule is absolute: no accessor hands out a write path into state. A
+    // public Uint8Array field is one, even where the blast radius is only the
+    // operator's own service.
+    const venue = new Venue();
+    const sequencer = new Sequencer(SECRETS.operator, venue);
+    const backing = makeTransparentBacking(SECRETS.backer);
+    sequencer.register(backing, signBacking(SECRETS.backer, backing));
+    sequencer.commit();
+
+    sequencer.operator.fill(0xff);
+    expect(sequencer.operator).toEqual(KEYS.operator);
+    // Still routes and still commits, on the next sequence.
+    expect(sequencer.commit().sequence).toBe(1n);
+    expect(venue.nextSequenceFor(KEYS.operator)).toBe(2n);
+  });
+
+  it("mutating the secret handed to a Sequencer cannot split its identity", () => {
+    // Retained by reference, this one fails silently rather than loudly: the
+    // sequencer keeps routing as the operator E names while signing as another,
+    // so its declared identity reads as having gone quiet.
+    const secret = new Uint8Array(32).fill(0x07);
+    const venue = new Venue();
+    const sequencer = new Sequencer(secret, venue);
+    const backing = makeTransparentBacking(SECRETS.backer);
+    sequencer.register(backing, signBacking(SECRETS.backer, backing));
+    sequencer.commit();
+
+    secret.fill(0x09);
+    const next = sequencer.commit();
+    expect(next.operator).toEqual(KEYS.operator);
+    expect(venue.latestFor(KEYS.operator)?.sequence).toBe(1n);
   });
 
   it("mutating a registered backing's key bytes does not re-home its state", () => {

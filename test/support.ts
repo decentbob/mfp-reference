@@ -6,7 +6,7 @@ import {
   type RelianceEntry,
 } from "../src/backing.js";
 import { TransparentLedger } from "../src/ledger.js";
-import { Sequencer } from "../src/sequencer.js";
+import { Venue } from "../src/venue.js";
 
 // Shared fixtures for the claim-layer tests. Every key is a real Ed25519
 // point (makeBacking and the ledger reject anything else), and each role has
@@ -64,12 +64,11 @@ export function register(
 }
 
 /**
- * Publish commitments until this operator's latest witnessed index is `to`.
- * The witnessed index is the operator's own commitment index at the venue, so
- * the only way to move the clock is to publish — one commitment per declared
- * interval, which is exactly §C2's model.
+ * Move the venue's clock to witnessed index `to`. The clock belongs to the venue
+ * and advances whether or not any operator publishes, so nothing here needs a
+ * commitment — which is the whole point (see invariant-21.witnessed-time).
  */
-export function advanceWitnessedIndex(sequencer: Sequencer, to: bigint): void {
-  let published = sequencer.commit();
-  while (published.index < to) published = sequencer.commit();
+export function advanceWitnessedIndex(venue: Venue, to: bigint): void {
+  const now = venue.witnessedIndex();
+  if (to > now) venue.advance(to - now);
 }
