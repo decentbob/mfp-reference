@@ -400,6 +400,19 @@ describe("§C3: an acceptance cannot launder the backer's own failure", () => {
     }
   });
 
+  it("no acceptance an operator can serve hides a dishonour past the deadline", () => {
+    // The committed record bounds acceptedDeadline by the demand's own deadline
+    // (commitment.ts), so every record a verifier can be handed reports the
+    // dishonour past that deadline — including one an operator invented rather
+    // than the backer signing. That is what makes the one bound sufficient.
+    const { ledger, backing } = setup();
+    present(ledger, backing, 80n, 10n);
+    const record = ledger.openDemands(backing)[0]!;
+    for (const acceptedDeadline of [undefined, 0n, 5n, 10n]) {
+      expect(isDishonoured({ ...record, acceptedDeadline }, 11n)).toBe(true);
+    }
+  });
+
   it("exactly one exit is open at every index", () => {
     // Release and withdrawal are complements on one predicate, so the holder
     // always has exactly one way out and never two or none.

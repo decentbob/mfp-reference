@@ -92,6 +92,19 @@ function writeOpEntry(w: ByteWriter, name: Uint8Array, entry: OpLogEntry, index:
  * the point.
  */
 function writeDemand(w: ByteWriter, name: Uint8Array, record: DemandRecord): void {
+  // An answer may not outlast the demand's own deadline — the range `accept`
+  // enforces. This is not a second mechanism for that rule but the same rule
+  // applied to the other input: served state may come from a hostile operator
+  // rather than from this ledger, so the encoder is what defines which states
+  // are canonical, exactly as it does for op-log positions. Unbounded, an
+  // operator (frequently the backer, §C3) could serve a demand as answered with
+  // no acceptance signature anywhere and isDishonoured — which reads the
+  // committed record — would report the backer's failure as an answer forever.
+  // Bounded, every servable record reports the dishonour past the demand's
+  // deadline, because past it the answer cannot still be live.
+  if (record.acceptedDeadline !== undefined && record.acceptedDeadline > record.deadline) {
+    throw new EncodingError("accepted deadline outlasts the demand's own deadline");
+  }
   w.lengthPrefixed(
     encodeDemandMessage(
       name,

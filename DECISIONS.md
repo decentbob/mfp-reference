@@ -105,6 +105,36 @@ fix, both approved for fixing here:**
   withdrawal are complements on one predicate: exactly one exit is open at every
   index, which is now a test rather than an argument.
 
+**Found by the review of this slice, and fixed here:** the ledger enforced
+`acceptedDeadline <= demand.deadline`, but the commitment encoder did not, so an
+operator could serve a demand record the ledger could never have produced. A
+working exploit rooted a snapshot with `acceptedDeadline: 1_000_000` on a demand
+whose deadline was 10: it verified against its own commitment, the demand hash
+still recomputed from the committed fields, and `isDishonoured` returned false
+forever - the laundering hole again, reached through served state instead of
+through a signature, by the party §C3 names as the likely operator ("the
+backing's own sequencer is frequently the backer"). `writeDemand` now rejects it.
+
+This is not a second mechanism for one rule but the same rule applied to the
+other input: served state may come from a hostile operator rather than from this
+ledger, so the encoder is what decides which states are canonical - the same
+reason the op-log position is pinned to its index and a duplicate holder in
+balances is refused. One bound is enough: past the demand's own deadline no
+in-range answer can still be live, so every state an operator *can* serve reports
+the dishonour. Demonstrated by re-running the exploit across every servable
+value.
+
+**Known and not closed here: the operation log commits operations without the
+signatures that authorised them.** Committed state proves the operator accepted
+an operation, never that the named party authorised it, so an operator can
+fabricate an acceptance, release or withdrawal entry outright. With the bound
+above this can no longer hide a dishonour, and it is not new - slice 3 committed
+issue/transfer/burn the same way - but presentation makes it worth stating,
+because an acceptance is evidence *about the backer*. What remains is what
+§C2b's recovery path answers: a published spend record checked against the last
+committed balance state, and non-membership proofs over the spent set. A later
+slice should not assume the committed trail is self-authenticating.
+
 **Deferred, unchanged from slice 4:** prepare-decide-commit and the
 cross-operator decision venue (needs multi-sequencer); chain-asset legs and
 escrow; a payout paying in claims, settling as a swap inside the settlement

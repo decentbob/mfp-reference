@@ -204,6 +204,37 @@ describe("invariant 22: committed state has exactly one meaning", () => {
     ).toThrow(EncodingError);
   });
 
+  it("rejects an accepted deadline the law could not have produced", () => {
+    // `accept` enforces acceptedDeadline <= the demand's own deadline. A record
+    // outside that range is state the ledger cannot reach, and isDishonoured
+    // reads the committed record — so an operator (frequently the backer) could
+    // otherwise serve a demand as answered forever with no acceptance signature
+    // anywhere. The encoder defines canonical committed state independently of
+    // who produced it, exactly as it does for op-log positions.
+    const state = (acceptedDeadline: bigint | undefined) => [
+      {
+        name,
+        issued: 1n,
+        burned: 0n,
+        balances: [],
+        opLog: [],
+        demands: [
+          { hash: name, holder, quantity: 1n, instant: 0n, deadline: 10n, nonce: 0n, acceptedDeadline },
+        ],
+      },
+    ];
+    expect(() => stateRoot(state(10n))).not.toThrow();
+    expect(() => stateRoot(state(11n))).toThrow(EncodingError);
+    expect(
+      stateProvesCommitment(state(1_000_000n), {
+        index: 0n,
+        root: name,
+        operator: name,
+        signature: new Uint8Array(64),
+      }),
+    ).toBe(false);
+  });
+
   it("rejects an oversized amount instead of grinding on it", () => {
     // Unbounded, an attacker-sized integer turns "a malformed state fails the
     // proof" into a hang.
