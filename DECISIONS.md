@@ -16,6 +16,110 @@ Format:
 
 ---
 
+## 2026-08-19 - Slice 7: committed state is self-authenticating
+
+**Question:** slice 6 left one open and named it must-settle: nothing tied
+committed balances to the committed operation log, so an operator could reassign
+a holding and `provesHolding` would believe it. Three candidates were on the
+table - fold the log into the balances, put the authorising signatures in the
+log, or have a redemption claim carry the claimant's own receipt chain. Which,
+and how far?
+
+**Decisions (Bob), each taken against a demonstrated attack rather than an
+argument:**
+
+- **Folding alone does not work, and receipt chains reduce to signatures.**
+  Requiring balances to equal the fold of the log was the obvious answer, and it
+  fails: the operator appends the transfers it wants and the fold agrees with
+  them, while earlier receipts still prove because their positions did not move.
+  Demonstrated. Receipt chains reduce to the same thing, because a holder cannot
+  prove the *absence* of a spend - the dispute only resolves when somebody
+  exhibits a signed operation. So the signature is the load-bearing piece, and
+  the fold is needed alongside it or the operator lies in the balances line while
+  keeping the log honest.
+
+- **Each logged operation carries the signature that authorised it, served
+  rather than committed.** The entry's canonical message is already inside the
+  root and only the true signer can produce a signature over it, so committing
+  the signature would add 64 bytes per entry without adding a property. It is
+  invariant 23's own arrangement: the commitment "does not contain any of them,
+  and anything checked against them has to be served". Committed bytes are
+  therefore unchanged by this slice.
+
+- **The signer comes from the terms and from the log, never from a field beside
+  the entry.** The obligor for an issuance and an acceptance; the entry's own key
+  for a transfer, burn or demand; and for a release or withdrawal the holder of
+  the demand it names - resolvable because **a demand's hash is exactly its
+  operation hash**, both being taken over the same canonical message. Nothing an
+  operator writes can nominate its own authority.
+
+- **Committed balances are kept and checked rather than dropped.** Verifying a
+  state recomputes the root, and that computation runs the check, so a verifier
+  that has verified the state can then read a balance directly instead of
+  folding again. Redundant, but checked, so it cannot lie.
+
+**Two more holes found by reviewing the fix, each the same shape - the fix
+bounded one input and left the adjacent one open:**
+
+- **A signature authorised unboundedly many operations.** Signature validity was
+  checked; single use was not. Alice signs one transfer of 30, the operator logs
+  it three times, and 90 units move - every check passing. The nonce inside the
+  signed message is what makes a signature single-use, so each signer is now held
+  to the sequence the ledger holds them to. That also rejects a log with a gap,
+  since an operation dropped from the middle leaves the next one at a nonce
+  nobody reached.
+
+- **A served log could describe a history the ledger itself refused.** Alice
+  files a demand and withdraws it; she had also signed a release the ledger
+  refused outright ("no such standing demand"), which a holder who signs a
+  release and a withdrawal in a race produces. The operator appends the refused
+  release and 40 units move. So the demand lifecycle is part of the walk: an
+  acceptance, release or withdrawal requires a demand standing at that point, and
+  the committed demand record must equal what the log leaves standing - the
+  sibling gap, since the demands set was no more tied to the log than the
+  balances were.
+
+  Scoped to the demand lifecycle rather than a full re-implementation of the law
+  in the verifier, because a second implementation that must stay in step with
+  the first is the shape slice 5 removed when two encoders had to agree. The
+  cleaner alternative - drive a real `TransparentLedger` and let the law replay
+  itself - is blocked by two things committed state does not carry: the backer's
+  signature over the backing, needed to register it, and the witnessed index each
+  operation was accepted at. Recorded as the shape to reach for if this needs
+  extending.
+
+- **Correction to my own scoping.** I justified "lifecycle only" by saying
+  balance rules were already covered, since a log implying a negative balance
+  cannot be committed. Wrong for the **lock**: a demand commits the units it
+  names, and a log that spends them leaves balances that are perfectly
+  non-negative. Demonstrated - Alice at zero with a demand for 100 still
+  standing, a demand no units back, which is exactly what a redemption leg reads.
+  The replay now reads the same spendable figure the ledger does, held minus
+  committed.
+
+**Consequences.** `entriesAreAuthentic` and `foldBalances` both tracked
+overlapping demand state and were replaced by one `replayLog`, which answers one
+question - could this log have happened, and what state does it leave - rather
+than two that had to agree. `stateIsAuthentic` composes it with the commitment
+check, and `provesHolding` runs through that, so slice 8's payment path is built
+on state that has been checked rather than merely verified.
+
+**The boundary, deliberately not crossed: the law's time-dependent rules are not
+replayed.** Whether an acceptance was still live when released against, whether a
+demand's deadline had passed when answered - the log does not record the
+witnessed index each operation was accepted at, so they cannot be checked from
+it. Closing that means recording an index per entry (operator-asserted, and so
+only as good as the operator unless it moves into the receipt, which is
+operator-signed). Slice 8 must decide whether its payment path needs it.
+
+**Cost, accepted:** `stateIsAuthentic` verifies every signature in the log, so
+checking a long-lived backing is linear in its whole history and re-checking on
+every commitment is quadratic. Inherent to "somebody has to serve the trail" and
+fine for a reference implementation; an incremental form would verify only from
+the last checked position.
+
+**Spec change:** none needed.
+
 ## 2026-08-19 - Slice 6: silence is a public fact, and the unspentness proof
 
 **Question:** §C2b's snapshot redemption opens on two conditions - the operator
@@ -90,8 +194,8 @@ hostile operator, so the encoder decides which states are canonical. Four
 synthetic fixtures asserted on states no ledger could produce and were repaired;
 two of them had been passing for the wrong reason.
 
-**Raised by the same review, open, and it must be settled in slice 7: nothing
-ties committed balances to the committed operation log.** Conservation closes
+**Raised by the same review, and settled in slice 7 (see the entry above):
+nothing tied committed balances to the committed operation log.** Conservation closes
 deletion and inflation, but not reassignment: an operator can serve a state
 identical to the honest one except that Alice's units are listed against Mallory,
 the totals still reconcile, and `provesHolding` returns true for Mallory.
