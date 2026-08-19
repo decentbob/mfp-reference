@@ -114,6 +114,23 @@ describe("invariant 8: accessors expose no mutation path into ledger state", () 
     expect(venue.nextSequenceFor(KEYS.operator)).toBe(2n);
   });
 
+  it("mutating the secret handed to a Sequencer cannot split its identity", () => {
+    // Retained by reference, this one fails silently rather than loudly: the
+    // sequencer keeps routing as the operator E names while signing as another,
+    // so its declared identity reads as having gone quiet.
+    const secret = new Uint8Array(32).fill(0x07);
+    const venue = new Venue();
+    const sequencer = new Sequencer(secret, venue);
+    const backing = makeTransparentBacking(SECRETS.backer);
+    sequencer.register(backing, signBacking(SECRETS.backer, backing));
+    sequencer.commit();
+
+    secret.fill(0x09);
+    const next = sequencer.commit();
+    expect(next.operator).toEqual(KEYS.operator);
+    expect(venue.latestFor(KEYS.operator)?.sequence).toBe(1n);
+  });
+
   it("mutating a registered backing's key bytes does not re-home its state", () => {
     const { ledger, backing } = setup();
     backing.obligor[0] = (backing.obligor[0] as number) ^ 0x01;

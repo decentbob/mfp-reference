@@ -81,13 +81,16 @@ export class Sequencer {
   // eventual commitment has finalized.
   private readonly receipts = new Map<string, Receipt>();
 
+  private readonly operatorSecret: Uint8Array;
   private readonly operatorKey: Uint8Array;
 
-  constructor(
-    private readonly operatorSecret: Uint8Array,
-    private readonly venue: Venue,
-  ) {
-    this.operatorKey = ed25519.getPublicKey(operatorSecret);
+  constructor(operatorSecret: Uint8Array, private readonly venue: Venue) {
+    // The sequencer's own copy of both halves of its identity. Retaining the
+    // caller's secret array would let a later mutation split signing from
+    // routing: it would keep serving as the operator E names while co-signing as
+    // another, so its declared identity would read as having gone quiet.
+    this.operatorSecret = copyBytes(operatorSecret);
+    this.operatorKey = ed25519.getPublicKey(this.operatorSecret);
   }
 
   /**

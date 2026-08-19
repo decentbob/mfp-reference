@@ -235,6 +235,12 @@ function commitmentMessage(sequence: bigint, root: Uint8Array): Uint8Array {
   return w.finish();
 }
 
+/**
+ * Sign a root as this operator's next commitment. Does not copy `root`, where
+ * signReceipt copies what it is handed: the difference is that the sequencer
+ * retains the receipts it issues, while a commitment is retained only by the
+ * venue, which copies on the way in. Nothing here holds the caller's array.
+ */
 export function signCommitment(
   operatorSecret: Uint8Array,
   sequence: bigint,
