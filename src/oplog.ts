@@ -48,10 +48,14 @@ import {
 import { sha256 } from "@noble/hashes/sha2.js";
 import { copyBytes } from "./bytes.js";
 
-/** One entry in a backing's operation log. `position` is the append index. */
-export type OpLogEntry =
+/**
+ * One operation, as its signer put a signature over it: the signed fields and
+ * that signature, and nothing about where it ended up. This is what a party
+ * hands a sequencer, and it is also what §C2b has a holder publish at the venue
+ * when the sequencer is dark — the same operation, put somewhere else.
+ */
+export type PublishedOp =
   | {
-      readonly position: number;
       readonly kind: "issue";
       readonly recipient: Uint8Array;
       readonly quantity: bigint;
@@ -59,7 +63,6 @@ export type OpLogEntry =
       readonly signature: Uint8Array;
     }
   | {
-      readonly position: number;
       readonly kind: "transfer";
       readonly from: Uint8Array;
       readonly to: Uint8Array;
@@ -68,7 +71,6 @@ export type OpLogEntry =
       readonly signature: Uint8Array;
     }
   | {
-      readonly position: number;
       readonly kind: "burn";
       readonly holder: Uint8Array;
       readonly quantity: bigint;
@@ -76,7 +78,6 @@ export type OpLogEntry =
       readonly signature: Uint8Array;
     }
   | {
-      readonly position: number;
       readonly kind: "demand";
       readonly holder: Uint8Array;
       readonly quantity: bigint;
@@ -86,7 +87,6 @@ export type OpLogEntry =
       readonly signature: Uint8Array;
     }
   | {
-      readonly position: number;
       readonly kind: "acceptance";
       readonly demandHash: Uint8Array;
       readonly instant: bigint;
@@ -95,14 +95,12 @@ export type OpLogEntry =
       readonly signature: Uint8Array;
     }
   | {
-      readonly position: number;
       readonly kind: "release";
       readonly demandHash: Uint8Array;
       readonly nonce: bigint;
       readonly signature: Uint8Array;
     }
   | {
-      readonly position: number;
       readonly kind: "withdrawal";
       readonly demandHash: Uint8Array;
       readonly nonce: bigint;
@@ -110,12 +108,20 @@ export type OpLogEntry =
     };
 
 /**
- * The canonical signed message of a logged operation. Throws EncodingError on a
+ * One entry in a backing's operation log: an operation, plus the append index
+ * it landed at. The position is the log's own bookkeeping and is in no signed
+ * message, which is what lets the same operation exist before it has a log to
+ * be in — the shape §C2b's venue publication needs.
+ */
+export type OpLogEntry = PublishedOp & { readonly position: number };
+
+/**
+ * The canonical signed message of an operation. Throws EncodingError on a
  * malformed entry — a served log may come from a hostile operator, so every
  * caller that reads adversary-supplied state treats a throw as a failed proof
  * (receiptProvenBy, stateProvesCommitment) rather than letting it escape.
  */
-export function opMessageOfEntry(backingName: Uint8Array, entry: OpLogEntry): Uint8Array {
+export function opMessageOfEntry(backingName: Uint8Array, entry: PublishedOp): Uint8Array {
   switch (entry.kind) {
     case "issue":
       return encodeIssuanceMessage(backingName, entry.recipient, entry.quantity, entry.nonce);
@@ -148,12 +154,12 @@ export function opMessageOfEntry(backingName: Uint8Array, entry: OpLogEntry): Ui
 }
 
 /** The operation hash a receipt is bound to: sha256 of the signed message. */
-export function opHashOfEntry(backingName: Uint8Array, entry: OpLogEntry): Uint8Array {
+export function opHashOfEntry(backingName: Uint8Array, entry: PublishedOp): Uint8Array {
   return sha256(opMessageOfEntry(backingName, entry));
 }
 
 /** A deep copy: no accessor hands out a write path into ledger state (inv 8). */
-export function copyOpEntry(entry: OpLogEntry): OpLogEntry {
+export function copyOp(entry: PublishedOp): PublishedOp {
   switch (entry.kind) {
     case "issue":
       return { ...entry, recipient: copyBytes(entry.recipient), signature: copyBytes(entry.signature) };
@@ -176,4 +182,9 @@ export function copyOpEntry(entry: OpLogEntry): OpLogEntry {
         signature: copyBytes(entry.signature),
       };
   }
+}
+
+/** The same copy, keeping the entry's place in the log. */
+export function copyOpEntry(entry: OpLogEntry): OpLogEntry {
+  return { ...copyOp(entry), position: entry.position };
 }

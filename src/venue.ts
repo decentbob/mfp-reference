@@ -30,9 +30,21 @@
 // must not be mistaken for the operator you are checking. The venue does not
 // judge equivocation; it records what was published, and isEquivocation
 // (commitment.ts) is what proves a fault against the record.
+//
+// **The venue records two kinds of thing.** Commitments, which operators
+// publish, and operations, which anyone may. §C2b sends the second here when a
+// sequencer goes dark: "a signed spend record published at the venue, checked
+// against the last committed balance state, stands in for the nullifier", and
+// the transfer request a challenger exhibits is published "where demands are".
+// The venue judges neither. It records what was published and the index it was
+// witnessed at, exactly as it does for a commitment — whether an operation had
+// any force is the law's question, answered by whoever reads (recovery.ts).
+// Refusing bytes that do not encode is the one thing it does judge, because an
+// entry with no canonical message is not a record of anything.
 
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { copyCommitment, verifyCommitment, type Commitment } from "./commitment.js";
+import { copyOp, opMessageOfEntry, type PublishedOp } from "./oplog.js";
 
 export class VenueError extends Error {}
 
@@ -42,11 +54,23 @@ interface Witnessed {
   readonly at: bigint;
 }
 
+/**
+ * An operation published at the venue, and the index the venue witnessed it at.
+ * That index is the clock the operation is judged against — the venue's word,
+ * never the publisher's, which is the whole reason it is worth publishing here.
+ */
+export interface WitnessedOp {
+  readonly op: PublishedOp;
+  readonly at: bigint;
+}
+
 export class Venue {
   /** The venue's own clock: the latest witnessed index (immediate finality). */
   private height = 0n;
   /** Operator hex -> that operator's commitments, in published order. */
   private readonly byOperator = new Map<string, Witnessed[]>();
+  /** Backing name hex -> operations published against it, in published order. */
+  private readonly opsByBacking = new Map<string, WitnessedOp[]>();
 
   /**
    * The latest witnessed index at this venue — the clock instants, deadlines and
@@ -93,31 +117,82 @@ export class Venue {
   }
 
   /**
-   * This operator's most recent commitment, as a copy, or undefined if it has
-   * none. A copy because one reader must not be able to poison the record for
-   * the next.
+   * Record an operation published against a backing. Anyone may publish, and
+   * the venue takes no view: a publication is not an accepted operation, and
+   * §C2b gives it force only where it was witnessed inside a gap in its
+   * operator's commitments — which recovery.ts decides, from this record.
+   *
+   * The one refusal is bytes that do not encode. An entry with no canonical
+   * message names no operation, so recording it would be recording nothing,
+   * and every reader would have to handle the throw instead.
    */
-  latestFor(operator: Uint8Array): Commitment | undefined {
-    const witnessed = this.latestWitnessedFor(operator);
+  publishOp(backingName: Uint8Array, op: PublishedOp): void {
+    try {
+      opMessageOfEntry(backingName, op);
+    } catch (cause) {
+      throw new VenueError(`published operation does not encode: ${String(cause)}`);
+    }
+    const key = bytesToHex(backingName);
+    // The venue's own copy, for the reason commitments are copied: the
+    // publisher keeps a reference to what it handed over.
+    const witnessed: WitnessedOp = { op: copyOp(op), at: this.height };
+    const log = this.opsByBacking.get(key);
+    if (log === undefined) this.opsByBacking.set(key, [witnessed]);
+    else log.push(witnessed);
+  }
+
+  /**
+   * Everything published against this backing, in the order the venue witnessed
+   * it, as copies. Order is the venue's contribution: "witnessing pins order"
+   * (§C2), which is what settles two conflicting requests at one nonce.
+   */
+  publishedOpsFor(backingName: Uint8Array): WitnessedOp[] {
+    const log = this.opsByBacking.get(bytesToHex(backingName)) ?? [];
+    return log.map((witnessed) => ({ op: copyOp(witnessed.op), at: witnessed.at }));
+  }
+
+  /**
+   * This operator's most recent commitment **as of** `asOf` (the present by
+   * default), as a copy, or undefined if it had none by then. A copy because one
+   * reader must not be able to poison the record for the next.
+   *
+   * The `asOf` form is what makes "the last witnessed snapshot" a stable fact:
+   * asked about the present, the answer changes the moment the operator
+   * publishes again, and an operator that would rather a redemption were not
+   * resolvable could make it so by publishing.
+   */
+  latestFor(operator: Uint8Array, asOf?: bigint): Commitment | undefined {
+    const witnessed = this.latestWitnessedFor(operator, asOf);
     return witnessed === undefined ? undefined : copyCommitment(witnessed.commitment);
   }
 
   /**
-   * The witnessed index this operator's latest commitment was published at, or
-   * undefined if it has none. "Witnessed at index i" is the spec's own notion —
-   * §C2b makes a revocation "effective for each backing at its witnessed index
-   * on that backing's declared venue" — and the height is the venue's word, not
-   * the operator's, which is the party that would want to misstate it. Subtract
-   * it from witnessedIndex() and you have how long this operator has been quiet,
-   * which is what §C2b's silence clause is measured on.
+   * The witnessed index of this operator's latest commitment **at or before**
+   * `asOf` (the present by default), or undefined if it had none by then.
+   * "Witnessed at index i" is the spec's own notion — §C2b makes a revocation
+   * "effective for each backing at its witnessed index on that backing's
+   * declared venue" — and the height is the venue's word, not the operator's,
+   * which is the party that would want to misstate it. Subtract it from an index
+   * and you have how long this operator had been quiet at that index, which is
+   * what §C2b's silence clause is measured on — now, for the grade, and at a
+   * past index, for whether a publication landed inside a gap.
    */
-  witnessedAtFor(operator: Uint8Array): bigint | undefined {
-    return this.latestWitnessedFor(operator)?.at;
+  witnessedAtFor(operator: Uint8Array, asOf?: bigint): bigint | undefined {
+    return this.latestWitnessedFor(operator, asOf)?.at;
   }
 
-  private latestWitnessedFor(operator: Uint8Array): Witnessed | undefined {
+  private latestWitnessedFor(operator: Uint8Array, asOf?: bigint): Witnessed | undefined {
     const log = this.byOperator.get(bytesToHex(operator));
-    return log?.[log.length - 1];
+    if (log === undefined) return undefined;
+    if (asOf === undefined) return log[log.length - 1];
+    // Published in witnessed order, so the last one at or before asOf is the
+    // latest. A linear walk from the end: the commitments a gap question reaches
+    // back over are the recent ones.
+    for (let i = log.length - 1; i >= 0; i--) {
+      const witnessed = log[i] as Witnessed;
+      if (witnessed.at <= asOf) return witnessed;
+    }
+    return undefined;
   }
 
   /**

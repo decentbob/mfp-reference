@@ -24,14 +24,15 @@
 // Every operation is atomic: all checks run before any mutation, so it either
 // fully applies or throws with no state change. Every operation — the three that
 // move value and the four of presentation — appends exactly one entry to the
-// operation log and consumes exactly one nonce, both in `append`, so there is
+// operation log and consumes exactly one nonce, both in `apply`, so there is
 // one place where an operation becomes a fact. A signer's nonce is per
 // (signer, backing).
 //
-// Operations whose outcome depends on time take the current witnessed index as
-// an argument. Invariant 21 forbids a time a party asserts alone, so the ledger
-// never reads a clock: the sequencer supplies the index from its own latest
-// published commitment at the venue.
+// Operations whose outcome depends on time take the witnessed index they are
+// judged against as an argument. Invariant 21 forbids a time a party asserts
+// alone, so the ledger never reads a clock: the sequencer supplies the venue's
+// latest index for an operation submitted to it, and the index the venue
+// stamped a publication with for one adopted out of a §C2b gap.
 //
 // NOTE (later slices, see DECISIONS.md): op-log positions are the ledger's own
 // per-backing append indices, a stand-in for witnessed interval time (§C2);
@@ -43,7 +44,13 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { makeBacking, verifyBackingSignature, type Backing } from "./backing.js";
 import { compareBytes, copyBytes, MAX_QUANTITY_EXCLUSIVE } from "./bytes.js";
 import { isValidPublicKey, verifySignatureStrict } from "./keys.js";
-import { copyOpEntry, opMessageOfEntry, type OpLogEntry } from "./oplog.js";
+import {
+  copyOp,
+  copyOpEntry,
+  opMessageOfEntry,
+  type OpLogEntry,
+  type PublishedOp,
+} from "./oplog.js";
 import type { AcceptanceOp, DemandOp, ReleaseOp, WithdrawalOp } from "./presentation.js";
 import type { BurnOp, IssuanceOp, TransferOp } from "./messages.js";
 
@@ -145,6 +152,22 @@ export function emptyState(): LedgerState {
   return { balances: new Map(), demands: new Map(), nonces: new Map(), issued: 0n, burned: 0n };
 }
 
+/**
+ * A state a caller can apply an entry to without disturbing the original —
+ * "would this operation have been accepted here?" asked without answering it.
+ * The demand records are copied because applyEntry replaces them wholesale on an
+ * acceptance rather than mutating one, but a caller may still read them after.
+ */
+export function copyState(state: LedgerState): LedgerState {
+  return {
+    balances: new Map(state.balances),
+    demands: new Map([...state.demands].map(([key, record]) => [key, copyDemand(record)])),
+    nonces: new Map(state.nonces),
+    issued: state.issued,
+    burned: state.burned,
+  };
+}
+
 function copyDemand(record: DemandRecord): DemandRecord {
   return { ...record, hash: copyBytes(record.hash), holder: copyBytes(record.holder) };
 }
@@ -187,7 +210,7 @@ function standingDemand(state: LedgerState, hash: Uint8Array): DemandRecord {
 }
 
 /** Who the law requires to have signed, from the terms and the state alone. */
-function signerOf(state: LedgerState, backing: Backing, entry: OpLogEntry): Uint8Array {
+function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uint8Array {
   switch (entry.kind) {
     case "issue":
     case "acceptance":
@@ -203,7 +226,7 @@ function signerOf(state: LedgerState, backing: Backing, entry: OpLogEntry): Uint
   }
 }
 
-const SIGNATURE_REFUSAL: Record<OpLogEntry["kind"], string> = {
+const SIGNATURE_REFUSAL: Record<PublishedOp["kind"], string> = {
   issue: "issuance signature invalid: only the obligor issues",
   transfer: "transfer signature invalid: only the holder moves a holding",
   burn: "burn signature invalid: only the holder burns a holding",
@@ -238,7 +261,7 @@ const ACCEPTANCE_WINDOW =
 export function applyEntry(
   state: LedgerState,
   backing: Backing,
-  entry: OpLogEntry,
+  entry: PublishedOp,
   clock: bigint | undefined,
 ): void {
   const signer = signerOf(state, backing, entry);
@@ -468,44 +491,41 @@ export class TransparentLedger {
     return this.states.has(backing.nameHex);
   }
 
+  /**
+   * Apply one signed operation under the law and log it, at the witnessed index
+   * it is judged against (undefined where no rule reads one). **The one door**:
+   * the named methods below are adapters onto it, and §C2b's adoption of an
+   * operation published at the venue comes through it too, carrying the index
+   * the venue stamped that publication with.
+   *
+   * Public without weakening invariant 8: a caller may name any operation it
+   * likes, and applyEntry still demands the signature of the party the law
+   * names. What that invariant forbids is a path that moves claims WITHOUT one.
+   */
+  apply(backing: Backing, op: PublishedOp, atWitnessedIndex: bigint | undefined): OpLogEntry {
+    const held = this.stateOf(backing);
+    const entry = { ...copyOp(op), position: held.opLog.length };
+    applyEntry(held.state, held.backing, entry, atWitnessedIndex);
+    held.opLog.push(entry);
+    return copyOpEntry(entry);
+  }
+
   /** Issuance: backer-signed, raises issued and the recipient's balance. */
   issue(op: IssuanceOp, signature: Uint8Array): OpLogEntry {
-    const held = this.stateOf(op.backing);
-    return this.append(held, undefined, {
-      position: held.opLog.length,
-      kind: "issue",
-      recipient: copyBytes(op.recipient),
-      quantity: op.quantity,
-      nonce: op.nonce,
-      signature: copyBytes(signature),
-    });
+    const { recipient, quantity, nonce } = op;
+    return this.apply(op.backing, { kind: "issue", recipient, quantity, nonce, signature }, undefined);
   }
 
   /** Transfer: holder-signed, moves units, touches no total. */
   transfer(op: TransferOp, signature: Uint8Array): OpLogEntry {
-    const held = this.stateOf(op.backing);
-    return this.append(held, undefined, {
-      position: held.opLog.length,
-      kind: "transfer",
-      from: copyBytes(op.from),
-      to: copyBytes(op.to),
-      quantity: op.quantity,
-      nonce: op.nonce,
-      signature: copyBytes(signature),
-    });
+    const { from, to, quantity, nonce } = op;
+    return this.apply(op.backing, { kind: "transfer", from, to, quantity, nonce, signature }, undefined);
   }
 
   /** Burn: holder-signed, the only operation that lowers outstanding. */
   burn(op: BurnOp, signature: Uint8Array): OpLogEntry {
-    const held = this.stateOf(op.backing);
-    return this.append(held, undefined, {
-      position: held.opLog.length,
-      kind: "burn",
-      holder: copyBytes(op.holder),
-      quantity: op.quantity,
-      nonce: op.nonce,
-      signature: copyBytes(signature),
-    });
+    const { holder, quantity, nonce } = op;
+    return this.apply(op.backing, { kind: "burn", holder, quantity, nonce, signature }, undefined);
   }
 
   /**
@@ -514,17 +534,9 @@ export class TransparentLedger {
    * needs the backer's acceptance and the holder's own release.
    */
   demand(op: DemandOp, signature: Uint8Array, atWitnessedIndex: bigint): OpLogEntry {
-    const held = this.stateOf(op.backing);
-    return this.append(held, atWitnessedIndex, {
-      position: held.opLog.length,
-      kind: "demand",
-      holder: copyBytes(op.holder),
-      quantity: op.quantity,
-      instant: op.instant,
-      deadline: op.deadline,
-      nonce: op.nonce,
-      signature: copyBytes(signature),
-    });
+    const { holder, quantity, instant, deadline, nonce } = op;
+    const entry = { kind: "demand", holder, quantity, instant, deadline, nonce, signature } as const;
+    return this.apply(op.backing, entry, atWitnessedIndex);
   }
 
   /**
@@ -534,16 +546,9 @@ export class TransparentLedger {
    * keep the claims committed, and wait for the payout to move.
    */
   accept(op: AcceptanceOp, signature: Uint8Array, atWitnessedIndex: bigint): OpLogEntry {
-    const held = this.stateOf(op.backing);
-    return this.append(held, atWitnessedIndex, {
-      position: held.opLog.length,
-      kind: "acceptance",
-      demandHash: copyBytes(op.demandHash),
-      instant: op.instant,
-      deadline: op.deadline,
-      nonce: op.nonce,
-      signature: copyBytes(signature),
-    });
+    const { demandHash, instant, deadline, nonce } = op;
+    const entry = { kind: "acceptance", demandHash, instant, deadline, nonce, signature } as const;
+    return this.apply(op.backing, entry, atWitnessedIndex);
   }
 
   /**
@@ -553,14 +558,9 @@ export class TransparentLedger {
    * settlement.
    */
   release(op: ReleaseOp, signature: Uint8Array, atWitnessedIndex: bigint): OpLogEntry {
-    const held = this.stateOf(op.backing);
-    return this.append(held, atWitnessedIndex, {
-      position: held.opLog.length,
-      kind: "release",
-      demandHash: copyBytes(op.demandHash),
-      nonce: op.nonce,
-      signature: copyBytes(signature),
-    });
+    const { demandHash, nonce } = op;
+    const entry = { kind: "release", demandHash, nonce, signature } as const;
+    return this.apply(op.backing, entry, atWitnessedIndex);
   }
 
   /**
@@ -569,14 +569,9 @@ export class TransparentLedger {
    * wait out.
    */
   withdraw(op: WithdrawalOp, signature: Uint8Array, atWitnessedIndex: bigint): OpLogEntry {
-    const held = this.stateOf(op.backing);
-    return this.append(held, atWitnessedIndex, {
-      position: held.opLog.length,
-      kind: "withdrawal",
-      demandHash: copyBytes(op.demandHash),
-      nonce: op.nonce,
-      signature: copyBytes(signature),
-    });
+    const { demandHash, nonce } = op;
+    const entry = { kind: "withdrawal", demandHash, nonce, signature } as const;
+    return this.apply(op.backing, entry, atWitnessedIndex);
   }
 
   /** The standing demand record (invariant 23), as copies. */
@@ -629,22 +624,6 @@ export class TransparentLedger {
     const holderHex = bytesToHex(holder);
     return (name: Uint8Array) =>
       this.states.get(bytesToHex(name))?.state.balances.get(holderHex) ?? 0n;
-  }
-
-  /**
-   * Apply the entry under the law, then log it. One place where an operation
-   * becomes a fact, and the same `applyEntry` a verifier folds a served log
-   * through — so the ledger cannot enforce a rule the replay does not, or the
-   * other way about.
-   */
-  private append(
-    held: BackingState,
-    atWitnessedIndex: bigint | undefined,
-    entry: OpLogEntry,
-  ): OpLogEntry {
-    applyEntry(held.state, held.backing, entry, atWitnessedIndex);
-    held.opLog.push(entry);
-    return copyOpEntry(entry);
   }
 
   private stateOf(backing: Backing): BackingState {
