@@ -68,7 +68,7 @@ import {
   type ReleaseOp,
   type WithdrawalOp,
 } from "./presentation.js";
-import { signReceipt, type Receipt } from "./receipt.js";
+import { copyReceipt, signReceipt, type Receipt } from "./receipt.js";
 import { Venue } from "./venue.js";
 
 /** This operator declines to serve you. */
@@ -231,11 +231,14 @@ export class Sequencer {
     const opHash = sha256(opMessage);
     const key = bytesToHex(opHash);
     const existing = this.receipts.get(key);
-    if (existing !== undefined) return existing;
+    // A copy on both paths: the stored receipt is the operator's record of what
+    // it co-signed, and a caller that could reach into it would decide what
+    // every later replay is answered with.
+    if (existing !== undefined) return copyReceipt(existing);
 
     const entry = apply();
     const receipt = signReceipt(this.operatorSecret, backing.name, opHash, BigInt(entry.position));
     this.receipts.set(key, receipt);
-    return receipt;
+    return copyReceipt(receipt);
   }
 }

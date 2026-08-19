@@ -14,7 +14,7 @@
 // value.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { ByteWriter, compareBytes } from "./bytes.js";
+import { ByteWriter, compareBytes, copyBytes } from "./bytes.js";
 import { RECEIPT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
 import type { BackingSnapshot } from "./ledger.js";
@@ -27,6 +27,23 @@ export interface Receipt {
   readonly position: bigint;
   readonly operator: Uint8Array;
   readonly signature: Uint8Array;
+}
+
+/**
+ * A snapshot of a receipt's bytes. `readonly` is erased at runtime, so anything
+ * that stores or serves a receipt copies it (CLAUDE.md: copy on the way in, copy
+ * on the way out). Without it whoever holds a receipt can mutate the one the
+ * sequencer kept, and invariant 26's "identical prior response" stops being
+ * something the operator controls.
+ */
+export function copyReceipt(receipt: Receipt): Receipt {
+  return {
+    backingName: copyBytes(receipt.backingName),
+    opHash: copyBytes(receipt.opHash),
+    position: receipt.position,
+    operator: copyBytes(receipt.operator),
+    signature: copyBytes(receipt.signature),
+  };
 }
 
 /** Both 32-byte fields are asserted, so one signature covers one receipt. */
@@ -47,7 +64,15 @@ export function signReceipt(
 ): Receipt {
   const operator = ed25519.getPublicKey(operatorSecret);
   const signature = ed25519.sign(receiptMessage(backingName, opHash, position), operatorSecret);
-  return { backingName, opHash, position, operator, signature };
+  // The receipt owns its bytes: it is handed a backing name and an op hash the
+  // caller still holds, and what the operator co-signed must not be rewritable.
+  return {
+    backingName: copyBytes(backingName),
+    opHash: copyBytes(opHash),
+    position,
+    operator,
+    signature,
+  };
 }
 
 /** Valid iff the operator signed exactly (backing name, op hash, position). */
