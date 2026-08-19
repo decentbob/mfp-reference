@@ -91,6 +91,63 @@ Invariants not listed here (3–4, 6, 11–12, 19–25) still bind; several only
 become implementable with sequencing and the shielded constructions. Read
 §C0 of construction.md before touching anything they govern.
 
+## Design rules
+
+The invariants above say *what* must be true. These say *how* to build it. The
+goal is a reference implementation an auditor can read once and be convinced by:
+**smallest, then most secure, then fastest — in that order when they conflict,
+except that security never loses to size.**
+
+**One mechanism per property.** If a property is enforced in three places, an
+auditor must check three places and a maintainer can break it in three ways.
+When a fix is needed, first ask whether an existing mechanism should be
+generalized. Never layer a second mechanism on a first to patch its gap: that
+is how a review finding becomes permanent complexity. A fix that adds a layer
+is a signal the layer below is in the wrong place.
+
+**Bytes are framed, not concatenated.** Every field written into a signed or
+hashed message is either fixed-width and asserted to be, or length-prefixed.
+Never write a variable-length field raw. Two different values must never
+produce one byte string — hashed identity and commitment roots depend on it,
+and adjacent unframed fields silently destroy it. Use `ByteWriter.key32` /
+`ByteWriter.fixed` for fixed-width fields; they assert the width at the one
+place that writes it.
+
+**Validate once, at the boundary that owns the rule.** `makeBacking` owns
+backing well-formedness; the ledger owns the law and funds; the sequencer owns
+routing and refusal. A layer does not re-check what a layer below will check
+anyway, and does not pre-check in order to relabel an error — give the lower
+layer a distinguishable error type instead.
+
+**Copy on the way in, copy on the way out.** Bytes entering validated state are
+copied once at construction; every accessor returns a copy. `readonly` is
+erased at runtime and is not a boundary. This is deliberate cost paid for
+invariant 8: no accessor may hand out a write path into state.
+
+**Verifiers never throw.** Anything that answers a question about
+adversary-supplied data (`verify*`, `*ProvenBy`, `isEquivocation`, decoders)
+returns `false` or a typed rejection on *any* malformed input — wrong lengths,
+non-integer positions, out-of-range quantities. A verifier that throws is a
+denial-of-service hole and tempts a caller to read "no exception" as "checked".
+
+**An error names the boundary that refused.** `EncodingError` = these bytes or
+fields are not well-formed. `SigningError` = you asked me to sign with a key
+that is not yours. `LedgerError` = the law refuses (`NonceError` = this nonce
+is not the signer's next). `SequencerError` = this operator declines to serve
+you. `VenueError` = the record will not accept this. Do not add a sixth
+without a new boundary to name.
+
+**Domain tags live in one file.** Every context string that separates one
+signed message type from another is declared in `src/contexts.ts`. A tag
+collision is a signature-forgery class; the full list must be readable on one
+screen.
+
+**Efficiency where it is free.** Prefer the direct algorithm over a clever one,
+and the allocation-free form over the allocating one, when it is no less
+readable — exact-integer arithmetic over string round-trips, one buffer over
+per-item allocation, a keyed lookup over a linear scan. Do not trade clarity
+for speed anywhere else; this is a reference implementation, not a product.
+
 ## Workflow
 
 - **Plan before code.** For each slice: propose the approach, wait for Bob's

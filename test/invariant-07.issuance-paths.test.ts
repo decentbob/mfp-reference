@@ -1,6 +1,6 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
-import { TransparentLedger } from "../src/ledger.js";
+import { NonceError, TransparentLedger } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { KEYS, register, SECRETS } from "./support.js";
 
@@ -50,7 +50,7 @@ describe("invariant 7: issuance and movement are separate paths", () => {
     const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
     const signature = ed25519.sign(encodeIssuance(issue), SECRETS.backer);
     ledger.issue(issue, signature);
-    expect(() => ledger.issue(issue, signature)).toThrow(/stale or replayed/);
+    expect(() => ledger.issue(issue, signature)).toThrow(NonceError);
     expect(ledger.issued(backing)).toBe(100n);
   });
 
@@ -62,7 +62,7 @@ describe("invariant 7: issuance and movement are separate paths", () => {
     const move = { backing, from: KEYS.alice, to: KEYS.bob, quantity: 30n, nonce: 0n };
     const signature = ed25519.sign(encodeTransfer(move), SECRETS.alice);
     ledger.transfer(move, signature);
-    expect(() => ledger.transfer(move, signature)).toThrow(/stale or replayed/);
+    expect(() => ledger.transfer(move, signature)).toThrow(NonceError);
     expect(ledger.balance(backing, KEYS.bob)).toBe(30n);
   });
 

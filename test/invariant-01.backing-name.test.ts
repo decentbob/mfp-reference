@@ -167,6 +167,24 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
     );
   });
 
+  it("a payout thing with a byte-order mark round-trips to one name", () => {
+    // A BOM-stripping decoder would give one backing two names: the encoder's
+    // and the decoder's. Identity must survive the round trip exactly.
+    const withBom = makeBacking({
+      ...baseFields(),
+      payout: { thing: "﻿EUR", quantumExponent: -2, perUnit: 100n },
+    });
+    const decoded = decodeBacking(encodeBacking(withBom));
+    expect(decoded.payout.thing).toBe("﻿EUR");
+    expect(bytesToHex(backingName(decoded))).toBe(bytesToHex(backingName(withBom)));
+  });
+
+  it("invalid UTF-8 in the payout thing is an EncodingError", () => {
+    const bytes = encodeBacking(makeBacking(baseFields()));
+    bytes[bytes.indexOf(0x45)] = 0xff; // corrupt the "E" of EUR
+    expect(() => decodeBacking(bytes)).toThrow(EncodingError);
+  });
+
   it("rejects a payout thing with unpaired surrogates", () => {
     expect(() =>
       makeBacking({ ...baseFields(), payout: { thing: "EUR\uD800", quantumExponent: -2, perUnit: 100n } }),

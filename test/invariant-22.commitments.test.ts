@@ -9,6 +9,9 @@ import {
 } from "../src/commitment.js";
 import { encodeIssuance } from "../src/messages.js";
 import { Sequencer } from "../src/sequencer.js";
+import { EncodingError } from "../src/bytes.js";
+import { stateProvesCommitment } from "../src/commitment.js";
+import { receiptProvenBy, verifyReceipt } from "../src/receipt.js";
 import { Venue, VenueError } from "../src/venue.js";
 import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
@@ -32,7 +35,7 @@ describe("invariant 22: state proves against the latest commitment", () => {
     const venue = new Venue();
     const commitment = sequencer.commit(venue);
     expect(verifyCommitment(commitment)).toBe(true);
-    expect(venue.latest()).toEqual(commitment);
+    expect(venue.latestFor(sequencer.operator)).toEqual(commitment);
   });
 
   it("a commitment with a mutated root or index does not verify", () => {
@@ -100,5 +103,123 @@ describe("invariant 22: state proves against the latest commitment", () => {
     const honest = sequencer.commit(venue);
     const impostor = signCommitment(SECRETS.mallory, honest.index, new Uint8Array(32).fill(0xcd));
     expect(isEquivocation(honest, impostor)).toBe(false);
+  });
+});
+
+// The root must be INJECTIVE or invariant 22 is worthless: two served states
+// sharing a root let an operator equivocate with one signature and no provable
+// fault. Injectivity comes from the framing rule — every key and name is
+// fixed-width and asserted, so no two field values share an encoding.
+
+describe("invariant 22: the state root is injective", () => {
+  const name = new Uint8Array(32).fill(0x01);
+
+  it("rejects adjacent keys that would concatenate ambiguously", () => {
+    // 31+33 bytes concatenate exactly like 32+32, so an unframed encoder gives
+    // two different transfers one root.
+    const bytes = new Uint8Array(64);
+    for (let i = 0; i < 64; i++) bytes[i] = i + 1;
+    const state = (from: Uint8Array, to: Uint8Array) => [
+      {
+        name,
+        issued: 7n,
+        burned: 0n,
+        balances: [],
+        opLog: [{ position: 0, kind: "transfer" as const, from, to, quantity: 7n, nonce: 0n }],
+      },
+    ];
+    expect(() => stateRoot(state(bytes.slice(0, 32), bytes.slice(32)))).not.toThrow();
+    expect(() => stateRoot(state(bytes.slice(0, 31), bytes.slice(31)))).toThrow(EncodingError);
+  });
+
+  it("rejects an over-long balance key that would swallow later fields", () => {
+    const long = new Uint8Array(87).fill(0xbb);
+    expect(() =>
+      stateRoot([{ name, issued: 5n, burned: 0n, balances: [[long, 0n]], opLog: [] }]),
+    ).toThrow(EncodingError);
+  });
+
+  it("rejects two snapshots for one backing", () => {
+    const one = { name, issued: 0n, burned: 0n, balances: [], opLog: [] };
+    expect(() => stateRoot([one, one])).toThrow(EncodingError);
+  });
+});
+
+describe("verifiers return false on hostile input, never throw", () => {
+  const name = new Uint8Array(32).fill(0x01);
+  const shortKey = new Uint8Array(31);
+  const sig = new Uint8Array(64);
+
+  it("a malformed operator key fails verification instead of crashing", () => {
+    expect(verifyCommitment({ index: 0n, root: name, operator: shortKey, signature: sig })).toBe(false);
+    expect(
+      verifyReceipt({ backingName: name, opHash: name, position: 0n, operator: shortKey, signature: sig }),
+    ).toBe(false);
+  });
+
+  it("a non-integer served position fails the proof instead of crashing", () => {
+    const hostile = {
+      name,
+      issued: 0n,
+      burned: 0n,
+      balances: [],
+      opLog: [{ position: 1.5, kind: "burn" as const, holder: name, quantity: 1n, nonce: 0n }],
+    };
+    const receipt = { backingName: name, opHash: name, position: 0n, operator: name, signature: sig };
+    expect(receiptProvenBy(receipt, hostile)).toBe(false);
+  });
+
+  it("a negative served amount fails the commitment check instead of crashing", () => {
+    const bad = [{ name, issued: -1n, burned: 0n, balances: [], opLog: [] }];
+    expect(stateProvesCommitment(bad, { index: 0n, root: name, operator: name, signature: sig })).toBe(false);
+  });
+});
+
+// A root can be injective and still let an operator assert state with more
+// than one meaning, or state that hides an accepted operation. Canonical form
+// closes both.
+
+describe("invariant 22: committed state has exactly one meaning", () => {
+  const name = new Uint8Array(32).fill(0x01);
+  const holder = new Uint8Array(32).fill(0x02);
+
+  it("rejects one holder appearing twice in balances", () => {
+    // Sum, first-wins and last-wins readers would disagree under one valid
+    // signature, and no second root exists to prove a fault.
+    expect(() =>
+      stateRoot([
+        { name, issued: 100n, burned: 0n, balances: [[holder, 100n], [holder, 0n]], opLog: [] },
+      ]),
+    ).toThrow(EncodingError);
+  });
+
+  it("rejects an op-log position that does not match its index", () => {
+    // A gap lets an operator commit to state in which a holder's valid,
+    // operator-signed receipt for the missing position proves against nothing.
+    const entry = (position: number) => ({
+      position,
+      kind: "burn" as const,
+      holder,
+      quantity: 1n,
+      nonce: 0n,
+    });
+    expect(() =>
+      stateRoot([{ name, issued: 2n, burned: 2n, balances: [], opLog: [entry(0), entry(5)] }]),
+    ).toThrow(EncodingError);
+  });
+
+  it("rejects an oversized amount instead of grinding on it", () => {
+    // Unbounded, an attacker-sized integer turns "a malformed state fails the
+    // proof" into a hang.
+    const started = Date.now();
+    expect(
+      stateProvesCommitment([{ name, issued: 1n << 200000n, burned: 0n, balances: [], opLog: [] }], {
+        index: 0n,
+        root: name,
+        operator: name,
+        signature: new Uint8Array(64),
+      }),
+    ).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 });
