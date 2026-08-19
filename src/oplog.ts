@@ -45,6 +45,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { type Backing } from "./backing.js";
 import { copyBytes } from "./bytes.js";
 import { verifySignatureStrict } from "./keys.js";
+import type { DemandRecord } from "./ledger.js";
 
 /** One entry in a backing's operation log. `position` is the append index. */
 export type OpLogEntry =
@@ -183,18 +184,16 @@ export function copyOpEntry(entry: OpLogEntry): OpLogEntry {
  * operator writes beside the entry: an issuance is the obligor's, and so is an
  * acceptance; a transfer, burn and demand name their own signer; and a release
  * or withdrawal names a demand, whose holder is in that demand's own entry
- * earlier in the same append-only log. `demandHolders` accumulates those as the
- * walk proceeds — a demand's hash is exactly its operation hash, because a
- * demand's canonical message is what both are taken over.
+ * earlier in the same append-only log. A demand's hash is exactly its operation
+ * hash, because a demand's canonical message is what both are taken over.
  *
- * Undefined means no signer can be established, which is itself a refusal: an
- * operator that invents a settlement of a demand nobody filed leaves nothing to
- * check the release against.
+ * Undefined means no signer can be established, which is itself a refusal: a
+ * settlement of a demand that is not standing has nobody to check against.
  */
 function signerOf(
   backing: Backing,
   entry: OpLogEntry,
-  demandHolders: Map<string, Uint8Array>,
+  standing: Map<string, DemandRecord>,
 ): Uint8Array | undefined {
   switch (entry.kind) {
     case "issue":
@@ -207,86 +206,73 @@ function signerOf(
       return entry.holder;
     case "release":
     case "withdrawal":
-      return demandHolders.get(bytesToHex(entry.demandHash));
+      return standing.get(bytesToHex(entry.demandHash))?.holder;
   }
 }
 
+/** The state a log leaves behind: balances by holder hex, and open demands. */
+export interface LogReplay {
+  readonly balances: Map<string, bigint>;
+  readonly demands: readonly DemandRecord[];
+}
+
 /**
- * Whether every operation in this log carries the signature that authorised it,
- * and no signature authorises more than one operation.
+ * Replay a served operation log, or undefined if it is not a history that could
+ * have happened.
  *
- * This is invariant 8 applied to served state, and it needs both halves. Without
- * the signature an operator appends transfers nobody signed, makes the balances
- * agree with them, and locks every holder out — conservation and the fold both
- * pass, because nothing was destroyed and the state is consistent with its own
- * lie. Without the nonce sequence it does not even need to forge one: it logs a
- * transfer the holder really did sign as many times as the balances will bear,
- * and takes a multiple of the units on one signature.
+ * This is invariant 8 applied to served state, and it takes three refusals
+ * because an operator can lie in three places. Without the **signature** it
+ * appends transfers nobody signed and makes the balances agree with them —
+ * conservation and the arithmetic both pass, because nothing was destroyed and
+ * the state is consistent with its own lie. Without the **nonce sequence** it
+ * does not even need to forge one: it logs a transfer the holder really did sign
+ * as many times as the balances will bear, and takes a multiple of the units on
+ * one signature. Without the **demand lifecycle** it settles a demand the holder
+ * withdrew, using a release the holder signed and the ledger refused. All three
+ * were demonstrated before they were closed.
  *
  * The nonce inside the signed message is what makes a signature single-use, so
- * the walk holds each signer to the sequence the ledger holds them to — starting
- * at 0 and rising by 1 — which also rejects a log with a gap, since an operation
+ * each signer is held to the sequence the ledger holds them to — starting at 0
+ * and rising by 1 — which also rejects a log with a gap, since an operation
  * dropped from the middle leaves the next one at a nonce nobody reached.
  *
- * The signature is served rather than committed: the entry's canonical message
- * is already inside the root, and only the true signer can produce a signature
- * over it, so committing it would add bytes without adding a property. That is
- * invariant 23's arrangement — the commitment "does not contain any of them, and
- * anything checked against them has to be served".
+ * What it does NOT replay is the law's time-dependent rules: whether an
+ * acceptance was still live when released against, whether a demand's deadline
+ * had passed when answered. The log does not record the witnessed index each
+ * operation was accepted at, so they cannot be checked from it. See DECISIONS.md.
  *
- * A verifier, so it returns false on any malformed entry rather than throwing.
+ * A verifier: the log comes from an operator with a motive, so any malformed
+ * entry is a refusal rather than a throw.
  */
-export function entriesAreAuthentic(backing: Backing, entries: readonly OpLogEntry[]): boolean {
+export function replayLog(
+  backing: Backing,
+  entries: readonly OpLogEntry[],
+): LogReplay | undefined {
   try {
-    const demandHolders = new Map<string, Uint8Array>();
+    const balances = new Map<string, bigint>();
+    const standing = new Map<string, DemandRecord>();
     const nextNonce = new Map<string, bigint>();
+    const move = (key: Uint8Array, delta: bigint): void => {
+      const hex = bytesToHex(key);
+      const units = (balances.get(hex) ?? 0n) + delta;
+      // Drop at zero so the replay enumerates current holders only, exactly as
+      // the ledger's own book does.
+      if (units === 0n) balances.delete(hex);
+      else balances.set(hex, units);
+    };
+
     for (const entry of entries) {
-      const signer = signerOf(backing, entry, demandHolders);
-      if (signer === undefined) return false;
+      const signer = signerOf(backing, entry, standing);
+      if (signer === undefined) return undefined;
       // Nonce first: it is the cheap half, and a hostile log should not buy a
       // signature verification per entry before being refused.
       const signerHex = bytesToHex(signer);
       const expected = nextNonce.get(signerHex) ?? 0n;
-      if (entry.nonce !== expected) return false;
+      if (entry.nonce !== expected) return undefined;
+      const message = opMessageOfEntry(backing.name, entry);
+      if (!verifySignatureStrict(entry.signature, message, signer)) return undefined;
       nextNonce.set(signerHex, expected + 1n);
 
-      const message = opMessageOfEntry(backing.name, entry);
-      if (!verifySignatureStrict(entry.signature, message, signer)) return false;
-      if (entry.kind === "demand") {
-        demandHolders.set(bytesToHex(sha256(message)), entry.holder);
-      }
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * The balances this log produces, replayed from an empty book: holder hex ->
- * units. A settlement moves its demand's quantity to the obligor named in the
- * backing's terms, which is why this needs the backing and not only the entries
- * — the release entry deliberately does not assert where the units went.
- *
- * Never throws: a malformed log simply folds to something that will not match
- * the balances it is checked against.
- */
-export function foldBalances(
-  backing: Backing,
-  entries: readonly OpLogEntry[],
-): Map<string, bigint> {
-  const balances = new Map<string, bigint>();
-  const demands = new Map<string, { holder: Uint8Array; quantity: bigint }>();
-  const move = (key: Uint8Array, delta: bigint): void => {
-    const hex = bytesToHex(key);
-    const units = (balances.get(hex) ?? 0n) + delta;
-    // Drop at zero so the fold enumerates current holders only, exactly as the
-    // ledger's own book does.
-    if (units === 0n) balances.delete(hex);
-    else balances.set(hex, units);
-  };
-  for (const entry of entries) {
-    try {
       switch (entry.kind) {
         case "issue":
           move(entry.recipient, entry.quantity);
@@ -298,26 +284,46 @@ export function foldBalances(
         case "burn":
           move(entry.holder, -entry.quantity);
           break;
-        case "demand":
-          demands.set(bytesToHex(sha256(opMessageOfEntry(backing.name, entry))), {
+        case "demand": {
+          const hash = sha256(message);
+          standing.set(bytesToHex(hash), {
+            hash,
             holder: entry.holder,
             quantity: entry.quantity,
+            instant: entry.instant,
+            deadline: entry.deadline,
+            nonce: entry.nonce,
+            acceptedDeadline: undefined,
           });
           break;
-        case "release": {
-          const demand = demands.get(bytesToHex(entry.demandHash));
-          if (demand === undefined) break;
-          move(demand.holder, -demand.quantity);
-          move(backing.obligor, demand.quantity);
+        }
+        case "acceptance": {
+          // The backer cannot have answered a demand nobody filed, or one that
+          // had already ended. An operator saying otherwise is inventing
+          // evidence about the backer, which is the party §C3 says nobody paid
+          // by can be trusted to record.
+          const key = bytesToHex(entry.demandHash);
+          const record = standing.get(key);
+          if (record === undefined) return undefined;
+          standing.set(key, { ...record, acceptedDeadline: entry.deadline });
           break;
         }
-        case "acceptance":
+        case "release": {
+          const key = bytesToHex(entry.demandHash);
+          const record = standing.get(key);
+          if (record === undefined) return undefined;
+          move(record.holder, -record.quantity);
+          move(backing.obligor, record.quantity);
+          standing.delete(key);
+          break;
+        }
         case "withdrawal":
+          standing.delete(bytesToHex(entry.demandHash));
           break;
       }
-    } catch {
-      // A malformed entry contributes nothing; the mismatch is the refusal.
     }
+    return { balances, demands: [...standing.values()] };
+  } catch {
+    return undefined;
   }
-  return balances;
 }

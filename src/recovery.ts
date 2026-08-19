@@ -37,8 +37,9 @@
 // operator served, so it returns false on any malformed input and never throws.
 
 import { type Backing } from "./backing.js";
+import type { DemandRecord } from "./ledger.js";
 import { compareBytes, isValidQuantity } from "./bytes.js";
-import { entriesAreAuthentic, foldBalances } from "./oplog.js";
+import { replayLog } from "./oplog.js";
 import {
   stateProvesCommitment,
   type BackingSnapshot,
@@ -75,17 +76,32 @@ export function isSilent(venue: Venue, backing: Backing): boolean {
   return quietFor(venue, backing.evidence.operator) > clause.noCommitmentDuration;
 }
 
+/** Two demand records agree on every field the law fixes. */
+function sameDemand(a: DemandRecord, b: DemandRecord): boolean {
+  return (
+    compareBytes(a.holder, b.holder) === 0 &&
+    a.quantity === b.quantity &&
+    a.instant === b.instant &&
+    a.deadline === b.deadline &&
+    a.nonce === b.nonce &&
+    a.acceptedDeadline === b.acceptedDeadline
+  );
+}
+
 /**
  * The one check on served state, and what everything else here rests on: it is
- * the state this backing's operator committed to, its balances follow from its
- * own operation log, and every operation in that log carries the signature that
- * authorised it.
+ * the state this backing's operator committed to, and it is a state that could
+ * have happened — its operation log replays under the law, and the balances and
+ * standing demands it publishes are exactly what that replay leaves behind.
  *
  * Three properties because an operator can lie in three places, and closing any
  * two leaves the third open. Committed-but-inconsistent is the sweep: reassign
  * the balances and conservation still passes, because nothing was destroyed.
  * Consistent-but-unauthorised is the fabricated append: add the transfers you
- * want, and the fold agrees with them. Both were demonstrated before this slice.
+ * want, and the arithmetic agrees with them. Authorised-but-impossible is the
+ * refused release: replay a settlement of a demand the holder had withdrawn, on
+ * a signature the holder really made. All three were demonstrated before they
+ * were closed.
  *
  * A verifier: the state comes from an operator with a motive, so any malformed
  * field is a failed check rather than a crash.
@@ -100,12 +116,19 @@ export function stateIsAuthentic(backing: Backing, served: ServedState): boolean
 
     const snapshot = served.snapshots.find((s) => compareBytes(s.name, backing.name) === 0);
     if (snapshot === undefined) return false;
-    if (!entriesAreAuthentic(backing, snapshot.opLog)) return false;
+    const replay = replayLog(backing, snapshot.opLog);
+    if (replay === undefined) return false;
 
-    const folded = foldBalances(backing, snapshot.opLog);
-    if (folded.size !== snapshot.balances.length) return false;
+    if (replay.balances.size !== snapshot.balances.length) return false;
     for (const [key, units] of snapshot.balances) {
-      if (folded.get(bytesToHex(key)) !== units) return false;
+      if (replay.balances.get(bytesToHex(key)) !== units) return false;
+    }
+
+    if (replay.demands.length !== snapshot.demands.length) return false;
+    const replayed = new Map(replay.demands.map((d) => [bytesToHex(d.hash), d]));
+    for (const record of snapshot.demands) {
+      const expected = replayed.get(bytesToHex(record.hash));
+      if (expected === undefined || !sameDemand(record, expected)) return false;
     }
     return true;
   } catch {

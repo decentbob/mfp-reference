@@ -1,10 +1,9 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { hexToBytes } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 import { signBacking } from "../src/backing.js";
 import { signCommitment, stateProvesCommitment, stateRoot } from "../src/commitment.js";
 import { encodeIssuance, encodeTransfer } from "../src/messages.js";
-import { entriesAreAuthentic, foldBalances } from "../src/oplog.js";
+import { replayLog } from "../src/oplog.js";
 import {
   demandHash,
   encodeAcceptance,
@@ -118,11 +117,10 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
       },
     ];
     const served = publish(venue, forged);
-    // The fold now agrees with the balances, so conservation and consistency
-    // both pass. Only the missing signatures give it away.
-    expect(foldBalances(backing, forged[0]!.opLog).get(Buffer.from(KEYS.backer).toString("hex"))).toBe(
-      160n,
-    );
+    // The balances were chosen to be exactly what those two transfers produce,
+    // so arithmetic and conservation both agree with the lie. Only the missing
+    // signatures give it away, and the replay refuses before it ever adds up.
+    expect(replayLog(backing, forged[0]!.opLog)).toBeUndefined();
     expect(stateProvesCommitment(forged, served.commitment)).toBe(true);
     expect(stateIsAuthentic(backing, served)).toBe(false);
     expect(provesHolding(venue, backing, served, KEYS.backer, 160n)).toBe(false);
@@ -140,11 +138,14 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
     const log = [...snapshot.opLog, { ...replayed, position: 3 }, { ...replayed, position: 4 }];
 
     // Every entry still carries a signature the holder really made.
-    const folded = foldBalances(backing, log);
+    // The balances the operator would have to serve alongside the replay.
     const forged = [
-      { ...snapshot, opLog: log, balances: [...folded].map(([hex, units]) => [hexToBytes(hex), units] as const) },
+      {
+        ...snapshot,
+        opLog: log,
+        balances: [[KEYS.alice, 10n], [KEYS.bob, 60n], [KEYS.carol, 90n]] as const,
+      },
     ];
-    expect(folded.get(Buffer.from(KEYS.carol).toString("hex"))).toBe(90n);
     expect(stateIsAuthentic(backing, publish(venue, forged))).toBe(false);
   });
 
@@ -161,9 +162,12 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
     const log = snapshot.opLog
       .filter((_, i) => i !== 2)
       .map((entry, i) => ({ ...entry, position: i }));
-    const folded = foldBalances(backing, log);
     const forged = [
-      { ...snapshot, opLog: log, balances: [...folded].map(([hex, units]) => [hexToBytes(hex), units] as const) },
+      {
+        ...snapshot,
+        opLog: log,
+        balances: [[KEYS.alice, 90n], [KEYS.bob, 60n], [KEYS.carol, 10n]] as const,
+      },
     ];
     expect(stateIsAuthentic(backing, publish(venue, forged))).toBe(false);
   });
@@ -328,6 +332,170 @@ describe("the signer of a presentation entry comes from the log, not the operato
   });
 });
 
+describe("a served log must be a history the law could have produced", () => {
+  /** Alice files a demand for 40 and withdraws it. Nothing was paid. */
+  function demandedThenWithdrawn() {
+    const f = setup();
+    f.venue.advance(5n);
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    f.venue.advance(6n);
+    const walk = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitWithdrawal(walk, ed25519.sign(encodeWithdrawal(walk), SECRETS.alice));
+    return { ...f, hash: demandHash(demand) };
+  }
+
+  it("refuses a release of a demand that is no longer standing", () => {
+    // The demonstrated theft. Alice withdrew, so nothing is owed — but she had
+    // also signed a release for that demand, which the ledger refused outright.
+    // A holder who signs a release and a withdrawal in a race produces exactly
+    // that pair, and the operator picks the one it prefers. Every other check
+    // passes: right signer, right nonce, balanced arithmetic.
+    const f = demandedThenWithdrawn();
+    const settle = {
+      backing: f.backing,
+      demandHash: f.hash,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    const signature = ed25519.sign(encodeRelease(settle), SECRETS.alice);
+    expect(() => f.sequencer.submitRelease(settle, signature)).toThrow(/no such standing demand/);
+
+    const snapshot = f.sequencer.snapshot()[0]!;
+    const forged = [
+      {
+        ...snapshot,
+        opLog: [
+          ...snapshot.opLog,
+          {
+            position: snapshot.opLog.length,
+            kind: "release" as const,
+            demandHash: f.hash,
+            nonce: 2n,
+            signature,
+          },
+        ],
+        balances: [
+          [KEYS.alice, 60n],
+          [KEYS.backer, 40n],
+          [KEYS.bob, 60n],
+        ] as const,
+      },
+    ];
+    expect(stateIsAuthentic(f.backing, publish(f.venue, forged))).toBe(false);
+  });
+
+  it("refuses a withdrawal of a demand that is no longer standing", () => {
+    const f = demandedThenWithdrawn();
+    const snapshot = f.sequencer.snapshot()[0]!;
+    const replayed = snapshot.opLog[snapshot.opLog.length - 1]!;
+    const forged = [
+      { ...snapshot, opLog: [...snapshot.opLog, { ...replayed, position: snapshot.opLog.length }] },
+    ];
+    expect(stateIsAuthentic(f.backing, publish(f.venue, forged))).toBe(false);
+  });
+
+  it("refuses an acceptance of a demand that was never filed", () => {
+    // The backer cannot have answered what nobody presented, and an operator
+    // saying otherwise is inventing evidence about the backer.
+    const f = setup();
+    const answer = {
+      backing: f.backing,
+      demandHash: new Uint8Array(32).fill(0xaa),
+      instant: 5n,
+      deadline: 10n,
+      nonce: 2n,
+    };
+    const snapshot = f.sequencer.snapshot()[0]!;
+    const forged = [
+      {
+        ...snapshot,
+        opLog: [
+          ...snapshot.opLog,
+          {
+            position: snapshot.opLog.length,
+            kind: "acceptance" as const,
+            demandHash: answer.demandHash,
+            instant: answer.instant,
+            deadline: answer.deadline,
+            nonce: answer.nonce,
+            signature: ed25519.sign(encodeAcceptance(answer), SECRETS.backer),
+          },
+        ],
+      },
+    ];
+    expect(stateIsAuthentic(f.backing, publish(f.venue, forged))).toBe(false);
+  });
+
+  it("requires the committed demand record to be what the log leaves standing", () => {
+    const f = setup();
+    f.venue.advance(5n);
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    const snapshot = f.sequencer.snapshot()[0]!;
+    expect(stateIsAuthentic(f.backing, publish(f.venue, [snapshot]))).toBe(true);
+
+    // Drop the standing demand while the log still files it.
+    expect(stateIsAuthentic(f.backing, publish(f.venue, [{ ...snapshot, demands: [] }]))).toBe(false);
+    // Or show it answered when no acceptance is in the log.
+    const answered = [
+      { ...snapshot, demands: snapshot.demands.map((d) => ({ ...d, acceptedDeadline: 9n })) },
+    ];
+    expect(stateIsAuthentic(f.backing, publish(f.venue, answered))).toBe(false);
+  });
+
+  it("a settled demand leaves the standing record, and the units move", () => {
+    const f = setup();
+    f.venue.advance(5n);
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    const answer = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.backer, f.backing),
+    };
+    f.sequencer.submitAcceptance(answer, ed25519.sign(encodeAcceptance(answer), SECRETS.backer));
+    const settle = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitRelease(settle, ed25519.sign(encodeRelease(settle), SECRETS.alice));
+
+    const snapshot = f.sequencer.snapshot()[0]!;
+    const replay = replayLog(f.backing, snapshot.opLog)!;
+    expect(replay.demands).toHaveLength(0);
+    expect(replay.balances.get(Buffer.from(KEYS.backer).toString("hex"))).toBe(40n);
+    expect(stateIsAuthentic(f.backing, publish(f.venue, [snapshot]))).toBe(true);
+  });
+});
+
 describe("authenticity verifiers return false on hostile input, never throw", () => {
   it("survives malformed entries and a junk commitment", () => {
     const { backing } = setup();
@@ -335,8 +503,7 @@ describe("authenticity verifiers return false on hostile input, never throw", ()
       { position: 0, kind: "burn" as const, holder: new Uint8Array(3), quantity: 1n, nonce: 0n, signature: new Uint8Array(0) },
       { position: 1, kind: "release" as const, demandHash: new Uint8Array(1), nonce: -1n, signature: new Uint8Array(64) },
     ];
-    expect(entriesAreAuthentic(backing, junk)).toBe(false);
-    expect(() => foldBalances(backing, junk)).not.toThrow();
+    expect(replayLog(backing, junk)).toBeUndefined();
     expect(
       stateIsAuthentic(backing, {
         snapshots: [
