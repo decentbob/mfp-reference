@@ -29,8 +29,10 @@
 //
 // The root is over the whole served state, which a verifier must be given to
 // check (the spec's availability point: "somebody has to serve" the trail).
-// Per-element membership / non-membership proofs are deferred with the
-// recovery path.
+// That is also why invariant 23's per-element non-membership proofs are not
+// here: under transparent the whole state is served and rehashed, so serving
+// everything IS the proof. The Merkle machinery is what a construction needs
+// when it cannot serve everything, which is the shielded ones. See DECISIONS.md.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
