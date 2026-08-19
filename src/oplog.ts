@@ -46,7 +46,7 @@ import {
   encodeWithdrawalMessage,
 } from "./presentation.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { copyBytes } from "./bytes.js";
+import { copyBytes, EncodingError } from "./bytes.js";
 
 /**
  * One operation, as its signer put a signature over it: the signed fields and
@@ -116,6 +116,23 @@ export type PublishedOp =
 export type OpLogEntry = PublishedOp & { readonly position: number };
 
 /**
+ * An operation of no known kind is not an operation, and every switch over the
+ * seven kinds ends here.
+ *
+ * The parameter is `never`, so a kind added to PublishedOp and forgotten at a
+ * call site is a compile error at the place that has to decide. The return is
+ * `never` too, because the runtime needs the same answer the types give: a
+ * switch that simply ran off its end returned `undefined` typed as bytes, and
+ * the callers that treat a throw as a refusal — the venue's one guard on what it
+ * records, and every verifier's catch — read that as success. It is an
+ * EncodingError because that is the boundary: these fields are not well-formed.
+ */
+export function unknownOpKind(entry: never): never {
+  const { kind } = entry as { kind?: unknown };
+  throw new EncodingError(`unknown operation kind ${String(kind)}`);
+}
+
+/**
  * The canonical signed message of an operation. Throws EncodingError on a
  * malformed entry — a served log may come from a hostile operator, so every
  * caller that reads adversary-supplied state treats a throw as a failed proof
@@ -151,6 +168,7 @@ export function opMessageOfEntry(backingName: Uint8Array, entry: PublishedOp): U
     case "withdrawal":
       return encodeWithdrawalMessage(backingName, entry.demandHash, entry.nonce);
   }
+  return unknownOpKind(entry);
 }
 
 /** The operation hash a receipt is bound to: sha256 of the signed message. */
@@ -182,6 +200,7 @@ export function copyOp(entry: PublishedOp): PublishedOp {
         signature: copyBytes(entry.signature),
       };
   }
+  return unknownOpKind(entry);
 }
 
 /** The same copy, keeping the entry's place in the log. */

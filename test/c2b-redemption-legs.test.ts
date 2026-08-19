@@ -733,6 +733,28 @@ describe("§C2b: the venue carries evidence, never a second claim layer", () => 
     ).toThrow();
   });
 
+  it("refuses a publication of no known kind, and keeps the operator committing", () => {
+    // The venue's one refusal is bytes that do not encode, and an operation of
+    // no known kind is the case that slipped past it: the encoder's switch ran
+    // off its end and returned undefined instead of throwing. One publication
+    // by a stranger with no keys then stopped this operator committing for
+    // EVERY backing it serves — and no commitment past the declared duration is
+    // §C2b's aggravated grade, so a stranger opened snapshot redemption against
+    // an operator that had done nothing wrong.
+    const { venue, sequencer, backing } = setup();
+    const other = makeTransparentBacking(SECRETS.backer2, "USD", [], SILENCE);
+    sequencer.register(other, signBacking(SECRETS.backer2, other));
+
+    expect(() =>
+      venue.publishOp(backing.name, { kind: "not-a-kind", nonce: 0n, signature: new Uint8Array(64) } as unknown as PublishedOp),
+    ).toThrow(/does not encode/);
+
+    advanceWitnessedIndex(venue, SILENCE.noCommitmentDuration + 1n);
+    expect(() => sequencer.commit()).not.toThrow();
+    expect(isSilent(venue, backing)).toBe(false);
+    expect(isSilent(venue, other)).toBe(false);
+  });
+
   it("hands out copies, in and out", () => {
     // The publisher keeps a reference to what it handed over, and a reader must
     // not be able to poison the record for the next one.

@@ -48,6 +48,7 @@ import {
   copyOp,
   copyOpEntry,
   opMessageOfEntry,
+  unknownOpKind,
   type OpLogEntry,
   type PublishedOp,
 } from "./oplog.js";
@@ -236,10 +237,11 @@ export function signerFromTerms(backing: Backing, entry: PublishedOp): Uint8Arra
   }
   // Exhaustive, and asserted rather than assumed: the return type admits
   // undefined, so a kind added to PublishedOp and forgotten here would compile
-  // and then be refused at runtime for no visible reason. This line makes it a
-  // compile error at the place that has to decide.
-  const unreachable: never = entry;
-  return unreachable;
+  // and then be refused at runtime for no visible reason. unknownOpKind makes
+  // that a compile error at the place that has to decide — and refuses at
+  // runtime rather than handing back the entry itself, which is what assigning
+  // to a never-typed local and returning it did.
+  return unknownOpKind(entry);
 }
 
 /**
