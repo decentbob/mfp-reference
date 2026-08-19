@@ -471,6 +471,73 @@ describe("a served log must be a history the law could have produced", () => {
     expect(replayLog(f.backing, log)).toBeUndefined();
   });
 
+  it("refuses an acceptance that outlasts the demand's own deadline", () => {
+    // The rule slice 6 wrote into the committed demand record, which is no
+    // longer committed: an answer may not outlast the window the holder chose.
+    // The backer signs it hoping to use it, the ledger refuses, and a log
+    // carrying it must be refused too — otherwise isDishonoured reads a
+    // laundered acceptance and the failure never becomes a public fact.
+    const f = setup();
+    f.venue.advance(5n);
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 80n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    const answer = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      instant: 5n,
+      deadline: 1_000_000n,
+      nonce: f.sequencer.nextNonce(KEYS.backer, f.backing),
+    };
+    const signature = ed25519.sign(encodeAcceptance(answer), SECRETS.backer);
+    expect(() => f.sequencer.submitAcceptance(answer, signature)).toThrow(/acceptance deadline/);
+
+    const snapshot = f.sequencer.snapshot()[0]!;
+    const log = [
+      ...snapshot.opLog,
+      {
+        position: snapshot.opLog.length,
+        kind: "acceptance" as const,
+        demandHash: demandHash(demand),
+        instant: 5n,
+        deadline: 1_000_000n,
+        nonce: answer.nonce,
+        signature,
+      },
+    ];
+    expect(replayLog(f.backing, log)).toBeUndefined();
+  });
+
+  it("accepts an answer inside the demand's window", () => {
+    const f = setup();
+    f.venue.advance(5n);
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 80n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    const answer = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.backer, f.backing),
+    };
+    f.sequencer.submitAcceptance(answer, ed25519.sign(encodeAcceptance(answer), SECRETS.backer));
+    const replay = replayLog(f.backing, f.sequencer.snapshot()[0]!.opLog)!;
+    expect(replay.demands[0]?.acceptedDeadline).toBe(10n);
+  });
+
   it("refuses an acceptance of a demand that was never filed", () => {
     // The backer cannot have answered what nobody presented, and an operator
     // saying otherwise is inventing evidence about the backer.

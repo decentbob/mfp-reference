@@ -342,6 +342,12 @@ export function replayLog(
           const key = bytesToHex(entry.demandHash);
           const record = standing.get(key);
           if (record === undefined) return undefined;
+          // An answer may not outlast the window the holder chose. Unbounded, a
+          // backer signs one running past every horizon, the ledger refuses it,
+          // and an operator serves it anyway - after which isDishonoured reads a
+          // laundered acceptance and the failure never becomes a public fact.
+          // The lower half of the ledger's range is time-dependent and stays out.
+          if (entry.deadline > record.deadline) return undefined;
           standing.set(key, { ...record, acceptedDeadline: entry.deadline });
           break;
         }

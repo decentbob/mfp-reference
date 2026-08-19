@@ -97,6 +97,7 @@ function encodeSnapshot(snapshot: BackingSnapshot): Uint8Array {
   snapshot.opLog.forEach((entry, i) => writeOpEntry(w, snapshot.name, entry, i));
   return w.finish();
 }
+
 /**
  * The deterministic root over a set of served backings. Sorted by backing name
  * so the root is independent of the order the sequencer iterates, and two
