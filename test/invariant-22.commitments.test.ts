@@ -89,10 +89,11 @@ describe("invariant 22: state proves against the latest commitment", () => {
     const { sequencer } = setup();
     const commitment = sequencer.commit();
     const snapshot = sequencer.snapshot();
-    // Inflate a balance in the asserted state.
+    // Reassign the holding rather than inflate it, so the totals still
+    // reconcile and the root is what has to catch it.
     const tampered = snapshot.map((s) => ({
       ...s,
-      balances: s.balances.map(([k, v]) => [k, v + 1n] as const),
+      balances: s.balances.map(([, v]) => [KEYS.mallory, v] as const),
     }));
     expect(stateRoot(tampered)).not.toEqual(commitment.root);
   });
@@ -138,7 +139,7 @@ describe("invariant 22: the state root is injective", () => {
     const state = (from: Uint8Array, to: Uint8Array) => [
       {
         name,
-        issued: 7n,
+        issued: 0n,
         burned: 0n,
         balances: [],
         opLog: [{ position: 0, kind: "transfer" as const, from, to, quantity: 7n, nonce: 0n }],
@@ -152,7 +153,7 @@ describe("invariant 22: the state root is injective", () => {
   it("rejects an over-long balance key that would swallow later fields", () => {
     const long = new Uint8Array(87).fill(0xbb);
     expect(() =>
-      stateRoot([{ name, issued: 5n, burned: 0n, balances: [[long, 0n]], opLog: [], demands: [] }]),
+      stateRoot([{ name, issued: 0n, burned: 0n, balances: [[long, 0n]], opLog: [], demands: [] }]),
     ).toThrow(EncodingError);
   });
 
@@ -211,6 +212,32 @@ describe("invariant 22: committed state has exactly one meaning", () => {
     ).toThrow(EncodingError);
   });
 
+  it("rejects committed state that breaks conservation (invariant 10)", () => {
+    // "outstanding = issued - burned, in claim quantity, per backing, AT EVERY
+    // PUBLISHED MOMENT" — and a committed state is a published moment. Without
+    // this an operator can commit a state in which nobody holds anything and go
+    // dark, so no holder can prove a holding and §C2b's redemption never opens.
+    const state = (issued: bigint, burned: bigint, balances: readonly (readonly [Uint8Array, bigint])[]) => [
+      { name, issued, burned, balances, opLog: [], demands: [] },
+    ];
+    expect(() => stateRoot(state(100n, 0n, [[holder, 100n]]))).not.toThrow();
+    expect(() => stateRoot(state(100n, 30n, [[holder, 70n]]))).not.toThrow();
+    // Balances erased while issued stands: the shape that hides a holding.
+    expect(() => stateRoot(state(100n, 0n, []))).toThrow(EncodingError);
+    // Balances inflated beyond what was issued.
+    expect(() => stateRoot(state(100n, 0n, [[holder, 101n]]))).toThrow(EncodingError);
+    // More burned than ever issued.
+    expect(() => stateRoot(state(10n, 20n, []))).toThrow(EncodingError);
+    expect(
+      stateProvesCommitment(state(100n, 0n, []), {
+        sequence: 0n,
+        root: name,
+        operator: name,
+        signature: new Uint8Array(64),
+      }),
+    ).toBe(false);
+  });
+
   it("rejects an op-log position that does not match its index", () => {
     // A gap lets an operator commit to state in which a holder's valid,
     // operator-signed receipt for the missing position proves against nothing.
@@ -222,7 +249,7 @@ describe("invariant 22: committed state has exactly one meaning", () => {
       nonce: 0n,
     });
     expect(() =>
-      stateRoot([{ name, issued: 2n, burned: 2n, balances: [], opLog: [entry(0), entry(5)] , demands: [] }]),
+      stateRoot([{ name, issued: 0n, burned: 0n, balances: [], opLog: [entry(0), entry(5)], demands: [] }]),
     ).toThrow(EncodingError);
   });
 
@@ -236,7 +263,7 @@ describe("invariant 22: committed state has exactly one meaning", () => {
     const state = (acceptedDeadline: bigint | undefined) => [
       {
         name,
-        issued: 1n,
+        issued: 0n,
         burned: 0n,
         balances: [],
         opLog: [],
@@ -355,7 +382,7 @@ describe("invariant 22: hostile presentation entries fail the proof, never throw
   const sig = new Uint8Array(64);
   const commitment = { sequence: 0n, root: name, operator: name, signature: sig };
   const withLog = (entry: unknown) => [
-    { name, issued: 1n, burned: 0n, balances: [], opLog: [entry], demands: [] },
+    { name, issued: 0n, burned: 0n, balances: [], opLog: [entry], demands: [] },
   ] as Parameters<typeof stateRoot>[0];
 
   it("rejects a short demand hash on an acceptance, release or withdrawal", () => {
