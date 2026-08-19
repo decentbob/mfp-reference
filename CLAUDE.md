@@ -109,6 +109,29 @@ Invariants not listed here (3–4, 6, 11–12, 19–20, 25) still bind; several 
 become implementable with the shielded constructions. Read §C0 of
 construction.md before touching anything they govern.
 
+## What an operator must do, that no code here enforces
+
+Two rules the protocol cannot check but the reference implementation must not
+leave unsaid. Both were reached by asking what a failing sequencer costs
+somebody, and both are recorded in [[DECISIONS.md]] with the reasoning.
+
+- **One writer at a time**, or a threshold key. Two live servers holding one
+  operator key co-sign conflicting operations, and `fault.ts` proves that
+  against the operator exactly as if it were malice — the protocol cannot tell a
+  botched failover from collusion and does not try. A **t-of-n threshold with
+  t > n/2** removes the possibility rather than recording it, since two disjoint
+  quorums cannot exist; aggregated to one Ed25519 key it is invisible here, so
+  the name, E and strict verification are untouched.
+- **The payee obtains the receipt at payment time.** During a §C2b gap the
+  operator's log is unpublished, so its receipt is the only evidence outside it
+  that an operation was accepted at all. A payee without one has the payer's
+  signature and nothing that says the operator ever saw it. `submitTransfer`
+  returns the receipt to whoever submitted, which is normally the payer.
+
+A receipt proves **acceptance, not a holding**: a payee who was paid and paid
+onward still holds the receipt for what they received. Reading it as a holding
+is how a redemption pays a party that has already spent.
+
 ## Design rules
 
 The invariants above say *what* must be true. These say *how* to build it. The

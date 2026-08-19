@@ -209,8 +209,18 @@ function standingDemand(state: LedgerState, hash: Uint8Array): DemandRecord {
   return record;
 }
 
-/** Who the law requires to have signed, from the terms and the state alone. */
-function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uint8Array {
+/**
+ * Who the law requires to have signed, from the terms and the operation alone —
+ * or undefined where that is not enough. A release and a withdrawal name a
+ * demand rather than a signer, so their signer is whoever filed that demand,
+ * which is state.
+ *
+ * Exported because a fault proof needs the same rule (fault.ts): a caller who
+ * could NAME the signer could choose who is at fault, so the signer is derived
+ * by the law in both places, from one definition rather than two that agree
+ * until they do not.
+ */
+export function signerFromTerms(backing: Backing, entry: PublishedOp): Uint8Array | undefined {
   switch (entry.kind) {
     case "issue":
     case "acceptance":
@@ -222,8 +232,17 @@ function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uin
       return entry.holder;
     case "release":
     case "withdrawal":
-      return standingDemand(state, entry.demandHash).holder;
+      return undefined;
   }
+}
+
+/** Who the law requires to have signed, reading the state where it must. */
+function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uint8Array {
+  const fromTerms = signerFromTerms(backing, entry);
+  if (fromTerms !== undefined) return fromTerms;
+  // Only a release or a withdrawal reaches here, and both name a demand.
+  const demandHash = (entry as { demandHash: Uint8Array }).demandHash;
+  return standingDemand(state, demandHash).holder;
 }
 
 const SIGNATURE_REFUSAL: Record<PublishedOp["kind"], string> = {

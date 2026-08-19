@@ -18,7 +18,7 @@ import { ByteWriter, compareBytes, copyBytes } from "./bytes.js";
 import { RECEIPT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
 import type { BackingSnapshot } from "./ledger.js";
-import { opHashOfEntry } from "./oplog.js";
+import { opHashOfEntry, type PublishedOp } from "./oplog.js";
 
 export interface Receipt {
   readonly backingName: Uint8Array;
@@ -84,6 +84,29 @@ export function verifyReceipt(receipt: Receipt): boolean {
     return false;
   }
   return verifySignatureStrict(receipt.signature, message, receipt.operator);
+}
+
+/**
+ * Whether this receipt is the operator's co-signature over exactly this
+ * operation. The pairing is what a holder exhibits when there is no committed
+ * state to check against — during a §C2b gap the operator's log is unpublished,
+ * and its receipt is the only evidence outside it that the operation was
+ * accepted at all.
+ *
+ * It proves acceptance, and **not a holding**: a payee who was paid and then
+ * paid onward still holds the receipt for what they received. Reading it as a
+ * holding is how a redemption pays a party that has already spent.
+ *
+ * A verifier: the receipt and the operation both come from whoever exhibits
+ * them, so anything malformed is a pairing that does not hold.
+ */
+export function receiptCovers(op: PublishedOp, receipt: Receipt): boolean {
+  try {
+    if (!verifyReceipt(receipt)) return false;
+    return compareBytes(opHashOfEntry(receipt.backingName, op), receipt.opHash) === 0;
+  } catch {
+    return false;
+  }
 }
 
 /**

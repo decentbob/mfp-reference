@@ -16,6 +16,110 @@ Format:
 
 ---
 
+## 2026-08-19 - Slice 9: the holder can be at fault too
+
+**Question:** slice 8 left §C2b's challenge window defeatable by the claimant.
+She knows about her own double-spend before her payee does, so she reaches the
+venue first with a transfer to a key she generated for the purpose, and the
+honest payee finds the nonce spent. Bob asked whether the payee can at least
+come away with **proof of fraud**, since the system needs trust in the operator
+regardless.
+
+**Decision (Bob): yes, and the proof needs nothing from the operator.**
+
+Bob holds the claimant's signature over the transfer that paid him. The venue
+carries her signature over the redemption claim. Both are at one point in her
+own nonce sequence, and a nonce is per (signer, backing) with the law consuming
+exactly one per operation - so only one of them can ever have been applied, and
+she knew that when she signed the second. That is checkable by any stranger,
+forever, with no commitment, no venue and no operator asked.
+
+It closes a gap in the system's own posture rather than adding a new idea.
+Misbehaviour is made **provable** rather than prevented everywhere here -
+invariant 22 on two roots at one sequence, §C2b's grades on facts a stranger
+checks, §C3's "publicly checkable... with nobody reporting anything" - and that
+posture covered the operator and never the holder.
+
+Three predicates, in a new `fault.ts` collecting them on one screen the way
+`contexts.ts` collects domain tags, because "what can be proven against whom" is
+exactly what an auditor wants in one place:
+
+- **`equivocatingSigner`** - one key authorised two operations at one nonce.
+  Returns the key rather than a boolean: the key is derived here, so the caller
+  does not otherwise have it, and naming the party is what a proof is for.
+- **`isDoubleAcceptance`** - an operator co-signed both halves of that.
+- **`isDoublePosition`** - an operator co-signed two operations into one log
+  position, so one of its receipts misdescribes its own log.
+
+**The signer is derived, never asserted.** A caller who could name the signer
+could choose who is at fault, so it comes from the law's own rule and the
+signature must verify under it. `signerOf` in ledger.ts was split rather than
+copied: `signerFromTerms` is its state-free half and both callers read it, so
+there is one definition instead of two that agree until they do not. The price
+is that a release or withdrawal cannot be proved by a pair of operations alone -
+the law reads their signer from the demand they name - and it is refused rather
+than guessed.
+
+**A resubmission is not a fault.** Invariant 26 exists so that repeating a
+request is safe, so the canonical messages are compared rather than the objects:
+equivocation is two different operations, never one sent twice.
+
+**Not built, deliberately:** a `holdingProvenByReceipt`. It was in the plan
+until Bob pointed out that claims travel - Alice pays Bob, Bob pays Carol, and
+both hold a receipt for what they received while only Carol still holds
+anything. An incoming receipt proves **acceptance, not a holding**, and a
+function with that name would have baked the error into the API. `receiptCovers`
+says only what it can: this operator co-signed this exact operation. Its doc
+comment says the rest.
+
+**What this does not do:** pay Bob. The evidence that would - which of the two
+signatures the operator accepted - exists only in the dark operator's
+uncommitted state. §15 prices the fault instead: a revealed double-spender loses
+its key's accumulated history, and the key at fault is the one that accepted the
+backing's terms, so a fresh payee key evades nothing.
+
+**Operator constructions, recorded in CLAUDE.md rather than built:** Bob's, and
+better than the hot standby I proposed.
+
+- A **threshold** operator key (t-of-n, aggregating to one Ed25519 key) makes
+  the replication a fact rather than a promise: a co-signature existing proves t
+  servers saw the operation. With t > n/2 two disjoint quorums cannot exist, so
+  the operator **cannot equivocate** - prevented rather than recorded, which is
+  stronger than this system's usual posture. It is invisible below the signing
+  boundary, so E, the name and `verifySignatureStrict` are all untouched.
+  (Unverified here: whether a given aggregation scheme's signatures pass strict
+  non-ZIP215 verification. To confirm before anyone relies on it.)
+- Failing that, **one writer at a time**. Two live servers holding one operator
+  key produce exactly the artefacts above, and the protocol cannot tell a
+  botched failover from malice - the same standard it already applies to a
+  self-framing commitment equivocation. Note that `nextSequenceFor` deriving the
+  next sequence from the venue guarantees the collision rather than softening
+  it, which is right for its own case and worth knowing here.
+- **The payee obtains the receipt at payment time.** A holder with no receipt
+  has no evidence the operator ever accepted the operation, so the operator can
+  deny having seen it. `submitTransfer` returns the receipt to whoever submitted,
+  normally the payer, which makes this a wallet-protocol obligation.
+
+**Two branches parked, with reasons.** Successor sequencers (§C2's replacement
+object) matter for replacing an operator deliberately, not for outages, since a
+standby or a threshold covers those; and it is the correct form of "rotate the
+operator key", which cannot be done by editing E - E is inside the name, so a
+new operator key is a **new backing** and the outstanding claims do not follow
+(`check-rotate-e.mjs`). Gathering the uncommitted tail from holders' receipts
+covers only an operator that ran neither construction, and its ordering comes
+free from the positions receipts already carry.
+
+**Rejected:** several sequencers serving one backing with "first anchoring
+decides". Alice submits conflicting spends to two of them, both co-sign, and two
+payees hold valid receipts of which one is worthless - the double-spend the
+sequencer exists to prevent (§C2: "it co-signs, and refuses a second spend by
+declining to sign"), with invariant 22 losing its singular "this backing's
+operator" as well. Making it work means a consensus protocol between them, at
+which point they are one logical sequencer with extra round trips.
+
+**Spec change:** none needed. The wording fix from slice 8 is filed as
+money-from-first-principles#1.
+
 ## 2026-08-19 - Slice 8: the redemption legs are operations, published elsewhere
 
 **Question:** §C2b's payment path - the claim/acceptance/release legs, the
