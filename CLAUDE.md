@@ -171,6 +171,13 @@ for speed anywhere else; this is a reference implementation, not a product.
   `invariant-07.issuance-paths.test.ts`. Each test carries a one-line
   plain-language statement of what it checks. Bob reviews the tests; the
   implementation is judged by the tests.
+- **Prove it, don't argue it.** A bug is demonstrated by a script that runs the
+  exploit, and the fix by that same script failing to exploit it. An argument
+  that code is wrong is a hypothesis; only a run settles it. Scratch scripts are
+  gitignored root `.mjs` files.
+- **Regression-review the fixes.** After fixing review findings, review the
+  fixes themselves. Every round so far has found a real bug there, and the
+  recurring shape is a fix that bounded one input and left the other open.
 - **Explain, don't just produce.** Bob is learning TypeScript and git. When
   asked to explain, walk through the code in plain language. Prefer readable
   code over clever code everywhere.
