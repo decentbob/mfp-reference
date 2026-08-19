@@ -166,7 +166,13 @@ export class Sequencer {
     );
   }
 
-  /** Routing is refused before an operation is even encoded. */
+  /**
+   * Routing is refused before an operation is even encoded, and before any read
+   * is answered. "Is this backing mine?" is the sequencer's question, so a
+   * client can tell an operator that does not serve them from the law refusing
+   * them — the ledger would answer with a LedgerError, which names the wrong
+   * boundary.
+   */
   private requireServed(backing: Backing): void {
     if (!this.ledger.has(backing)) {
       throw new SequencerError("backing not served by this sequencer");
@@ -204,29 +210,35 @@ export class Sequencer {
   }
 
   outstanding(backing: Backing): bigint {
+    this.requireServed(backing);
     return this.ledger.outstanding(backing);
   }
 
   balance(backing: Backing, holder: Uint8Array): bigint {
+    this.requireServed(backing);
     return this.ledger.balance(backing, holder);
   }
 
   /** Units this holder can still spend: held minus committed by open demands. */
   availableBalance(backing: Backing, holder: Uint8Array): bigint {
+    this.requireServed(backing);
     return this.ledger.availableBalance(backing, holder);
   }
 
   /** The standing demand record (invariant 23), as copies. */
   openDemands(backing: Backing): DemandRecord[] {
+    this.requireServed(backing);
     return this.ledger.openDemands(backing);
   }
 
   /** A copy of the full operation log, all seven kinds. */
   opLog(backing: Backing): OpLogEntry[] {
+    this.requireServed(backing);
     return this.ledger.opLog(backing);
   }
 
   nextNonce(signer: Uint8Array, backing: Backing): bigint {
+    this.requireServed(backing);
     return this.ledger.nextNonce(signer, backing);
   }
 

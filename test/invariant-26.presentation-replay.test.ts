@@ -289,6 +289,22 @@ describe("the sequencer owns routing and the clock", () => {
     );
   });
 
+  it("a routing question is answered by the sequencer, not the law", () => {
+    // "The sequencer owns routing (is this backing mine?) and raises
+    // SequencerError; the ledger owns the law and funds and raises
+    // LedgerError." A client must be able to tell "you do not serve this" from
+    // "the law refused me", and every read accessor is a place that can be
+    // asked about a backing this operator never took on.
+    const sequencer = new Sequencer(SECRETS.operator, new Venue());
+    const stranger = makeTransparentBacking(SECRETS.backer2, "kWh");
+    expect(() => sequencer.nextNonce(KEYS.alice, stranger)).toThrow(SequencerError);
+    expect(() => sequencer.balance(stranger, KEYS.alice)).toThrow(SequencerError);
+    expect(() => sequencer.availableBalance(stranger, KEYS.alice)).toThrow(SequencerError);
+    expect(() => sequencer.outstanding(stranger)).toThrow(SequencerError);
+    expect(() => sequencer.openDemands(stranger)).toThrow(SequencerError);
+    expect(() => sequencer.opLog(stranger)).toThrow(SequencerError);
+  });
+
   it("the clock it reads is the venue's", () => {
     const f = setup();
     expect(f.sequencer.witnessedIndex()).toBe(5n);
