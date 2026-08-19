@@ -126,6 +126,7 @@ describe("invariant 22: the state root is injective", () => {
         burned: 0n,
         balances: [],
         opLog: [{ position: 0, kind: "transfer" as const, from, to, quantity: 7n, nonce: 0n }],
+        demands: [],
       },
     ];
     expect(() => stateRoot(state(bytes.slice(0, 32), bytes.slice(32)))).not.toThrow();
@@ -135,12 +136,12 @@ describe("invariant 22: the state root is injective", () => {
   it("rejects an over-long balance key that would swallow later fields", () => {
     const long = new Uint8Array(87).fill(0xbb);
     expect(() =>
-      stateRoot([{ name, issued: 5n, burned: 0n, balances: [[long, 0n]], opLog: [] }]),
+      stateRoot([{ name, issued: 5n, burned: 0n, balances: [[long, 0n]], opLog: [], demands: [] }]),
     ).toThrow(EncodingError);
   });
 
   it("rejects two snapshots for one backing", () => {
-    const one = { name, issued: 0n, burned: 0n, balances: [], opLog: [] };
+    const one = { name, issued: 0n, burned: 0n, balances: [], opLog: [], demands: [] };
     expect(() => stateRoot([one, one])).toThrow(EncodingError);
   });
 });
@@ -164,13 +165,14 @@ describe("verifiers return false on hostile input, never throw", () => {
       burned: 0n,
       balances: [],
       opLog: [{ position: 1.5, kind: "burn" as const, holder: name, quantity: 1n, nonce: 0n }],
+      demands: [],
     };
     const receipt = { backingName: name, opHash: name, position: 0n, operator: name, signature: sig };
     expect(receiptProvenBy(receipt, hostile)).toBe(false);
   });
 
   it("a negative served amount fails the commitment check instead of crashing", () => {
-    const bad = [{ name, issued: -1n, burned: 0n, balances: [], opLog: [] }];
+    const bad = [{ name, issued: -1n, burned: 0n, balances: [], opLog: [], demands: [] }];
     expect(stateProvesCommitment(bad, { index: 0n, root: name, operator: name, signature: sig })).toBe(false);
   });
 });
@@ -188,7 +190,7 @@ describe("invariant 22: committed state has exactly one meaning", () => {
     // signature, and no second root exists to prove a fault.
     expect(() =>
       stateRoot([
-        { name, issued: 100n, burned: 0n, balances: [[holder, 100n], [holder, 0n]], opLog: [] },
+        { name, issued: 100n, burned: 0n, balances: [[holder, 100n], [holder, 0n]], opLog: [], demands: [] },
       ]),
     ).toThrow(EncodingError);
   });
@@ -204,7 +206,7 @@ describe("invariant 22: committed state has exactly one meaning", () => {
       nonce: 0n,
     });
     expect(() =>
-      stateRoot([{ name, issued: 2n, burned: 2n, balances: [], opLog: [entry(0), entry(5)] }]),
+      stateRoot([{ name, issued: 2n, burned: 2n, balances: [], opLog: [entry(0), entry(5)] , demands: [] }]),
     ).toThrow(EncodingError);
   });
 
@@ -213,7 +215,7 @@ describe("invariant 22: committed state has exactly one meaning", () => {
     // proof" into a hang.
     const started = Date.now();
     expect(
-      stateProvesCommitment([{ name, issued: 1n << 200000n, burned: 0n, balances: [], opLog: [] }], {
+      stateProvesCommitment([{ name, issued: 1n << 200000n, burned: 0n, balances: [], opLog: [], demands: [] }], {
         index: 0n,
         root: name,
         operator: name,

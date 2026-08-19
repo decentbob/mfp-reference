@@ -12,6 +12,10 @@
 //   mfp/burn/v1                a holder destroying units
 //   mfp/receipt/v1             an operator co-signing an accepted operation
 //   mfp/commitment/v1          an operator committing to served state
+//   mfp/demand/v1              a holder presenting claims for payment
+//   mfp/acceptance/v1          a backer answering a demand
+//   mfp/release/v1             a holder settling an accepted demand
+//   mfp/withdrawal/v1          a holder ending an unanswered demand
 
 const encoder = new TextEncoder();
 const tag = (s: string): Uint8Array => encoder.encode(s);
@@ -22,6 +26,10 @@ export const TRANSFER_CONTEXT = tag("mfp/transfer/v1");
 export const BURN_CONTEXT = tag("mfp/burn/v1");
 export const RECEIPT_CONTEXT = tag("mfp/receipt/v1");
 export const COMMITMENT_CONTEXT = tag("mfp/commitment/v1");
+export const DEMAND_CONTEXT = tag("mfp/demand/v1");
+export const ACCEPTANCE_CONTEXT = tag("mfp/acceptance/v1");
+export const RELEASE_CONTEXT = tag("mfp/release/v1");
+export const WITHDRAWAL_CONTEXT = tag("mfp/withdrawal/v1");
 
 /** Shared UTF-8 codecs. The decoder is strict and BOM-preserving so that
  *  decode(encode(s)) === s for every well-formed string. */
@@ -41,6 +49,10 @@ const ALL_CONTEXTS = [
   BURN_CONTEXT,
   RECEIPT_CONTEXT,
   COMMITMENT_CONTEXT,
+  DEMAND_CONTEXT,
+  ACCEPTANCE_CONTEXT,
+  RELEASE_CONTEXT,
+  WITHDRAWAL_CONTEXT,
 ];
 
 export function contextsArePrefixFree(tags: readonly Uint8Array[] = ALL_CONTEXTS): boolean {

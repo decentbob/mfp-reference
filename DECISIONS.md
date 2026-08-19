@@ -16,6 +16,67 @@ Format:
 
 ---
 
+## 2026-08-19 - Slice 4 scoping: presentation and dishonour, single-phase
+
+**Question:** C3 gives two protocols - demand-accept-release for consent
+between the parties, and prepare-decide-commit for atomicity across
+sequencers - and says "one with only the first leaves the hole open". Which
+applies here, and what is in scope?
+
+**Decisions (Bob):**
+
+- **Single-phase, on the spec's own terms.** C3: single-phase suffices
+  "wherever every lock in the set can be taken in one atomically signed
+  decision: R empty and the payout settling outside the claim layer, or the
+  whole set and the paying leg inside one operator". One sequencer, with the
+  backer paying in something the claim layer does not carry, is exactly that
+  case. Prepare-decide-commit is not deferred for convenience; it is the
+  answer to a problem this configuration does not have. It arrives with
+  multi-sequencer transfers.
+
+- **Settlement is a transfer to the backer, not a burn.** Invariant 10:
+  presentation destroys nothing - presenting hands claims to the backer, who
+  is then simply their holder. Only an explicit burn lowers outstanding.
+
+- **A demand commits, it does not surrender.** The named quantity can no
+  longer be transferred or burned, but it stays the holder's until settlement
+  or withdrawal. The lock is derived by summing open demands rather than
+  tracked in a parallel counter, so there is one source of truth and nothing
+  that can desync (design rule: one mechanism per property).
+
+- **An unanswered demand stands past its deadline.** C3 is explicit: the
+  deadline "marks when non-payment becomes a public fact, and it is not the
+  end of the commitment". Only withdrawal or settlement ends it, and
+  withdrawal is unilateral and holder-signed - the protection against a backer
+  that stalls, which it cannot wait out. An accepted demand cannot be
+  withdrawn: the holder has an answer to release against or to let expire.
+
+- **Dishonour is a pure predicate, not a stored state.** `isDishonoured(record,
+  atWitnessedIndex)` - no acceptance, and past the deadline. C3: "Dishonour is
+  then not a separate mechanism. It is the branch where the acceptance never
+  arrives." Instants and deadlines are witnessed indices supplied by the
+  caller, never wall-clock time (invariant 21).
+
+- **Presentation is a claim-layer operation this slice.** The four operations
+  live on TransparentLedger, and the standing demand record travels in the
+  snapshot so a commitment commits to it (invariant 23). They are NOT yet
+  reachable through Sequencer. The reason is a design one rather than a scope
+  one: a receipt binds an operation to its position in the operation log, and
+  demand/acceptance/withdrawal move no value, so they have no position. Giving
+  them receipts and invariant-26 idempotency means extending the operation log
+  with presentation kinds - the unified answer, which should be done as its
+  own considered pass rather than bolted on as a half-idempotent wrapper.
+  **This is the next slice.**
+
+**Deferred with reasons:** prepare-decide-commit and the cross-operator
+decision venue (needs multi-sequencer); chain-asset legs and escrow (needs a
+real venue); a payout paying in claims, which settles as a swap inside the
+settlement (needs C1's n-party swap); dated backings, the zero-date and the
+payout floating after the deadline (needs the payout language); non-service
+objects and the silence clause (C2b).
+
+**Spec change:** none needed.
+
 ## 2026-08-19 — One framing rule, and the design rules it belongs to
 
 **Question:** A whole-codebase review found that the commitment root was **not
