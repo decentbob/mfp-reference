@@ -209,8 +209,18 @@ function standingDemand(state: LedgerState, hash: Uint8Array): DemandRecord {
   return record;
 }
 
-/** Who the law requires to have signed, from the terms and the state alone. */
-function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uint8Array {
+/**
+ * Who the law requires to have signed, from the terms and the operation alone —
+ * or undefined where that is not enough. A release and a withdrawal name a
+ * demand rather than a signer, so their signer is whoever filed that demand,
+ * which is state.
+ *
+ * Exported because a fault proof needs the same rule (fault.ts): a caller who
+ * could NAME the signer could choose who is at fault, so the signer is derived
+ * by the law in both places, from one definition rather than two that agree
+ * until they do not.
+ */
+export function signerFromTerms(backing: Backing, entry: PublishedOp): Uint8Array | undefined {
   switch (entry.kind) {
     case "issue":
     case "acceptance":
@@ -222,8 +232,30 @@ function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uin
       return entry.holder;
     case "release":
     case "withdrawal":
-      return standingDemand(state, entry.demandHash).holder;
+      return undefined;
   }
+  // Exhaustive, and asserted rather than assumed: the return type admits
+  // undefined, so a kind added to PublishedOp and forgotten here would compile
+  // and then be refused at runtime for no visible reason. This line makes it a
+  // compile error at the place that has to decide.
+  const unreachable: never = entry;
+  return unreachable;
+}
+
+/**
+ * Who the law requires to have signed, reading the state where it must. Only a
+ * release and a withdrawal need it, and they are narrowed by kind rather than
+ * cast: a cast would compile for an eighth operation kind that had no demand to
+ * read, and `standingDemand` would then throw a TypeError where every caller of
+ * applyEntry expects a LedgerError.
+ */
+function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uint8Array {
+  if (entry.kind === "release" || entry.kind === "withdrawal") {
+    return standingDemand(state, entry.demandHash).holder;
+  }
+  const fromTerms = signerFromTerms(backing, entry);
+  if (fromTerms === undefined) throw new LedgerError("no signer for this operation");
+  return fromTerms;
 }
 
 const SIGNATURE_REFUSAL: Record<PublishedOp["kind"], string> = {
