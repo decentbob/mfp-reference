@@ -29,10 +29,11 @@ import { opMessageOfEntry } from "../src/oplog.js";
 // sequencers with identical served state must produce the identical root.
 
 function fresh() {
-  const sequencer = new Sequencer(SECRETS.operator, new Venue());
+  const venue = new Venue();
+  const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
-  return { sequencer, backing };
+  return { sequencer, backing, venue };
 }
 
 function rootOf(sequencer: Sequencer): string {
@@ -140,11 +141,11 @@ describe("invariant 23: the commitment commits to the standing demand record", (
 
 describe("invariant 23: every presentation operation moves the root", () => {
   function sequencerAt(index: bigint) {
-    const { sequencer, backing } = fresh();
+    const { sequencer, backing, venue } = fresh();
     const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
     sequencer.submitIssue(issue, ed25519.sign(encodeIssuance(issue), SECRETS.backer));
-    advanceWitnessedIndex(sequencer, index);
-    return { sequencer, backing };
+    advanceWitnessedIndex(venue, index);
+    return { sequencer, backing, venue };
   }
 
   it("demand, acceptance and release each move it", () => {
@@ -186,7 +187,7 @@ describe("invariant 23: every presentation operation moves the root", () => {
   });
 
   it("a withdrawal moves it, and the log entry is what remains", () => {
-    const { sequencer, backing } = sequencerAt(5n);
+    const { sequencer, backing, venue } = sequencerAt(5n);
     const demand = {
       backing,
       holder: KEYS.alice,
@@ -197,7 +198,7 @@ describe("invariant 23: every presentation operation moves the root", () => {
     };
     sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
     const withDemand = rootOf(sequencer);
-    advanceWitnessedIndex(sequencer, 11n);
+    advanceWitnessedIndex(venue, 11n);
 
     const walk = {
       backing,

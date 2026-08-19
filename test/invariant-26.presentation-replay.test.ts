@@ -27,8 +27,9 @@ import { advanceWitnessedIndex, KEYS, makeTransparentBacking, SECRETS } from "./
 // second idempotency mechanism.
 //
 // The witnessed index is no longer a caller's parameter here: the sequencer
-// reads it from its own latest published commitment at the venue, which is what
-// invariant 21 requires and what slice 4 could not supply.
+// reads it from the venue, which is what invariant 21 requires and what slice 4
+// could not supply. That the clock is the venue's rather than the operator's own
+// publication history is invariant-21.witnessed-time's subject.
 
 /** Issue 100 to Alice, then publish commitments up to witnessed index 5. */
 function setup() {
@@ -38,7 +39,7 @@ function setup() {
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
   const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
   sequencer.submitIssue(issue, ed25519.sign(encodeIssuance(issue), SECRETS.backer));
-  advanceWitnessedIndex(sequencer, 5n);
+  venue.advance(5n);
   return { venue, sequencer, backing };
 }
 
@@ -112,7 +113,7 @@ describe("invariant 26: presentation is sequenced, and sequenced means receipted
   it("a withdrawal is logged too, so the trail records the demand that ended", () => {
     const f = setup();
     const { hash } = present(f, 40n, 10n);
-    advanceWitnessedIndex(f.sequencer, 11n);
+    advanceWitnessedIndex(f.venue, 11n);
     expect(withdraw(f, hash).receipt.position).toBe(2n);
     expect(f.sequencer.opLog(f.backing).map((entry) => entry.kind)).toEqual([
       "issue",
@@ -164,7 +165,7 @@ describe("invariant 26: a repeated presentation request returns the identical re
   it("resubmitting a withdrawal returns the identical receipt", () => {
     const f = setup();
     const { hash } = present(f, 40n);
-    advanceWitnessedIndex(f.sequencer, 11n);
+    advanceWitnessedIndex(f.venue, 11n);
     const { op, signature, receipt } = withdraw(f, hash);
     expect(f.sequencer.submitWithdrawal(op, signature)).toEqual(receipt);
     expect(f.sequencer.openDemands(f.backing)).toHaveLength(0);
@@ -177,7 +178,7 @@ describe("invariant 26: a repeated presentation request returns the identical re
     const f = setup();
     const { hash } = present(f);
     const { op, signature, receipt } = accept(f, hash, 8n);
-    advanceWitnessedIndex(f.sequencer, 50n);
+    advanceWitnessedIndex(f.venue, 50n);
     expect(f.sequencer.submitAcceptance(op, signature)).toEqual(receipt);
   });
 
@@ -220,7 +221,7 @@ describe("invariant 26: a presentation receipt proves against committed state", 
     // so the operator cannot deny having accepted the withdrawal.
     const f = setup();
     const { hash } = present(f, 40n);
-    advanceWitnessedIndex(f.sequencer, 11n);
+    advanceWitnessedIndex(f.venue, 11n);
     const { receipt } = withdraw(f, hash);
     const snapshot = f.sequencer.snapshot()[0]!;
     expect(snapshot.demands).toHaveLength(0);
@@ -287,33 +288,10 @@ describe("the sequencer owns routing and the clock", () => {
     );
   });
 
-  it("a time-dependent operation is refused before the operator has published", () => {
-    // There is no witnessed time until the operator commits: the payout
-    // resolves against witnessed totals (invariant 21), and an operator with no
-    // commitment has none to resolve against.
-    const venue = new Venue();
-    const sequencer = new Sequencer(SECRETS.operator, venue);
-    const backing = makeTransparentBacking(SECRETS.backer);
-    sequencer.register(backing, signBacking(SECRETS.backer, backing));
-    const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
-    sequencer.submitIssue(issue, ed25519.sign(encodeIssuance(issue), SECRETS.backer));
-    const op = { backing, holder: KEYS.alice, quantity: 40n, instant: 0n, deadline: 10n, nonce: 0n };
-    expect(() => sequencer.submitDemand(op, ed25519.sign(encodeDemand(op), SECRETS.alice))).toThrow(
-      SequencerError,
-    );
-    // One commitment is enough to give it a clock.
-    sequencer.commit();
-    expect(sequencer.witnessedIndex()).toBe(0n);
-    expect(
-      sequencer.submitDemand(op, ed25519.sign(encodeDemand(op), SECRETS.alice)).position,
-    ).toBe(1n);
-  });
-
-  it("the witnessed index is the operator's own latest commitment index", () => {
+  it("the clock it reads is the venue's", () => {
     const f = setup();
     expect(f.sequencer.witnessedIndex()).toBe(5n);
-    expect(f.venue.latestFor(f.sequencer.operator)?.index).toBe(5n);
-    f.sequencer.commit();
+    f.venue.advance();
     expect(f.sequencer.witnessedIndex()).toBe(6n);
   });
 });

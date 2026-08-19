@@ -17,10 +17,9 @@
 //     state, so a third party can verify state without trusting the
 //     operator's live word;
 //   - a witnessed clock: presentation (§C3) turns on indices, and invariant 21
-//     forbids a time a party asserts alone, so the index comes from this
-//     operator's own latest published commitment at the venue. Before it has
-//     published anything it has no clock, and declines to serve an operation
-//     that needs one.
+//     forbids a time a party asserts alone, so the index comes from the venue —
+//     which advances whether or not this operator publishes, so a sequencer
+//     cannot freeze a deadline by going quiet.
 //
 // One venue per sequencer, taken at construction. The spec names the venue in E
 // beside the operator; E carries only the operator key here, so one venue for
@@ -172,7 +171,7 @@ export class Sequencer {
     const root = stateRoot(this.snapshot());
     const commitment = signCommitment(
       this.operatorSecret,
-      this.venue.nextIndexFor(this.operator),
+      this.venue.nextSequenceFor(this.operator),
       root,
     );
     this.venue.publish(commitment);
@@ -180,17 +179,13 @@ export class Sequencer {
   }
 
   /**
-   * The index every time-dependent decision is read at: this operator's latest
-   * published commitment (§C2b, "Finality means witnessed rather than
-   * co-signed"). An operator that has published nothing has no witnessed time,
-   * and says so rather than substituting a number of its own.
+   * The index every time-dependent decision is read at: the venue's, never this
+   * operator's own publication history. "Finality means witnessed rather than
+   * co-signed" (§C2b) — and a clock an operator could stop by going quiet would
+   * hand it every deadline in its book.
    */
   witnessedIndex(): bigint {
-    const latest = this.venue.latestFor(this.operator);
-    if (latest === undefined) {
-      throw new SequencerError("no witnessed index yet: publish a commitment first");
-    }
-    return latest.index;
+    return this.venue.witnessedIndex();
   }
 
   /** The served state, as it would be published for a verifier (invariant 23). */

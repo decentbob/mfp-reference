@@ -39,21 +39,21 @@ describe("invariant 22: state proves against the latest commitment", () => {
     expect(venue.latestFor(sequencer.operator)).toEqual(commitment);
   });
 
-  it("a commitment with a mutated root or index does not verify", () => {
+  it("a commitment with a mutated root or sequence does not verify", () => {
     const { sequencer } = setup();
     const commitment = sequencer.commit();
     const mutatedRoot = commitment.root.slice();
     mutatedRoot[0] = (mutatedRoot[0] as number) ^ 0xff;
     expect(verifyCommitment({ ...commitment, root: mutatedRoot })).toBe(false);
-    expect(verifyCommitment({ ...commitment, index: commitment.index + 1n })).toBe(false);
+    expect(verifyCommitment({ ...commitment, sequence: commitment.sequence + 1n })).toBe(false);
   });
 
-  it("the venue rejects an unsigned commitment and a non-extending index", () => {
+  it("the venue rejects an unsigned commitment and a non-extending sequence", () => {
     const { sequencer, venue } = setup();
     const first = sequencer.commit();
     const forged = { ...first, signature: new Uint8Array(64) };
     expect(() => venue.publish(forged)).toThrow(VenueError);
-    // Re-publishing the same index does not extend the operator's history.
+    // Re-publishing the same sequence does not extend the operator's history.
     expect(() => venue.publish(first)).toThrow(VenueError);
   });
 
@@ -75,27 +75,27 @@ describe("invariant 22: state proves against the latest commitment", () => {
     expect(stateRoot(tampered)).not.toEqual(commitment.root);
   });
 
-  it("two different roots at the same index by one operator are equivocation", () => {
+  it("two different roots at one sequence by one operator are equivocation", () => {
     const { sequencer } = setup();
     const honest = sequencer.commit();
-    // A second, conflicting commitment at the same index.
+    // A second, conflicting commitment at the same sequence.
     const forgedRoot = new Uint8Array(32).fill(0xab);
-    const conflicting = signCommitment(SECRETS.operator, honest.index, forgedRoot);
+    const conflicting = signCommitment(SECRETS.operator, honest.sequence, forgedRoot);
     expect(isEquivocation(honest, conflicting)).toBe(true);
   });
 
-  it("distinct roots at distinct indices are not equivocation", () => {
+  it("distinct roots at distinct sequences are not equivocation", () => {
     const { sequencer } = setup();
     const first = sequencer.commit();
     const second = sequencer.commit();
-    expect(second.index).toBe(first.index + 1n);
+    expect(second.sequence).toBe(first.sequence + 1n);
     expect(isEquivocation(first, second)).toBe(false);
   });
 
   it("a commitment signed by a different key is not the operator's equivocation", () => {
     const { sequencer } = setup();
     const honest = sequencer.commit();
-    const impostor = signCommitment(SECRETS.mallory, honest.index, new Uint8Array(32).fill(0xcd));
+    const impostor = signCommitment(SECRETS.mallory, honest.sequence, new Uint8Array(32).fill(0xcd));
     expect(isEquivocation(honest, impostor)).toBe(false);
   });
 });
@@ -146,7 +146,7 @@ describe("verifiers return false on hostile input, never throw", () => {
   const sig = new Uint8Array(64);
 
   it("a malformed operator key fails verification instead of crashing", () => {
-    expect(verifyCommitment({ index: 0n, root: name, operator: shortKey, signature: sig })).toBe(false);
+    expect(verifyCommitment({ sequence: 0n, root: name, operator: shortKey, signature: sig })).toBe(false);
     expect(
       verifyReceipt({ backingName: name, opHash: name, position: 0n, operator: shortKey, signature: sig }),
     ).toBe(false);
@@ -167,7 +167,7 @@ describe("verifiers return false on hostile input, never throw", () => {
 
   it("a negative served amount fails the commitment check instead of crashing", () => {
     const bad = [{ name, issued: -1n, burned: 0n, balances: [], opLog: [], demands: [] }];
-    expect(stateProvesCommitment(bad, { index: 0n, root: name, operator: name, signature: sig })).toBe(false);
+    expect(stateProvesCommitment(bad, { sequence: 0n, root: name, operator: name, signature: sig })).toBe(false);
   });
 });
 
@@ -227,7 +227,7 @@ describe("invariant 22: committed state has exactly one meaning", () => {
     expect(() => stateRoot(state(11n))).toThrow(EncodingError);
     expect(
       stateProvesCommitment(state(1_000_000n), {
-        index: 0n,
+        sequence: 0n,
         root: name,
         operator: name,
         signature: new Uint8Array(64),
@@ -241,7 +241,7 @@ describe("invariant 22: committed state has exactly one meaning", () => {
     const started = Date.now();
     expect(
       stateProvesCommitment([{ name, issued: 1n << 200000n, burned: 0n, balances: [], opLog: [], demands: [] }], {
-        index: 0n,
+        sequence: 0n,
         root: name,
         operator: name,
         signature: new Uint8Array(64),
@@ -255,7 +255,7 @@ describe("a hostile standing demand record fails the proof, never throws", () =>
   const name = new Uint8Array(32).fill(0x01);
   const base = { name, issued: 0n, burned: 0n, balances: [], opLog: [] };
   const commitment = {
-    index: 0n,
+    sequence: 0n,
     root: name,
     operator: name,
     signature: new Uint8Array(64),
@@ -331,7 +331,7 @@ describe("invariant 22: hostile presentation entries fail the proof, never throw
   const name = new Uint8Array(32).fill(0x01);
   const holder = new Uint8Array(32).fill(0x02);
   const sig = new Uint8Array(64);
-  const commitment = { index: 0n, root: name, operator: name, signature: sig };
+  const commitment = { sequence: 0n, root: name, operator: name, signature: sig };
   const withLog = (entry: unknown) => [
     { name, issued: 1n, burned: 0n, balances: [], opLog: [entry], demands: [] },
   ] as Parameters<typeof stateRoot>[0];

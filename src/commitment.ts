@@ -45,7 +45,12 @@ import { encodeDemandMessage } from "./presentation.js";
 export type { BackingSnapshot } from "./ledger.js";
 
 export interface Commitment {
-  readonly index: bigint;
+  /**
+   * The operator's own count of its commitments — NOT the venue's witnessed
+   * index. Equivocation is two different roots signed at one sequence number;
+   * the clock deadlines are read against is the venue's (venue.ts).
+   */
+  readonly sequence: bigint;
   readonly root: Uint8Array;
   readonly operator: Uint8Array;
   readonly signature: Uint8Array;
@@ -205,29 +210,29 @@ export function stateProvesCommitment(
   return compareBytes(root, commitment.root) === 0 && verifyCommitment(commitment);
 }
 
-function commitmentMessage(index: bigint, root: Uint8Array): Uint8Array {
+function commitmentMessage(sequence: bigint, root: Uint8Array): Uint8Array {
   const w = new ByteWriter();
   w.context(COMMITMENT_CONTEXT);
-  w.u64(index);
+  w.u64(sequence);
   w.key32(root, "root");
   return w.finish();
 }
 
 export function signCommitment(
   operatorSecret: Uint8Array,
-  index: bigint,
+  sequence: bigint,
   root: Uint8Array,
 ): Commitment {
   const operator = ed25519.getPublicKey(operatorSecret);
-  const signature = ed25519.sign(commitmentMessage(index, root), operatorSecret);
-  return { index, root, operator, signature };
+  const signature = ed25519.sign(commitmentMessage(sequence, root), operatorSecret);
+  return { sequence, root, operator, signature };
 }
 
-/** A commitment is valid iff the operator signed exactly (index, root). */
+/** A commitment is valid iff the operator signed exactly (sequence, root). */
 export function verifyCommitment(commitment: Commitment): boolean {
   let message: Uint8Array;
   try {
-    message = commitmentMessage(commitment.index, commitment.root);
+    message = commitmentMessage(commitment.sequence, commitment.root);
   } catch {
     return false;
   }
@@ -236,12 +241,15 @@ export function verifyCommitment(commitment: Commitment): boolean {
 
 /**
  * Two commitments are equivocation iff the same operator validly signed two
- * different roots at the same index — a provable fault against invariant 22.
+ * different roots at one sequence number — a provable fault against invariant
+ * 22. Keyed on the operator's own sequence, not on the venue's clock: an
+ * operator publishing two roots in one venue interval is ordinary batching,
+ * while signing two roots as its Nth commitment is the fault.
  */
 export function isEquivocation(a: Commitment, b: Commitment): boolean {
   return (
     compareBytes(a.operator, b.operator) === 0 &&
-    a.index === b.index &&
+    a.sequence === b.sequence &&
     compareBytes(a.root, b.root) !== 0 &&
     verifyCommitment(a) &&
     verifyCommitment(b)
