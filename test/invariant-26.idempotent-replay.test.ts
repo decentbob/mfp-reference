@@ -1,9 +1,10 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
 import { makeBacking, signBacking } from "../src/backing.js";
-import { LedgerError } from "../src/ledger.js";
+import { LedgerError, NonceError } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { receiptProvenBy, verifyReceipt } from "../src/receipt.js";
+import { EncodingError } from "../src/bytes.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
 import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
@@ -66,7 +67,7 @@ describe("invariant 26: a repeated request returns the identical prior response"
     const conflicting = { backing, from: KEYS.alice, to: KEYS.bob, quantity: 40n, nonce: 0n };
     expect(() =>
       sequencer.submitTransfer(conflicting, ed25519.sign(encodeTransfer(conflicting), SECRETS.alice)),
-    ).toThrow(SequencerError);
+    ).toThrow(NonceError);
     expect(sequencer.balance(backing, KEYS.bob)).toBe(30n);
   });
 
@@ -83,10 +84,10 @@ describe("invariant 26: a repeated request returns the identical prior response"
     expect(sequencer.balance(backing, KEYS.bob)).toBe(30n);
   });
 
-  it("a malformed operation is a SequencerError, not an escaping EncodingError", () => {
+  it("a malformed operation is an EncodingError from the encoder", () => {
     const { sequencer, backing } = setup();
     const zeroQuantity = { backing, from: KEYS.alice, to: KEYS.bob, quantity: 0n, nonce: 0n };
-    expect(() => sequencer.submitTransfer(zeroQuantity, new Uint8Array(64))).toThrow(SequencerError);
+    expect(() => sequencer.submitTransfer(zeroQuantity, new Uint8Array(64))).toThrow(EncodingError);
   });
 
   it("a receipt is proven by the committed state at its position", () => {

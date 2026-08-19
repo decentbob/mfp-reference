@@ -1,26 +1,27 @@
 // Canonical encodings of the signed claim-layer operations.
 //
-// Each operation type carries its own domain-separation context so a
-// signature over one kind of message can never be replayed as another kind.
-// The signed bytes are: context || fixed-layout fields. Replay of the same
-// kind is prevented by the signer's nonce, which is inside the signed bytes.
+// Each operation type carries its own domain-separation context (contexts.ts)
+// so a signature over one kind of message can never be replayed as another.
+// Replay of the same kind is prevented by the signer's nonce, which is inside
+// the signed bytes. Every field is fixed-width-and-asserted or length-prefixed
+// (the framing rule), so no two operations share an encoding and the operation
+// hash is a sound identity.
 //
-//   issuance  "mfp/issuance/v1" || backing name (32) || recipient key (32)
+//   issuance  context || backing name (32) || recipient key (32)
 //             || u32 length || quantity (minimal BE) || u64 nonce
-//   transfer  "mfp/transfer/v1" || backing name (32) || from key (32)
-//             || to key (32) || u32 length || quantity || u64 nonce
-//   burn      "mfp/burn/v1"     || backing name (32) || holder key (32)
+//   transfer  context || backing name (32) || from key (32) || to key (32)
 //             || u32 length || quantity || u64 nonce
+//   burn      context || backing name (32) || holder key (32)
+//             || u32 length || quantity || u64 nonce
+//
+// The field-level encoders take the backing NAME rather than the Backing
+// object, so a verifier holding only a committed operation-log entry can
+// reconstruct the exact signed message and hence its hash (see receipt.ts).
+// The op-shaped wrappers below feed them backing.name.
 
-import { backingName, type Backing } from "./backing.js";
-import { bigintToMinimalBytes, ByteWriter, EncodingError } from "./bytes.js";
-import { KEY_LENGTH } from "./keys.js";
-import { validateQuantity } from "./quantity.js";
-
-const textEncoder = new TextEncoder();
-const ISSUANCE_CONTEXT = textEncoder.encode("mfp/issuance/v1");
-const TRANSFER_CONTEXT = textEncoder.encode("mfp/transfer/v1");
-const BURN_CONTEXT = textEncoder.encode("mfp/burn/v1");
+import { type Backing } from "./backing.js";
+import { bigintToMinimalBytes, ByteWriter, validateQuantity } from "./bytes.js";
+import { BURN_CONTEXT, ISSUANCE_CONTEXT, TRANSFER_CONTEXT } from "./contexts.js";
 
 export interface IssuanceOp {
   readonly backing: Backing;
@@ -47,24 +48,21 @@ export interface BurnOp {
   readonly nonce: bigint;
 }
 
-function key(bytes: Uint8Array, what: string): Uint8Array {
-  if (bytes.length !== KEY_LENGTH) {
-    throw new EncodingError(`${what} must be ${KEY_LENGTH} bytes`);
-  }
-  return bytes;
+/** Context, then the backing name — the head every operation message shares. */
+function head(context: Uint8Array, backingName: Uint8Array): ByteWriter {
+  const w = new ByteWriter();
+  w.fixed(context, context.length, "context");
+  w.key32(backingName, "backing name");
+  return w;
 }
 
-function name(bytes: Uint8Array): Uint8Array {
-  if (bytes.length !== KEY_LENGTH) {
-    throw new EncodingError(`backing name must be ${KEY_LENGTH} bytes`);
-  }
-  return bytes;
+/** Quantity then nonce — the tail every operation message shares. */
+function tail(w: ByteWriter, quantity: bigint, nonce: bigint): Uint8Array {
+  validateQuantity(quantity, "quantity");
+  w.lengthPrefixed(bigintToMinimalBytes(quantity));
+  w.u64(nonce);
+  return w.finish();
 }
-
-// Field-level encoders take the backing NAME (not the Backing object), so a
-// verifier holding only a committed operation-log entry can reconstruct the
-// exact signed message and hence its hash (see receipt.ts). The op-shaped
-// wrappers below feed them backingName(op.backing).
 
 export function encodeIssuanceMessage(
   backingName: Uint8Array,
@@ -72,14 +70,9 @@ export function encodeIssuanceMessage(
   quantity: bigint,
   nonce: bigint,
 ): Uint8Array {
-  validateQuantity(quantity, "issuance quantity");
-  const w = new ByteWriter();
-  w.raw(ISSUANCE_CONTEXT);
-  w.raw(name(backingName));
-  w.raw(key(recipient, "recipient key"));
-  w.lengthPrefixed(bigintToMinimalBytes(quantity));
-  w.u64(nonce);
-  return w.finish();
+  const w = head(ISSUANCE_CONTEXT, backingName);
+  w.key32(recipient, "recipient key");
+  return tail(w, quantity, nonce);
 }
 
 export function encodeTransferMessage(
@@ -89,15 +82,10 @@ export function encodeTransferMessage(
   quantity: bigint,
   nonce: bigint,
 ): Uint8Array {
-  validateQuantity(quantity, "transfer quantity");
-  const w = new ByteWriter();
-  w.raw(TRANSFER_CONTEXT);
-  w.raw(name(backingName));
-  w.raw(key(from, "from key"));
-  w.raw(key(to, "to key"));
-  w.lengthPrefixed(bigintToMinimalBytes(quantity));
-  w.u64(nonce);
-  return w.finish();
+  const w = head(TRANSFER_CONTEXT, backingName);
+  w.key32(from, "from key");
+  w.key32(to, "to key");
+  return tail(w, quantity, nonce);
 }
 
 export function encodeBurnMessage(
@@ -106,24 +94,19 @@ export function encodeBurnMessage(
   quantity: bigint,
   nonce: bigint,
 ): Uint8Array {
-  validateQuantity(quantity, "burn quantity");
-  const w = new ByteWriter();
-  w.raw(BURN_CONTEXT);
-  w.raw(name(backingName));
-  w.raw(key(holder, "holder key"));
-  w.lengthPrefixed(bigintToMinimalBytes(quantity));
-  w.u64(nonce);
-  return w.finish();
+  const w = head(BURN_CONTEXT, backingName);
+  w.key32(holder, "holder key");
+  return tail(w, quantity, nonce);
 }
 
 export function encodeIssuance(op: IssuanceOp): Uint8Array {
-  return encodeIssuanceMessage(backingName(op.backing), op.recipient, op.quantity, op.nonce);
+  return encodeIssuanceMessage(op.backing.name, op.recipient, op.quantity, op.nonce);
 }
 
 export function encodeTransfer(op: TransferOp): Uint8Array {
-  return encodeTransferMessage(backingName(op.backing), op.from, op.to, op.quantity, op.nonce);
+  return encodeTransferMessage(op.backing.name, op.from, op.to, op.quantity, op.nonce);
 }
 
 export function encodeBurn(op: BurnOp): Uint8Array {
-  return encodeBurnMessage(backingName(op.backing), op.holder, op.quantity, op.nonce);
+  return encodeBurnMessage(op.backing.name, op.holder, op.quantity, op.nonce);
 }

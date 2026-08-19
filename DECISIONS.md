@@ -65,6 +65,63 @@ paper leaves open for the transparent setting.
 
 ---
 
+## 2026-08-19 — One framing rule, and the design rules it belongs to
+
+**Question:** A whole-codebase review found that the commitment root was **not
+injective**: `encodeSnapshot` wrote holder keys and backing names with `raw()`,
+and adjacent unframed fields are ambiguous — a 31-byte and a 33-byte key
+concatenate exactly like two 32-byte keys. Two different served states hashed
+to one root, so an operator could equivocate with a single signature and no
+provable fault, defeating invariant 22 precisely where the code claimed to
+enforce it. Demonstrated with a working collision.
+
+The same review found the codebase had no single rule for framing at all: some
+sites length-prefixed, some wrote raw, some length-checked first. That
+inconsistency was also the root of several accreted layers — encoders threw, so
+`receiptProvenBy` needed a try/catch, so `Sequencer.submit` needed another one
+translating `EncodingError` into `SequencerError`.
+
+**Decision (Bob):** state the rule once and enforce it in one place.
+`ByteWriter.fixed` / `ByteWriter.key32` assert width at the single point that
+writes a fixed-width field; everything variable-length is length-prefixed.
+Nothing is ever written raw. Honest output is byte-identical, so the slice-1
+golden vectors are untouched — the change only rejects inputs that were never
+representable.
+
+The rule is written into CLAUDE.md alongside six others (one mechanism per
+property; validate once at the owning boundary; copy in and copy out; verifiers
+never throw; an error names the boundary that refused; domain tags in one
+file). These are binding on future slices: a fix that adds a layer is a signal
+that the layer below is in the wrong place.
+
+**Consequences applied in the same pass:**
+
+- `verifySignatureStrict` length-checks the public key. noble checks it outside
+  its own try/catch, so an unchecked key made every verifier crash on hostile
+  input. Length only — the small-order rejection is already inside the strict
+  verify path, and repeating it cost a second point decompression per
+  verification.
+- `receiptProvenBy`, `verifyReceipt`, `verifyCommitment` and the new
+  `stateProvesCommitment` return `false` on any malformed input.
+- The UTF-8 decoder sets `ignoreBOM: true`. It was stripping a leading BOM, so
+  `encode → decode` was not the identity and one backing could have two names.
+- `Venue` is per operator (`latestFor`, `nextIndexFor`); a stranger's
+  commitments can no longer be mistaken for the operator being checked, and the
+  commitment index is derived from the record rather than sequencer memory, so
+  a failed publish cannot make an honest operator sign two roots at one index.
+- The backing name is a stored field computed once in `makeBacking`, replacing
+  a `WeakMap` memo plus a bare warm-up call. `nameHex` is stored beside it, so
+  the ledger and sequencer key registries on an immutable string.
+- `NonceError extends LedgerError` lets the ledger say "this nonce is not your
+  next" in its own voice, so the sequencer no longer pre-checks the nonce to
+  relabel the error. A malformed operation now surfaces as `EncodingError`
+  rather than being translated — it is one of the five named boundaries.
+- `quantity.ts` folded into `bytes.ts` (quantity bounds are byte-encoding
+  policy); domain tags moved to `contexts.ts`; the sequencer's duplicate
+  registry of backings deleted in favour of the ledger's.
+
+**Spec change:** none needed.
+
 ## 2026-08-18 — Transparent-slice scoping: nonces, replay, the operation log, and inv 7/26
 
 **Question:** Slice 2 (the transparent claim layer) had to take several

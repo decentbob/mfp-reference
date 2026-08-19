@@ -1,7 +1,7 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
-import { TransparentLedger } from "../src/ledger.js";
+import { NonceError, TransparentLedger } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { KEYS, register, SECRETS } from "./support.js";
 
@@ -66,7 +66,7 @@ describe("invariant 8: no privileged party can move a holder's claims", () => {
     const move = { backing, from: KEYS.alice, to: KEYS.bob, quantity: 10n, nonce: 0n };
     const signature = ed25519.sign(encodeTransfer(move), SECRETS.alice);
     ledger.transfer(move, signature);
-    expect(() => ledger.transfer(move, signature)).toThrow(/stale or replayed/);
+    expect(() => ledger.transfer(move, signature)).toThrow(NonceError);
     expect(ledger.balance(backing, KEYS.bob)).toBe(10n);
   });
 });

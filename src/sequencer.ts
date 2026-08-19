@@ -2,19 +2,25 @@
 //
 // A sequencer serves the backings whose E field names its operator key. It is
 // the front door to the claim layer: clients submit signed operations, the
-// sequencer drives the transparent ledger underneath, assigns each accepted
-// operation a witnessed index, and returns an operator co-signed receipt. At
+// sequencer drives the transparent ledger underneath, and returns an operator
+// co-signed receipt bound to the operation's position in the committed log. At
 // a declared interval it publishes a commitment over the state it serves.
 //
 // It never holds funds. Its added value in the transparent setting (where the
 // ledger already prevents double-spends) is threefold:
-//   - witnessed time: a monotonic index replacing the ledger's log-position
-//     stand-in;
-//   - idempotent replay (invariant 26): the same operation resubmitted
-//     returns the identical prior receipt, and a different operation at an
-//     already-spent nonce is declined (the ledger's nonce rejection);
-//   - commitments (invariants 22, 23): periodic signed roots over state, so a
-//     third party can verify state without trusting the operator's live word.
+//   - witnessed order: a receipt binds an operation to its committed position;
+//   - idempotent replay (invariant 26): the same operation resubmitted returns
+//     the identical prior receipt, and a different operation at an
+//     already-spent nonce is declined by the ledger's NonceError — the
+//     sequencer "refuses a second spend by declining to sign";
+//   - commitments (invariants 22, 23): periodic signed roots over served
+//     state, so a third party can verify state without trusting the
+//     operator's live word.
+//
+// Boundaries, per the design rules: the sequencer owns routing (is this
+// backing mine?) and raises SequencerError; the ledger owns the law and funds
+// and raises LedgerError/NonceError; malformed fields raise EncodingError from
+// the encoder. No layer re-checks or relabels another's verdict.
 //
 // NOTE (later slices, see DECISIONS.md): recovery / snapshot redemption /
 // non-membership proofs (§C2b), silence and non-service grades, revocation,
@@ -24,10 +30,11 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
-import { backingName, type Backing } from "./backing.js";
-import { type BackingSnapshot, type Commitment, signCommitment, stateRoot } from "./commitment.js";
-import { compareBytes, EncodingError } from "./bytes.js";
+import { type Backing } from "./backing.js";
+import { compareBytes } from "./bytes.js";
+import { signCommitment, stateRoot, type BackingSnapshot, type Commitment } from "./commitment.js";
 import { isValidPublicKey } from "./keys.js";
+import { TransparentLedger } from "./ledger.js";
 import {
   encodeBurn,
   encodeIssuance,
@@ -36,21 +43,18 @@ import {
   type IssuanceOp,
   type TransferOp,
 } from "./messages.js";
-import { TransparentLedger, type OpLogEntry } from "./ledger.js";
 import { signReceipt, type Receipt } from "./receipt.js";
 import { Venue } from "./venue.js";
 
+/** This operator declines to serve you. */
 export class SequencerError extends Error {}
 
 export class Sequencer {
   private readonly ledger = new TransparentLedger();
-  private readonly served: Backing[] = [];
   // opHash (hex) -> the receipt returned when it was first accepted. Retained
   // to make replays idempotent (invariant 26); a later slice prunes entries an
   // eventual commitment has finalized.
   private readonly receipts = new Map<string, Receipt>();
-  private commitIndex = 0n;
-  private lastCommitment: Commitment | undefined;
 
   readonly operator: Uint8Array;
 
@@ -59,8 +63,8 @@ export class Sequencer {
   }
 
   /**
-   * Take on a backing whose E names this operator. Rejects a backing served
-   * by a different operator, and (via the ledger) one without a valid obligor
+   * Take on a backing whose E names this operator. Rejects a backing served by
+   * a different operator, and (via the ledger) one without a valid obligor
    * signature over its name.
    */
   register(backing: Backing, backingSignature: Uint8Array): void {
@@ -71,43 +75,35 @@ export class Sequencer {
       throw new SequencerError("this sequencer does not serve that backing");
     }
     this.ledger.register(backing, backingSignature);
-    if (!this.served.some((b) => compareBytes(backingName(b), backingName(backing)) === 0)) {
-      this.served.push(backing);
-    }
   }
 
   submitIssue(op: IssuanceOp, signature: Uint8Array): Receipt {
-    return this.submit(op.backing, op.backing.obligor, op.nonce, () => encodeIssuance(op), () =>
-      this.ledger.issue(op, signature),
-    );
+    return this.submit(op.backing, encodeIssuance(op), () => this.ledger.issue(op, signature));
   }
 
   submitTransfer(op: TransferOp, signature: Uint8Array): Receipt {
-    return this.submit(op.backing, op.from, op.nonce, () => encodeTransfer(op), () =>
-      this.ledger.transfer(op, signature),
-    );
+    return this.submit(op.backing, encodeTransfer(op), () => this.ledger.transfer(op, signature));
   }
 
   submitBurn(op: BurnOp, signature: Uint8Array): Receipt {
-    return this.submit(op.backing, op.holder, op.nonce, () => encodeBurn(op), () =>
-      this.ledger.burn(op, signature),
-    );
+    return this.submit(op.backing, encodeBurn(op), () => this.ledger.burn(op, signature));
   }
 
-  /** Publish a commitment over the served state at the next venue index. */
+  /**
+   * Publish a commitment over the served state. The index comes from the
+   * venue's record of this operator, so a failed publish does not burn one.
+   */
   commit(venue: Venue): Commitment {
     const root = stateRoot(this.snapshot());
-    const commitment = signCommitment(this.operatorSecret, this.commitIndex, root);
+    const commitment = signCommitment(this.operatorSecret, venue.nextIndexFor(this.operator), root);
     venue.publish(commitment);
-    this.commitIndex += 1n;
-    this.lastCommitment = commitment;
     return commitment;
   }
 
   /** The served state, as it would be published for a verifier (invariant 23). */
   snapshot(): BackingSnapshot[] {
-    return this.served.map((backing) => ({
-      name: backingName(backing),
+    return this.ledger.registered().map((backing) => ({
+      name: backing.name,
       issued: this.ledger.issued(backing),
       burned: this.ledger.burned(backing),
       balances: [...this.ledger.balancesOf(backing)].map(
@@ -115,10 +111,6 @@ export class Sequencer {
       ),
       opLog: this.ledger.opLog(backing),
     }));
-  }
-
-  latestCommitment(): Commitment | undefined {
-    return this.lastCommitment;
   }
 
   outstanding(backing: Backing): bigint {
@@ -134,54 +126,29 @@ export class Sequencer {
   }
 
   /**
-   * The shared submit path. The sequencer owns routing and refusal
-   * (SequencerError); the ledger owns authentication and funds (LedgerError):
-   *   - not served, malformed operation, or a nonce that is not the signer's
-   *     next: SequencerError (a nonce below the next is a second spend at an
-   *     already-used nonce — the sequencer "declines to sign");
-   *   - a well-formed, correctly-nonced operation that fails signature or
-   *     balance: LedgerError, from the ledger.
-   * A replay of an accepted operation returns the identical prior receipt
-   * without touching the ledger (invariant 26), and a rejected operation
-   * records nothing, so a later valid operation at that nonce still succeeds.
+   * The shared submit path: routing, then idempotency, then the ledger, then
+   * the co-signed receipt. A replay of an accepted operation returns the
+   * identical prior receipt without touching the ledger (invariant 26), and a
+   * rejected operation records nothing, so a later valid operation at that
+   * nonce still succeeds.
    */
-  private submit(
-    backing: Backing,
-    signer: Uint8Array,
-    nonce: bigint,
-    encode: () => Uint8Array,
-    apply: () => OpLogEntry,
-  ): Receipt {
-    const name = backingName(backing);
-    if (!this.served.some((b) => compareBytes(backingName(b), name) === 0)) {
+  private submit(backing: Backing, opMessage: Uint8Array, apply: () => OpLogEntryLike): Receipt {
+    if (!this.ledger.has(backing)) {
       throw new SequencerError("backing not served by this sequencer");
-    }
-
-    let opMessage: Uint8Array;
-    try {
-      opMessage = encode();
-    } catch (error) {
-      if (error instanceof EncodingError) {
-        throw new SequencerError(`malformed operation: ${error.message}`);
-      }
-      throw error;
     }
     const opHash = sha256(opMessage);
     const key = bytesToHex(opHash);
     const existing = this.receipts.get(key);
     if (existing !== undefined) return existing;
 
-    const expected = this.ledger.nextNonce(signer, backing);
-    if (nonce < expected) {
-      throw new SequencerError("refused: nonce already spent on a different operation");
-    }
-    if (nonce > expected) {
-      throw new SequencerError("out-of-order nonce");
-    }
-
     const entry = apply();
-    const receipt = signReceipt(this.operatorSecret, name, opHash, BigInt(entry.position));
+    const receipt = signReceipt(this.operatorSecret, backing.name, opHash, BigInt(entry.position));
     this.receipts.set(key, receipt);
     return receipt;
   }
+}
+
+/** Just the field submit needs from the ledger's returned log entry. */
+interface OpLogEntryLike {
+  readonly position: number;
 }
