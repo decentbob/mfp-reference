@@ -16,6 +16,100 @@ Format:
 
 ---
 
+## 2026-08-19 - Slice 6: silence is a public fact, and the unspentness proof
+
+**Question:** §C2b's snapshot redemption opens on two conditions - the operator
+has gone dark past a declared duration, and the holder can prove the claim
+unspent as of the last witnessed snapshot. What do those mean under transparent,
+and where do the terms live?
+
+**Decisions (Bob):**
+
+- **Scope: the facts, not the payment path.** The claim/acceptance/release legs,
+  the challenge window and a returning sequencer adopting what was witnessed
+  during the gap are slice 7. Splitting was a mid-slice call once the payment
+  path turned out to be comparable in size to slices 4 and 5 together. The facts
+  stand on their own: both are checkable by a stranger against the published
+  record, which is what makes the grade something a backer concedes rather than
+  argues.
+
+- **The silence terms live in E, under a new evidence tag 0x02.** Tag 0x01 stays
+  byte-identical and declares no clause, so the slice-1 golden vector is untouched
+  and a backing whose claims can go illiquid forever remains representable - a
+  setting the backer chose and the holder read before accepting, not an oversight.
+  A new tag rather than a version bump: the encoding was built for this ("tags not
+  listed are future slices"), and bumping the version would change the name of
+  every existing backing, breaking "same fields, same bytes, forever".
+
+  **The tag carries only what this slice enforces**: the no-commitment duration
+  and the challenge window. Not the non-service duration, the m-within-W
+  aggregate, or the replacement rule. A backing that *declared* an aggregate no
+  code checks would be worse than one that declared nothing, because a holder
+  reading the terms would believe it was enforced. Tag 0x03 later is cheap.
+
+- **No calibration is policed.** The paper is explicit that the numbers are the
+  backer's to choose and the holder's to read - "set m low and one scripted wallet
+  replaces an operator; set it high and the clause never fires". So a zero
+  duration is representable, and means what it says.
+
+- **Silence is measured on the venue's clock, from the operator's last
+  commitment, and from the venue's genesis where it has never published.** The
+  last part matters: measured only from an existing commitment, never publishing
+  at all would be the way to escape the grade. The fact is the operator's; the
+  threshold is each backing's own declared term, so two backings can grade one
+  silent operator differently, which is the arrangement §C2b describes.
+
+- **"Last witnessed snapshot" is load-bearing, and so is "this backing's
+  operator".** `provesHolding` refuses a commitment that is not the venue's
+  latest for the operator E names. Without the first, a holder who has since
+  spent the units still proves the state that shows them; without the second,
+  anyone can sign a valid commitment over any state they like. An adversarial
+  script confirms both, plus a self-signed forged state, a re-signed honest root,
+  and inflated balances - all refused.
+
+- **Invariant 23's non-membership requirement is satisfied by serving
+  everything.** Slice 3 recorded that per-element Merkle proofs were "deferred
+  with the recovery path", i.e. here. Confirmed as wrong and re-deferred: under
+  transparent the whole served state is rehashed against the root, which is
+  already how a receipt proves, so serving everything IS the non-membership
+  proof. The machinery is what a construction needs when it *cannot* serve
+  everything, which is the shielded ones. §C2b names the transparent form
+  directly: "a signed spend record published at the venue, checked against the
+  last committed balance state, stands in for the nullifier."
+
+**Found by the review of this slice, and fixed here:** invariant 10 binds "at
+every published moment", and a committed state is a published moment - but
+`encodeSnapshot` never checked it. Demonstrated: a backer-run operator issues 100
+to Alice, commits a state with the balances erased while `issued` stays 100, and
+goes dark. The state verified, silence fired, and nobody could prove a holding,
+so redemption never opened for anyone - while Alice's receipt still proved the
+issuance was in that same committed log. She could prove the operator was lying
+and still not redeem. The encoder now refuses the state. Enforced there rather
+than only in the ledger for the standing reason: served state may come from a
+hostile operator, so the encoder decides which states are canonical. Four
+synthetic fixtures asserted on states no ledger could produce and were repaired;
+two of them had been passing for the wrong reason.
+
+**Raised by the same review, open, and it must be settled in slice 7: nothing
+ties committed balances to the committed operation log.** Conservation closes
+deletion and inflation, but not reassignment: an operator can serve a state
+identical to the honest one except that Alice's units are listed against Mallory,
+the totals still reconcile, and `provesHolding` returns true for Mallory.
+Demonstrated. Slice 2 recorded "balances remain primary state, not a fold over
+the log", which was a modelling convenience then and is a safety decision now
+that a predicate reads those balances.
+
+It converges with the gap recorded after slice 5 - the operation log commits
+operations without the signatures that authorised them - because folding the log
+does not help while log entries are themselves unsigned assertions. **Until it is
+settled, `provesHolding` must not be read as authorising payment**; it is a
+precondition, and nothing in this slice pays anything. The candidates are: make
+committed balances a fold over the committed log; put the authorising signatures
+in the log; or have slice 7's legs require the claimant's own receipt chain
+rather than the balance line.
+
+**Spec change:** none needed.
+
 ## 2026-08-19 - The witnessed clock is the venue's, and one class of aliasing bug
 
 **Question:** slice 5 decided "the operator needs exactly one clock: its own
@@ -90,7 +184,7 @@ a bare Merkle root cannot do" - but under transparent the whole state is served
 and rehashed, which is already how receipts prove, so serving everything *is* the
 non-membership proof. The machinery is what you need when you cannot serve
 everything, which is the shielded constructions. To be confirmed when the
-recovery path lands.
+recovery path lands. **Confirmed in slice 6; see the entry above.**
 
 **Next slice, agreed:** §C2b silence and snapshot redemption. E declares the
 no-commitment duration and the challenge window under a **new evidence tag
