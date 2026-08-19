@@ -21,7 +21,10 @@
 // which equivocation is keyed on — is a different number from the venue's
 // witnessed index, and the two are named differently here so they cannot be
 // read as one. The venue records both: what was published, and the index it was
-// witnessed at, which is the only trustworthy source for the latter.
+// witnessed at, which is the only trustworthy source for the latter. Both are
+// stored as the venue's own copies and handed out as copies — the publisher keeps
+// a reference to what it published, and `readonly` does not stop it rewriting
+// those bytes.
 //
 // Anyone may publish, so every query is per operator: a stranger's commitments
 // must not be mistaken for the operator you are checking. The venue does not
@@ -29,7 +32,7 @@
 // (commitment.ts) is what proves a fault against the record.
 
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { verifyCommitment, type Commitment } from "./commitment.js";
+import { copyCommitment, verifyCommitment, type Commitment } from "./commitment.js";
 
 export class VenueError extends Error {}
 
@@ -73,7 +76,10 @@ export class Venue {
       throw new VenueError("commitment signature invalid");
     }
     const key = bytesToHex(commitment.operator);
-    const witnessed: Witnessed = { commitment, at: this.height };
+    // The venue's own copy. The publisher keeps a reference to what it handed
+    // over, and mutating those bytes afterwards would let it rewrite its
+    // published past — the one thing this class exists to prevent.
+    const witnessed: Witnessed = { commitment: copyCommitment(commitment), at: this.height };
     const log = this.byOperator.get(key);
     if (log === undefined) {
       this.byOperator.set(key, [witnessed]);
@@ -86,9 +92,14 @@ export class Venue {
     log.push(witnessed);
   }
 
-  /** This operator's most recent commitment, or undefined if it has none. */
+  /**
+   * This operator's most recent commitment, as a copy, or undefined if it has
+   * none. A copy because one reader must not be able to poison the record for
+   * the next.
+   */
   latestFor(operator: Uint8Array): Commitment | undefined {
-    return this.latestWitnessedFor(operator)?.commitment;
+    const witnessed = this.latestWitnessedFor(operator);
+    return witnessed === undefined ? undefined : copyCommitment(witnessed.commitment);
   }
 
   /**
@@ -116,7 +127,7 @@ export class Venue {
    * frame itself for equivocation) and a restart resumes where it left off.
    */
   nextSequenceFor(operator: Uint8Array): bigint {
-    const latest = this.latestFor(operator);
-    return latest === undefined ? 0n : latest.sequence + 1n;
+    const latest = this.latestWitnessedFor(operator);
+    return latest === undefined ? 0n : latest.commitment.sequence + 1n;
   }
 }

@@ -33,6 +33,7 @@ import {
   bigintToMinimalBytes,
   ByteWriter,
   compareBytes,
+  copyBytes,
   EncodingError,
   MAX_QUANTITY_EXCLUSIVE,
 } from "./bytes.js";
@@ -54,6 +55,22 @@ export interface Commitment {
   readonly root: Uint8Array;
   readonly operator: Uint8Array;
   readonly signature: Uint8Array;
+}
+
+/**
+ * A snapshot of a commitment's bytes. `readonly` is erased at runtime and does
+ * not stop a Uint8Array's contents changing, so anything that stores or serves a
+ * commitment copies it (CLAUDE.md: copy on the way in, copy on the way out).
+ * Without it an operator can mutate the object it published and retroactively
+ * deny its own commitment.
+ */
+export function copyCommitment(commitment: Commitment): Commitment {
+  return {
+    sequence: commitment.sequence,
+    root: copyBytes(commitment.root),
+    operator: copyBytes(commitment.operator),
+    signature: copyBytes(commitment.signature),
+  };
 }
 
 /**

@@ -57,6 +57,28 @@ describe("invariant 22: state proves against the latest commitment", () => {
     expect(() => venue.publish(first)).toThrow(VenueError);
   });
 
+  it("a published commitment cannot be rewritten in place", () => {
+    // The venue is a shared public record read by strangers, and the party with
+    // the motive to mutate it is the operator, which still holds the object it
+    // published. Copy in, copy out — otherwise an operator can retroactively
+    // deny its own commitment, which is exactly what the venue exists to stop.
+    const { sequencer, venue } = setup();
+    const mine = sequencer.commit();
+    mine.root.fill(0xff);
+    mine.signature.fill(0xff);
+    mine.operator.fill(0xff);
+    expect(verifyCommitment(venue.latestFor(sequencer.operator)!)).toBe(true);
+  });
+
+  it("nor by a reader poisoning the record for the next reader", () => {
+    const { sequencer, venue } = setup();
+    sequencer.commit();
+    const handedOut = venue.latestFor(sequencer.operator)!;
+    handedOut.root.fill(0xee);
+    handedOut.signature.fill(0xee);
+    expect(verifyCommitment(venue.latestFor(sequencer.operator)!)).toBe(true);
+  });
+
   it("the served state recomputes to the committed root", () => {
     const { sequencer } = setup();
     const commitment = sequencer.commit();
