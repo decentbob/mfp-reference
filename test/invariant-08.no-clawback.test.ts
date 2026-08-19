@@ -90,6 +90,7 @@ describe("invariant 8: accessors expose no mutation path into ledger state", () 
       recipient: KEYS.mallory,
       quantity: 10n ** 9n,
       nonce: 0n,
+      signature: new Uint8Array(64),
     });
     ledger.issuanceLog(backing)[0]!.recipient.fill(0xff);
     expect(ledger.opLog(backing).length).toBe(1);

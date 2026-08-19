@@ -142,7 +142,7 @@ describe("invariant 22: the state root is injective", () => {
         issued: 0n,
         burned: 0n,
         balances: [],
-        opLog: [{ position: 0, kind: "transfer" as const, from, to, quantity: 7n, nonce: 0n }],
+        opLog: [{ position: 0, kind: "transfer" as const, from, to, quantity: 7n, nonce: 0n, signature: new Uint8Array(64) }],
         demands: [],
       },
     ];
@@ -181,7 +181,7 @@ describe("verifiers return false on hostile input, never throw", () => {
       issued: 0n,
       burned: 0n,
       balances: [],
-      opLog: [{ position: 1.5, kind: "burn" as const, holder: name, quantity: 1n, nonce: 0n }],
+      opLog: [{ position: 1.5, kind: "burn" as const, holder: name, quantity: 1n, nonce: 0n, signature: new Uint8Array(64) }],
       demands: [],
     };
     const receipt = { backingName: name, opHash: name, position: 0n, operator: name, signature: sig };
@@ -247,6 +247,7 @@ describe("invariant 22: committed state has exactly one meaning", () => {
       holder,
       quantity: 1n,
       nonce: 0n,
+      signature: new Uint8Array(64),
     });
     expect(() =>
       stateRoot([{ name, issued: 0n, burned: 0n, balances: [], opLog: [entry(0), entry(5)], demands: [] }]),
@@ -388,7 +389,7 @@ describe("invariant 22: hostile presentation entries fail the proof, never throw
   it("rejects a short demand hash on an acceptance, release or withdrawal", () => {
     const short = new Uint8Array(31);
     for (const kind of ["release", "withdrawal"] as const) {
-      expect(() => stateRoot(withLog({ position: 0, kind, demandHash: short, nonce: 0n }))).toThrow(
+      expect(() => stateRoot(withLog({ position: 0, kind, demandHash: short, nonce: 0n, signature: new Uint8Array(64) }))).toThrow(
         EncodingError,
       );
     }
@@ -401,6 +402,7 @@ describe("invariant 22: hostile presentation entries fail the proof, never throw
           instant: 0n,
           deadline: 0n,
           nonce: 0n,
+          signature: new Uint8Array(64),
         }),
       ),
     ).toThrow(EncodingError);
@@ -415,6 +417,7 @@ describe("invariant 22: hostile presentation entries fail the proof, never throw
       instant: 0n,
       deadline: 0n,
       nonce: 0n,
+      signature: new Uint8Array(64),
     });
     expect(() => stateRoot(withLog(entry(0n)))).toThrow(EncodingError);
     expect(() => stateRoot(withLog(entry(-1n)))).toThrow(EncodingError);
@@ -422,7 +425,7 @@ describe("invariant 22: hostile presentation entries fail the proof, never throw
 
   it("rejects a logged presentation entry with a negative nonce or instant", () => {
     expect(() =>
-      stateRoot(withLog({ position: 0, kind: "withdrawal", demandHash: name, nonce: -1n })),
+      stateRoot(withLog({ position: 0, kind: "withdrawal", demandHash: name, nonce: -1n, signature: new Uint8Array(64) })),
     ).toThrow(EncodingError);
     expect(() =>
       stateRoot(
@@ -433,6 +436,7 @@ describe("invariant 22: hostile presentation entries fail the proof, never throw
           instant: -1n,
           deadline: 0n,
           nonce: 0n,
+          signature: new Uint8Array(64),
         }),
       ),
     ).toThrow(EncodingError);
@@ -441,7 +445,7 @@ describe("invariant 22: hostile presentation entries fail the proof, never throw
   it("the verifier returns false rather than propagating the throw", () => {
     expect(
       stateProvesCommitment(
-        withLog({ position: 0, kind: "release", demandHash: new Uint8Array(31), nonce: 0n }),
+        withLog({ position: 0, kind: "release", demandHash: new Uint8Array(31), nonce: 0n, signature: new Uint8Array(64) }),
         commitment,
       ),
     ).toBe(false);
@@ -458,8 +462,15 @@ describe("invariant 22: hostile presentation entries fail the proof, never throw
       instant: 0n,
       deadline: 0n,
       nonce: 0n,
+      signature: new Uint8Array(64),
     };
-    const withdrawalEntry = { position: 0, kind: "withdrawal" as const, demandHash: holder, nonce: 0n };
+    const withdrawalEntry = {
+      position: 0,
+      kind: "withdrawal" as const,
+      demandHash: holder,
+      nonce: 0n,
+      signature: new Uint8Array(64),
+    };
     expect(bytesToHex(stateRoot(withLog(demandEntry)))).not.toBe(
       bytesToHex(stateRoot(withLog(withdrawalEntry))),
     );
