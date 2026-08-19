@@ -16,6 +16,92 @@ Format:
 
 ---
 
+## 2026-08-19 - The witnessed clock is the venue's, and one class of aliasing bug
+
+**Question:** slice 5 decided "the operator needs exactly one clock: its own
+latest published commitment index". Starting §C2b revealed that this hands a
+stalling sequencer every deadline in its book, and that "no commitment past a
+second declared duration" cannot be measured in the silent party's own
+publications. Reopened.
+
+**Decisions (Bob):**
+
+- **Two indices, named apart.** A commitment's `sequence` is the operator's own
+  count of its commitments, and equivocation is two roots signed at one sequence.
+  The venue's witnessed index is the clock every deadline is read against, and it
+  advances via `Venue.advance()` - the stand-in for block production, which no
+  participant controls. §C2 is explicit that these are different things: "A venue
+  is named together with its finality rule, the depth or gadget under which an
+  index counts as witnessed there." Slice 5 read them as one, and the name
+  `Commitment.index` is what made that easy, so it is now `sequence`.
+
+  Demonstrated before the fix: the backer answers Alice's demand legally, then
+  stops publishing. Forever after, withdrawal is refused ("a live acceptance
+  stands"), her 100 units are unspendable, and the record says the backer is not
+  in dishonour. No refusal and no signature - just silence. §C2 names the cost
+  exactly: "a stall is deniable where a dishonour is recorded."
+
+- **Slice 5's "publish a commitment first" refusal is deleted.** It was a symptom
+  of the conflation rather than a rule. Time exists whether or not this operator
+  has committed, so serving before its first commitment is ordinary - the
+  interval simply has not elapsed.
+
+- **The venue records when, not only what.** `publish` stores the witnessed index
+  alongside each commitment and `witnessedAtFor` exposes it. "Witnessed at index
+  i" is the spec's own notion (§C2b: a revocation is "effective for each backing
+  at its witnessed index on that backing's declared venue"), the height is the
+  venue's word rather than the operator's, and subtracted from `witnessedIndex()`
+  it is how long an operator has been quiet - the input the silence clause is
+  measured on. Without it, decoupling the clock would have removed the one
+  accidental way to date a commitment: while the commitment index *was* the
+  clock, a stale commitment was visible as an old index.
+
+- **Copy on the way in, copy on the way out, everywhere it was not.** Reviewing
+  the fix found four instances of one class, each proved with a runnable exploit
+  and each a plain violation of a rule CLAUDE.md states without exception ("no
+  accessor may hand out a write path into state"):
+
+  1. `Venue.publish` stored the caller's `Commitment` and `latestFor` handed it
+     back, so an operator could mutate the root of the object it published and
+     retroactively deny its own commitment - the one thing the class exists to
+     prevent.
+  2. `Sequencer.submit` stored the `Receipt` it built and returned that object to
+     the first caller and every replayer, so whoever held a receipt decided what
+     every later replay was answered with. Invariant 26's "identical prior
+     response" was not the operator's to control.
+  3. `Sequencer.operator` was a public `Uint8Array` field. Mutating it broke
+     routing and commit - loudly, and only for the operator itself.
+  4. The constructor retained the caller's *secret* key array. Mutating it split
+     signing from routing silently: the sequencer kept serving as the operator E
+     names while co-signing as another, so its declared identity read as having
+     gone quiet - the condition §C2b grades as aggravated.
+
+  `copyCommitment` and `copyReceipt` live beside the types they copy, so a new
+  field is caught at the one place that snapshots it. `signCommitment`
+  deliberately does not copy its root, and says why: the sequencer retains
+  receipts, while a commitment is retained only by the venue, which copies on the
+  way in.
+
+**Raised, to be settled with the recovery slice:** slice 3 recorded that
+per-element Merkle membership / non-membership proofs are "deferred with the
+recovery path", i.e. now. That looks wrong. Invariant 23 requires them because
+"§C2b's recovery path proves a claim *not* spent as of the last commitment, which
+a bare Merkle root cannot do" - but under transparent the whole state is served
+and rehashed, which is already how receipts prove, so serving everything *is* the
+non-membership proof. The machinery is what you need when you cannot serve
+everything, which is the shielded constructions. To be confirmed when the
+recovery path lands.
+
+**Next slice, agreed:** §C2b silence and snapshot redemption. E declares the
+no-commitment duration and the challenge window under a **new evidence tag
+0x02**, so tag 0x01 stays decodable and simply declares no silence clause - a
+coherent setting where claims can go illiquid forever, the backer's choice, and
+the slice-1 golden vectors and frozen v1 name format are untouched. Deferred with
+reasons: non-service counting (its only remedy is replacement), successor
+sequencers, and revocation on backer key theft - three separate axes.
+
+**Spec change:** none needed.
+
 ## 2026-08-19 - Slice 5: presentation through the sequencer, and two holes it closed
 
 **Question:** slice 4 left demand/accept/release/withdraw on
