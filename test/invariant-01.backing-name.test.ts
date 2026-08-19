@@ -216,6 +216,25 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
     );
   });
 
+  it("rejects an operator key that is not a valid Ed25519 point", () => {
+    // Both keys in E-and-K are validated at the one boundary that owns backing
+    // well-formedness. The operator used to be length-checked here and
+    // point-checked at the sequencer, which is one property enforced at two
+    // boundaries; the recorded reason was that checking it here would change
+    // which backings are representable and the slice-1 name format is frozen.
+    // The golden vector's own operator key is a valid non-small-order point, so
+    // the format is untouched and the reason no longer holds.
+    const notAPoint = new Uint8Array(32).fill(0x04);
+    expect(() =>
+      makeBacking({ ...baseFields(), evidence: { setting: "transparent", operator: notAPoint } }),
+    ).toThrow(EncodingError);
+    // And on the way in from the wire, since decode routes through makeBacking.
+    const bytes = encodeBacking(makeBacking(baseFields()));
+    const tampered = bytes.slice();
+    tampered.set(notAPoint, tampered.length - 32);
+    expect(() => decodeBacking(tampered)).toThrow(EncodingError);
+  });
+
   it("evidence tag 0x02 carries the silence clause and round-trips", () => {
     // §C2b's durations are declared in E, so they are inside the name and no
     // backer can edit the standard its own silence is measured against

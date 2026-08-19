@@ -43,7 +43,6 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { type Backing } from "./backing.js";
 import { compareBytes, copyBytes } from "./bytes.js";
 import { signCommitment, stateRoot, type Commitment } from "./commitment.js";
-import { isValidPublicKey } from "./keys.js";
 import {
   TransparentLedger,
   type BackingSnapshot,
@@ -108,9 +107,8 @@ export class Sequencer {
    * signature over its name.
    */
   register(backing: Backing, backingSignature: Uint8Array): void {
-    if (!isValidPublicKey(backing.evidence.operator)) {
-      throw new SequencerError("backing operator key is not a valid Ed25519 point");
-    }
+    // makeBacking has already established that the operator key is a valid
+    // non-small-order point; the only question left here is whether it is mine.
     if (compareBytes(backing.evidence.operator, this.operatorKey) !== 0) {
       throw new SequencerError("this sequencer does not serve that backing");
     }

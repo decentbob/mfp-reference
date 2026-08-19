@@ -5,12 +5,10 @@
 // over any message under permissive verification, and even under strict
 // verification a balance under an invalid point is unspendable garbage.
 //
-// Applied to obligors (makeBacking) and to holder keys on every ledger
-// operation. E's operator key is length-checked in makeBacking and
-// point-checked by Sequencer.register instead, because it is inside the
-// backing's hashed name: point-checking it at construction would change which
-// backings are representable, and the slice-1 name format is frozen. A backing
-// naming a bogus operator is simply unsequenceable. See DECISIONS.md.
+// Applied to both keys a backing names, at the one boundary that owns backing
+// well-formedness (makeBacking), and to the keys a ledger operation credits.
+// A signer needs no separate check: strict verification decompresses the key and
+// rejects a small-order point, so a valid signature already proves it.
 //
 // Verification is strict (non-ZIP215) throughout.
 
