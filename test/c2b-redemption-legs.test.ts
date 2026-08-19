@@ -17,7 +17,7 @@ import { receiptProvenBy, verifyReceipt } from "../src/receipt.js";
 import { isSilent, snapshotRedemptions, type ServedState } from "../src/recovery.js";
 import { Sequencer } from "../src/sequencer.js";
 import { Venue } from "../src/venue.js";
-import { advanceWitnessedIndex, KEYS, makeTransparentBacking, SECRETS } from "./support.js";
+import { advanceWitnessedIndex, KEYS, makeTransparentBacking, pub, SECRETS } from "./support.js";
 
 // §C2b's payment path: the claim, acceptance and release legs, the challenge
 // window, and a returning sequencer adopting what was witnessed during the gap.
@@ -550,12 +550,12 @@ describe("§C2b: the challenge window substitutes the payee, and voids nothing",
     expect(compareBytes(redemption.payments[2]!.payee, KEYS.alice)).toBe(0);
   });
 
-  it("cannot be shut by the claimant publishing a request to themselves", () => {
-    // Alice knows about her own double-spend before her payee does, so she can
-    // always reach the venue first. A transfer to herself moves nothing and is
-    // no evidence of a spend, but folded it consumes the contested nonce and
-    // every genuine request behind it finds that nonce spent — the claimant
-    // shutting the window against the party it exists for, for free.
+  it("reads a request that pays the claimant as no evidence of a spend", () => {
+    // It moved nothing away from them. Folded it would consume the contested
+    // nonce and leave every genuine request behind it finding that nonce spent.
+    //
+    // This is NOT a defence against a claimant who pre-empts — see the test
+    // below, which is the same attack with a key made up for the purpose.
     const { venue, sequencer, backing } = setup();
     const served = goDark(venue, sequencer);
     redeemAtVenue(venue, backing);
@@ -566,6 +566,29 @@ describe("§C2b: the challenge window substitutes the payee, and voids nothing",
     expect(redemption.payments).toHaveLength(1);
     expect(compareBytes(redemption.payments[0]!.payee, KEYS.bob)).toBe(0);
     expect(redemption.payments[0]!.quantity).toBe(100n);
+  });
+
+  it("OPEN: a claimant who publishes first still picks who is paid", () => {
+    // Pinning a hole, not a property. The claimant knows about her own
+    // double-spend before her payee does, so she reaches the venue first with a
+    // transfer to a key she generated for the purpose — nothing about her is
+    // scarce — and the genuine request behind it finds the nonce spent.
+    //
+    // It is the reach of §C2b's rule rather than a defect in implementing it:
+    // where a double-signature is resolved by publication order, the party who
+    // signed both knows first. Closing it needs evidence of which signature the
+    // operator actually served, which is its receipt. **When that lands, this
+    // test should fail and be rewritten to expect bob.** See DECISIONS.md.
+    const { venue, sequencer, backing } = setup();
+    const served = goDark(venue, sequencer);
+    const alice2 = pub(new Uint8Array(32).fill(0x09));
+    publishAt(venue, 11n, backing, transfer(backing, SECRETS.alice, KEYS.alice, alice2, 100n, 0n));
+    redeemAtVenue(venue, backing);
+    publishAt(venue, 15n, backing, challengeOf(backing, 100n));
+
+    const redemption = snapshotRedemptions(venue, backing, served)[0]!;
+    expect(compareBytes(redemption.payments[0]!.payee, alice2)).toBe(0);
+    expect(compareBytes(redemption.payments[0]!.payee, KEYS.bob)).not.toBe(0);
   });
 
   it("hears the claimant's spends in sequence order, however they were published", () => {

@@ -428,11 +428,16 @@ function inSequenceOrder(requests: readonly WitnessedOp[], holder: Uint8Array): 
         w.op.kind === "transfer" &&
         compareBytes(w.op.from, holder) === 0 &&
         // A request that pays the claimant moved nothing away from them, so it
-        // is no evidence that anything was spent. Folded, it would consume the
-        // contested nonce and leave every genuine request behind it finding
-        // that nonce spent — and the claimant knows about their own
-        // double-spend before their payee does, so they can always be first.
-        // One free signature to shut the window against the party it is for.
+        // is no evidence that anything was spent.
+        //
+        // **It is not a defence, and must not be read as one.** It was added
+        // as one, against a claimant who pre-empts a genuine request by
+        // publishing at the contested nonce first. That is a real attack and
+        // this does not stop it: keys are free, so the claimant pays a key
+        // generated for the purpose and this check — which asks only whether
+        // the payee is the claimant's OWN key — sees an ordinary transfer.
+        // Kept because it is a true statement about what evidence is, not
+        // because it buys anything. See DECISIONS.md for what would.
         compareBytes(w.op.to, holder) !== 0,
     )
     .sort((a, b) => {

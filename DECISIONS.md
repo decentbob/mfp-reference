@@ -127,12 +127,16 @@ one open:
   reconsidered: whoever was quickest decided who was paid. Folded in sequence
   order now, with the witnessed index settling the case it is actually for, which
   is two requests at one nonce - the claimant equivocating, earliest wins.
-- And reviewing *that*: a transfer the claimant makes to **herself** moves
-  nothing, but folded it consumed the contested nonce, so every genuine request
-  behind it found that nonce spent. One free signature shut the window against
-  the party it exists for - and the claimant knows about her own double-spend
-  before her payee does, so she is always first. A request that pays the
-  claimant is no evidence that anything was spent, and no longer folds.
+- And reviewing *that*: a claimant who pre-empts a genuine request by publishing
+  at the contested nonce first shuts the window against the party it exists for.
+  The claimant knows about her own double-spend before her payee does, so she is
+  always first. **I closed the wrong half of this and said so wrongly.** A
+  request that pays the claimant is no evidence of a spend and no longer folds -
+  which is true, and buys nothing: Bob pointed out that a keypair is free, so she
+  pays a key generated for the purpose and the check sees an ordinary transfer.
+  Demonstrated in `check-sybil.mjs`; the redemption pays `alice2`. The check is
+  kept as a true statement about what evidence is, and is no longer described as
+  a defence. What the attack actually needs is below.
 
 **Consequences.** `OpLogEntry` is now `PublishedOp & { position }`: an operation
 and where it landed, separated because §C2b needs the operation before it has a
@@ -151,16 +155,26 @@ judges neither beyond refusing bytes that do not encode.
 - **The residue.** A request for more than was claimed redirects only what the
   redemption pays, so a payee owed more than the claim is short the difference,
   and the claim layer cannot make it up because the request's nonce is spent.
-- **A claimant with an accomplice still picks which of her own two signatures
-  counts**, by publishing a transfer to the accomplice at the contested nonce
-  before the honest payee reaches the venue. The redemption then pays the
-  accomplice, and the honest payee finds the nonce spent. That is not a defect in
-  the implementation of §C2b's rule but the reach of the rule itself: where a
-  double-signature is resolved by publication order, the party who signed both
-  knows first. It costs the claimant an accomplice they must trust, where the
-  self-transfer above cost nothing, and closing it properly needs evidence of
-  which signature the operator actually served - which is what the operator went
-  dark holding.
+- **A claimant still picks which of her own two signatures counts**, by
+  publishing a transfer at the contested nonce before the honest payee reaches
+  the venue. The redemption pays the key she named and the honest payee finds the
+  nonce spent. That is not a defect in implementing §C2b's rule but the reach of
+  the rule itself: where a double-signature is resolved by publication order, the
+  party who signed both knows first, and nothing about her is scarce - the payee
+  key costs one line of wallet code.
+
+  Closing it needs evidence of which signature the operator actually served, and
+  that evidence exists in exactly one place outside the dark operator: the
+  **receipt** it co-signed for the request it accepted. Bob has one; a request
+  invented during the gap cannot have one. Ranking a receipt-backed challenge
+  above a bare one is the fix, and it is sound under a trust the system already
+  extends - and the backer has no motive to collude, since the redemption pays
+  out the same either way and only the claimant gains.
+
+  Not built here, and it is a slice rather than a patch: a receipt names a
+  position in a log that was never committed, so what it proves has to be settled
+  on the signature alone; the payee has to actually hold it, which is a wallet
+  protocol; and the case where neither party has one needs an answer.
 - **`snapshotRedemptions` stops resolving once the operator has adopted and
   committed the legs**, because they are then in the log and the ordinary
   presentation record covers them. The redemption is still a fact; it is the
