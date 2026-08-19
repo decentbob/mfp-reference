@@ -78,18 +78,33 @@ the rule still stands.
   paths meet; the stored object is flat; cap closure size (inv 16).
 - **An unaccompanied claim is inert, never invalid, and still transferable**
   (inv 17).
+- **Time is a witnessed index, never a clock** (inv 21, 24). Every instant a
+  party asserts is an index in the operator's own published commitment history
+  at the venue; no code reads wall-clock time. One witnessed evaluation instant
+  per presentation, named in the demand and agreed by the acceptance — two
+  signatures over one value — and no later than the latest witnessed index at
+  signing.
+- **Every state a sequencer asserts proves against its latest published
+  commitment** (inv 22), and the commitment commits to the issuance log, the
+  spent set, running totals and the standing demand record (inv 23). The root
+  must be injective, or one signature covers two states and equivocation is
+  unprovable.
 - **Swaps and presentation are idempotent** (inv 26). A repeated request
-  returns the identical prior response. A crash must lose nothing. Until the
-  sequencer slice, the transparent ledger rejects a replayed message (per
-  (signer, backing) nonce) rather than returning the prior response;
-  idempotent replay arrives with the sequencer. See [[DECISIONS.md]].
+  returns the identical prior response. A crash must lose nothing. The
+  sequencer is where this holds: it returns the identical prior receipt for any
+  resubmitted operation, presentation included, and a different operation at an
+  already-spent nonce is declined. The ledger alone rejects a replay (per
+  (signer, backing) nonce) rather than answering it. See [[DECISIONS.md]].
 - **Settling a published demand voids the exact claims offered, and only on
   the holder's release signature** (inv 27). A backer must never void
-  unilaterally.
+  unilaterally. Dishonour is the branch where no *live* acceptance answers, so
+  an acceptance that expires unpaid is dishonour too — and an acceptance may
+  not outlast the demand's own deadline, because the lock-up is the holder's
+  term to set. See [[DECISIONS.md]].
 
-Invariants not listed here (3–4, 6, 11–12, 19–25) still bind; several only
-become implementable with sequencing and the shielded constructions. Read
-§C0 of construction.md before touching anything they govern.
+Invariants not listed here (3–4, 6, 11–12, 19–20, 25) still bind; several only
+become implementable with the shielded constructions. Read §C0 of
+construction.md before touching anything they govern.
 
 ## Design rules
 

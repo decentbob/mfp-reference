@@ -22,27 +22,26 @@ import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 // operator, are provable equivocation.
 
 function setup() {
-  const sequencer = new Sequencer(SECRETS.operator);
+  const venue = new Venue();
+  const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
   const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
   sequencer.submitIssue(issue, ed25519.sign(encodeIssuance(issue), SECRETS.backer));
-  return { sequencer, backing };
+  return { sequencer, backing, venue };
 }
 
 describe("invariant 22: state proves against the latest commitment", () => {
   it("the published commitment verifies under the operator key", () => {
-    const { sequencer } = setup();
-    const venue = new Venue();
-    const commitment = sequencer.commit(venue);
+    const { sequencer, venue } = setup();
+    const commitment = sequencer.commit();
     expect(verifyCommitment(commitment)).toBe(true);
     expect(venue.latestFor(sequencer.operator)).toEqual(commitment);
   });
 
   it("a commitment with a mutated root or index does not verify", () => {
     const { sequencer } = setup();
-    const venue = new Venue();
-    const commitment = sequencer.commit(venue);
+    const commitment = sequencer.commit();
     const mutatedRoot = commitment.root.slice();
     mutatedRoot[0] = (mutatedRoot[0] as number) ^ 0xff;
     expect(verifyCommitment({ ...commitment, root: mutatedRoot })).toBe(false);
@@ -50,9 +49,8 @@ describe("invariant 22: state proves against the latest commitment", () => {
   });
 
   it("the venue rejects an unsigned commitment and a non-extending index", () => {
-    const { sequencer } = setup();
-    const venue = new Venue();
-    const first = sequencer.commit(venue);
+    const { sequencer, venue } = setup();
+    const first = sequencer.commit();
     const forged = { ...first, signature: new Uint8Array(64) };
     expect(() => venue.publish(forged)).toThrow(VenueError);
     // Re-publishing the same index does not extend the operator's history.
@@ -61,15 +59,13 @@ describe("invariant 22: state proves against the latest commitment", () => {
 
   it("the served state recomputes to the committed root", () => {
     const { sequencer } = setup();
-    const venue = new Venue();
-    const commitment = sequencer.commit(venue);
+    const commitment = sequencer.commit();
     expect(stateRoot(sequencer.snapshot())).toEqual(commitment.root);
   });
 
   it("a tampered state does not match the commitment", () => {
     const { sequencer } = setup();
-    const venue = new Venue();
-    const commitment = sequencer.commit(venue);
+    const commitment = sequencer.commit();
     const snapshot = sequencer.snapshot();
     // Inflate a balance in the asserted state.
     const tampered = snapshot.map((s) => ({
@@ -81,8 +77,7 @@ describe("invariant 22: state proves against the latest commitment", () => {
 
   it("two different roots at the same index by one operator are equivocation", () => {
     const { sequencer } = setup();
-    const venue = new Venue();
-    const honest = sequencer.commit(venue);
+    const honest = sequencer.commit();
     // A second, conflicting commitment at the same index.
     const forgedRoot = new Uint8Array(32).fill(0xab);
     const conflicting = signCommitment(SECRETS.operator, honest.index, forgedRoot);
@@ -91,17 +86,15 @@ describe("invariant 22: state proves against the latest commitment", () => {
 
   it("distinct roots at distinct indices are not equivocation", () => {
     const { sequencer } = setup();
-    const venue = new Venue();
-    const first = sequencer.commit(venue);
-    const second = sequencer.commit(venue);
+    const first = sequencer.commit();
+    const second = sequencer.commit();
     expect(second.index).toBe(first.index + 1n);
     expect(isEquivocation(first, second)).toBe(false);
   });
 
   it("a commitment signed by a different key is not the operator's equivocation", () => {
     const { sequencer } = setup();
-    const venue = new Venue();
-    const honest = sequencer.commit(venue);
+    const honest = sequencer.commit();
     const impostor = signCommitment(SECRETS.mallory, honest.index, new Uint8Array(32).fill(0xcd));
     expect(isEquivocation(honest, impostor)).toBe(false);
   });
@@ -211,6 +204,37 @@ describe("invariant 22: committed state has exactly one meaning", () => {
     ).toThrow(EncodingError);
   });
 
+  it("rejects an accepted deadline the law could not have produced", () => {
+    // `accept` enforces acceptedDeadline <= the demand's own deadline. A record
+    // outside that range is state the ledger cannot reach, and isDishonoured
+    // reads the committed record — so an operator (frequently the backer) could
+    // otherwise serve a demand as answered forever with no acceptance signature
+    // anywhere. The encoder defines canonical committed state independently of
+    // who produced it, exactly as it does for op-log positions.
+    const state = (acceptedDeadline: bigint | undefined) => [
+      {
+        name,
+        issued: 1n,
+        burned: 0n,
+        balances: [],
+        opLog: [],
+        demands: [
+          { hash: name, holder, quantity: 1n, instant: 0n, deadline: 10n, nonce: 0n, acceptedDeadline },
+        ],
+      },
+    ];
+    expect(() => stateRoot(state(10n))).not.toThrow();
+    expect(() => stateRoot(state(11n))).toThrow(EncodingError);
+    expect(
+      stateProvesCommitment(state(1_000_000n), {
+        index: 0n,
+        root: name,
+        operator: name,
+        signature: new Uint8Array(64),
+      }),
+    ).toBe(false);
+  });
+
   it("rejects an oversized amount instead of grinding on it", () => {
     // Unbounded, an attacker-sized integer turns "a malformed state fails the
     // proof" into a hang.
@@ -295,6 +319,100 @@ describe("a hostile standing demand record fails the proof, never throws", () =>
     // shown as having answered when it has not.
     expect(bytesToHex(stateRoot(demand({ acceptedDeadline: undefined })))).not.toBe(
       bytesToHex(stateRoot(demand({ acceptedDeadline: 0n }))),
+    );
+  });
+});
+
+// The operation log now carries presentation entries too, and their committed
+// bytes are the bytes the party signed. A hostile operator must not be able to
+// serve a malformed one and turn a failed proof into a crash.
+
+describe("invariant 22: hostile presentation entries fail the proof, never throw", () => {
+  const name = new Uint8Array(32).fill(0x01);
+  const holder = new Uint8Array(32).fill(0x02);
+  const sig = new Uint8Array(64);
+  const commitment = { index: 0n, root: name, operator: name, signature: sig };
+  const withLog = (entry: unknown) => [
+    { name, issued: 1n, burned: 0n, balances: [], opLog: [entry], demands: [] },
+  ] as Parameters<typeof stateRoot>[0];
+
+  it("rejects a short demand hash on an acceptance, release or withdrawal", () => {
+    const short = new Uint8Array(31);
+    for (const kind of ["release", "withdrawal"] as const) {
+      expect(() => stateRoot(withLog({ position: 0, kind, demandHash: short, nonce: 0n }))).toThrow(
+        EncodingError,
+      );
+    }
+    expect(() =>
+      stateRoot(
+        withLog({
+          position: 0,
+          kind: "acceptance",
+          demandHash: short,
+          instant: 0n,
+          deadline: 0n,
+          nonce: 0n,
+        }),
+      ),
+    ).toThrow(EncodingError);
+  });
+
+  it("rejects a logged demand with a zero or negative quantity", () => {
+    const entry = (quantity: bigint) => ({
+      position: 0,
+      kind: "demand" as const,
+      holder,
+      quantity,
+      instant: 0n,
+      deadline: 0n,
+      nonce: 0n,
+    });
+    expect(() => stateRoot(withLog(entry(0n)))).toThrow(EncodingError);
+    expect(() => stateRoot(withLog(entry(-1n)))).toThrow(EncodingError);
+  });
+
+  it("rejects a logged presentation entry with a negative nonce or instant", () => {
+    expect(() =>
+      stateRoot(withLog({ position: 0, kind: "withdrawal", demandHash: name, nonce: -1n })),
+    ).toThrow(EncodingError);
+    expect(() =>
+      stateRoot(
+        withLog({
+          position: 0,
+          kind: "acceptance",
+          demandHash: name,
+          instant: -1n,
+          deadline: 0n,
+          nonce: 0n,
+        }),
+      ),
+    ).toThrow(EncodingError);
+  });
+
+  it("the verifier returns false rather than propagating the throw", () => {
+    expect(
+      stateProvesCommitment(
+        withLog({ position: 0, kind: "release", demandHash: new Uint8Array(31), nonce: 0n }),
+        commitment,
+      ),
+    ).toBe(false);
+  });
+
+  it("a logged demand and a logged withdrawal for it do not share an encoding", () => {
+    // Two different presentation kinds must never produce one committed entry;
+    // the domain tag inside each signed message is what separates them.
+    const demandEntry = {
+      position: 0,
+      kind: "demand" as const,
+      holder,
+      quantity: 1n,
+      instant: 0n,
+      deadline: 0n,
+      nonce: 0n,
+    };
+    const withdrawalEntry = { position: 0, kind: "withdrawal" as const, demandHash: holder, nonce: 0n };
+    expect(bytesToHex(stateRoot(withLog(demandEntry)))).not.toBe(
+      bytesToHex(stateRoot(withLog(withdrawalEntry))),
     );
   });
 });

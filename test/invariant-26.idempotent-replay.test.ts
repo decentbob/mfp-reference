@@ -6,6 +6,7 @@ import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { receiptProvenBy, verifyReceipt } from "../src/receipt.js";
 import { EncodingError } from "../src/bytes.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
+import { Venue } from "../src/venue.js";
 import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 // Invariant 26: a repeated request returns the identical prior response, and a
@@ -14,7 +15,7 @@ import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 // "refuses a second spend by declining to sign").
 
 function setup() {
-  const sequencer = new Sequencer(SECRETS.operator);
+  const sequencer = new Sequencer(SECRETS.operator, new Venue());
   const backing = makeTransparentBacking(SECRETS.backer);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
   const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
@@ -97,7 +98,7 @@ describe("invariant 26: a repeated request returns the identical prior response"
     // Tampering the logged quantity breaks the proof.
     const tampered = {
       ...snapshot,
-      opLog: snapshot.opLog.map((e) => ({ ...e, quantity: e.quantity + 1n })),
+      opLog: snapshot.opLog.map((e) => (e.kind === "issue" ? { ...e, quantity: e.quantity + 1n } : e)),
     };
     expect(receiptProvenBy(issueReceipt, tampered)).toBe(false);
   });
@@ -108,7 +109,7 @@ describe("invariant 26: a repeated request returns the identical prior response"
     // A hostile operator serves an out-of-range quantity at the position.
     const hostile = {
       ...snapshot,
-      opLog: snapshot.opLog.map((e) => ({ ...e, quantity: 0n })),
+      opLog: snapshot.opLog.map((e) => (e.kind === "issue" ? { ...e, quantity: 0n } : e)),
     };
     expect(receiptProvenBy(issueReceipt, hostile)).toBe(false);
   });
@@ -116,7 +117,7 @@ describe("invariant 26: a repeated request returns the identical prior response"
 
 describe("a sequencer serves only the backings whose E names it", () => {
   it("refuses to register a backing served by a different operator", () => {
-    const sequencer = new Sequencer(SECRETS.operator);
+    const sequencer = new Sequencer(SECRETS.operator, new Venue());
     const foreign = makeBacking({
       obligor: KEYS.backer,
       payout: { thing: "EUR", quantumExponent: -2, perUnit: 100n },
@@ -129,7 +130,7 @@ describe("a sequencer serves only the backings whose E names it", () => {
   });
 
   it("refuses to submit against a backing it does not serve", () => {
-    const sequencer = new Sequencer(SECRETS.operator);
+    const sequencer = new Sequencer(SECRETS.operator, new Venue());
     const backing = makeTransparentBacking(SECRETS.backer);
     const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
     expect(() =>

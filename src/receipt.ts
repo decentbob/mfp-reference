@@ -7,14 +7,18 @@
 // reconstruct the operation at that position from the committed log entry,
 // hash it, and check it equals the receipt's op hash. On a replay the
 // sequencer returns the identical prior receipt (invariant 26).
+//
+// This holds for all seven operation kinds, presentation included: a demand, an
+// acceptance, a release and a withdrawal each take a position and get a receipt,
+// so an operator cannot deny having accepted one even though none of them moves
+// value.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { sha256 } from "@noble/hashes/sha2.js";
 import { ByteWriter, compareBytes } from "./bytes.js";
 import { RECEIPT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
-import type { BackingSnapshot, OpLogEntry } from "./ledger.js";
-import { encodeBurnMessage, encodeIssuanceMessage, encodeTransferMessage } from "./messages.js";
+import type { BackingSnapshot } from "./ledger.js";
+import { opHashOfEntry } from "./oplog.js";
 
 export interface Receipt {
   readonly backingName: Uint8Array;
@@ -55,22 +59,6 @@ export function verifyReceipt(receipt: Receipt): boolean {
     return false;
   }
   return verifySignatureStrict(receipt.signature, message, receipt.operator);
-}
-
-/** Reconstruct the canonical signed message of a logged operation, then hash it. */
-export function opHashOfEntry(backingName: Uint8Array, entry: OpLogEntry): Uint8Array {
-  switch (entry.kind) {
-    case "issue":
-      return sha256(
-        encodeIssuanceMessage(backingName, entry.recipient, entry.quantity, entry.nonce),
-      );
-    case "transfer":
-      return sha256(
-        encodeTransferMessage(backingName, entry.from, entry.to, entry.quantity, entry.nonce),
-      );
-    case "burn":
-      return sha256(encodeBurnMessage(backingName, entry.holder, entry.quantity, entry.nonce));
-  }
 }
 
 /**

@@ -16,6 +16,144 @@ Format:
 
 ---
 
+## 2026-08-19 - Slice 5: presentation through the sequencer, and two holes it closed
+
+**Question:** slice 4 left demand/accept/release/withdraw on
+`TransparentLedger` only, with the reason recorded as a design one: a receipt
+binds an operation to its position in the operation log, and those three move no
+value, so they had no position. The intended answer was to extend the operation
+log with presentation kinds so receipts and invariant-26 idempotency work
+uniformly. What does that change touch, and what does having a real witnessed
+clock make enforceable that slice 4 could not?
+
+**Decisions (Bob):**
+
+- **A logged entry's canonical bytes ARE the bytes the party signed.** One
+  function, `opMessageOfEntry`, and everything downstream reads it: the receipt's
+  op hash is its SHA-256, and the commitment commits it length-prefixed. Slice 3
+  had two encoders that had to agree - `writeOpEntry` in commitment.ts described
+  an entry field by field, `opHashOfEntry` in receipt.ts rebuilt the signed
+  message - and "the committed entry reconstructs to the receipt's op hash" was
+  true only as long as both stayed in step. It is now true by construction. The
+  per-kind switch and the kind tag are gone from commitment.ts: every message
+  opens with its own domain tag, and contexts.ts already asserts those are
+  prefix-free, so a second tag would be a second mechanism for one property.
+  Adding four operation kinds made the commitment encoder smaller.
+
+- **Presentation entries carry their signed fields and nothing else.** A release
+  names the demand it settles, not the balances it moves: the quantity and the
+  holder are in that demand's own entry, earlier in the same append-only log,
+  and the destination is the obligor in the backing's terms. So neither is the
+  operator's to assert - an entry that declared `to` and `quantity` would be an
+  operator's word about where money went, standing beside the holder's signature
+  that says only "settle demand X".
+
+- **The venue moves into the Sequencer's constructor.** Presentation turns on
+  witnessed indices, and invariant 21 forbids a time a party asserts alone, so
+  the operator needs exactly one clock: its own latest published commitment
+  index. A venue passed per call could give one predicate two answers. `commit()`
+  loses its parameter. An operator that has published nothing has no witnessed
+  time and declines a time-dependent operation rather than substituting a number
+  of its own - the first commitment is what starts the clock.
+
+- **A replay never consults the clock.** The witnessed index is read inside the
+  apply thunk, so a resubmitted operation is answered from the receipt store
+  before any index is looked up. An acceptance replayed after its own deadline
+  has passed still returns the prior receipt: invariant 26's "a crash loses
+  nothing" would be false if repeating a request could be re-judged against a
+  clock that had moved.
+
+- **Invariant 24 is now fully enforced, closing the half slice 4 deferred.** A
+  demand's instant must be no later than the latest witnessed index. Enforced at
+  the demand alone: the acceptance must repeat that exact value, so the same
+  guarantee reaches the backer's signature without a second check against a
+  second clock.
+
+**Two exploits, both demonstrated against the merged slice-4 code before the
+fix, both approved for fixing here:**
+
+- **A backer laundered its own dishonour with one free signature.**
+  `isDishonoured` read only `acceptedDeadline === undefined`, so *any*
+  acceptance - including one whose own deadline was already past, which moves
+  nothing and can never be released against - made the demand permanently
+  un-dishonourable and burned the only acceptance slot. C3 says "claims still
+  live past the deadline are the backer's visible failure"; the failure was
+  invisible. Fix: dishonour reads "no *live* acceptance", sharing one
+  `acceptanceIsLive` predicate with release and withdrawal. An acceptance that
+  arrives and expires unpaid is the same branch as one that never arrived. The
+  cost is that a holder who declines to release (C3 permits it) reads as
+  dishonoured until they withdraw - which is exactly the exit open to them, and
+  the honest thing to do if the terms have moved.
+
+- **The acceptance's deadline was the backer's unbounded choice.** Slice 4 fixed
+  "indefinite" to "bounded by the acceptance's deadline" but left the backer
+  picking that bound: answering on the last legal index with a deadline of a
+  million froze the holder's claims for a million indices, unpaid. Fix: one range
+  check, `atWitnessedIndex <= acceptance.deadline <= demand.deadline`. C3: "The
+  window is the holder's. The deadline is the holder's own lock-up, so the party
+  bearing the cost sets the term. A backer would be setting the standard by
+  which its own failure is measured." The check subsumes slice 4's separate
+  "a demand past its own deadline cannot be answered", because past that deadline
+  no legal acceptance deadline is left.
+
+  Two consequences. The backer **may** answer again once its own acceptance has
+  expired, since re-answering is now capped by the demand's deadline and so
+  cannot extend the lock-up past the holder's term - without this, a
+  born-expired acceptance would grief every demand into a refile. And past the
+  holder's own deadline no acceptance can be live, so **withdrawal is
+  unconditionally open and dishonour unconditionally reported**. Release and
+  withdrawal are complements on one predicate: exactly one exit is open at every
+  index, which is now a test rather than an argument.
+
+**Found by the review of this slice, and fixed here:** the ledger enforced
+`acceptedDeadline <= demand.deadline`, but the commitment encoder did not, so an
+operator could serve a demand record the ledger could never have produced. A
+working exploit rooted a snapshot with `acceptedDeadline: 1_000_000` on a demand
+whose deadline was 10: it verified against its own commitment, the demand hash
+still recomputed from the committed fields, and `isDishonoured` returned false
+forever - the laundering hole again, reached through served state instead of
+through a signature, by the party §C3 names as the likely operator ("the
+backing's own sequencer is frequently the backer"). `writeDemand` now rejects it.
+
+This is not a second mechanism for one rule but the same rule applied to the
+other input: served state may come from a hostile operator rather than from this
+ledger, so the encoder is what decides which states are canonical - the same
+reason the op-log position is pinned to its index and a duplicate holder in
+balances is refused. One bound is enough: past the demand's own deadline no
+in-range answer can still be live, so every state an operator *can* serve reports
+the dishonour. Demonstrated by re-running the exploit across every servable
+value.
+
+**Known and not closed here: the operation log commits operations without the
+signatures that authorised them.** Committed state proves the operator accepted
+an operation, never that the named party authorised it, so an operator can
+fabricate an acceptance, release or withdrawal entry outright. With the bound
+above this can no longer hide a dishonour, and it is not new - slice 3 committed
+issue/transfer/burn the same way - but presentation makes it worth stating,
+because an acceptance is evidence *about the backer*. What remains is what
+§C2b's recovery path answers: a published spend record checked against the last
+committed balance state, and non-membership proofs over the spent set. A later
+slice should not assume the committed trail is self-authenticating.
+
+**Deferred, unchanged from slice 4:** prepare-decide-commit and the
+cross-operator decision venue (needs multi-sequencer); chain-asset legs and
+escrow; a payout paying in claims, settling as a swap inside the settlement
+(needs C1's n-party swap); dated backings, the zero-date and the payout floating
+after the deadline (needs the payout language); non-service objects and the
+silence clause (C2b).
+
+**Deliberately still not enforced:** a demand whose deadline precedes its own
+instant. It is incoherent but harms only the holder - `accept` refuses it and
+withdrawal is open - and C3 declines to police the window at all ("Nothing needs
+adjudicating: a five-minute window is worthless evidence, thirty unanswered days
+damning"). A minimum answer window belongs with the trigger, in Extensions,
+which declares one as a floor rather than the core declaring a ceiling.
+
+**Spec change:** none needed. Both fixes are readings of C3 forced by working
+exploits, not departures from it; the paper's sentence "dishonour is the branch
+where the acceptance never arrives" is literally satisfiable by an acceptance
+that pays nothing, and the fix reads "arrives" as "stands".
+
 ## 2026-08-19 - Slice 4 scoping: presentation and dishonour, single-phase
 
 **Question:** C3 gives two protocols - demand-accept-release for consent
@@ -67,7 +205,7 @@ applies here, and what is in scope?
   them receipts and invariant-26 idempotency means extending the operation log
   with presentation kinds - the unified answer, which should be done as its
   own considered pass rather than bolted on as a half-idempotent wrapper.
-  **This is the next slice.**
+  **Done in slice 5; see the entry above.**
 
 - **Witnessed indices are parameters, not signed fields.** Operations whose
   outcome depends on time (accept, release, withdraw) take the current

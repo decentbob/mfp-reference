@@ -2,12 +2,18 @@
 //
 // At each interval a sequencer publishes a commitment: a signed hash over the
 // state it serves. Invariant 23 (transparent subset): the commitment commits
-// to the issuance log, the spent set and running totals — here, per backing,
-// its name, issued/burned totals, current balances, and the full operation
-// log. Invariant 22: every state a sequencer asserts must prove against its
-// latest published commitment, so two commitments at the same index with
-// different roots, both validly signed by the operator, are provable
+// to "the issuance log, the spent set, running totals and the standing demand
+// record" — here, per backing, its name, issued/burned totals, current
+// balances, the full operation log (all seven kinds, presentation included) and
+// the open demands. Invariant 22: every state a sequencer asserts must prove
+// against its latest published commitment, so two commitments at the same index
+// with different roots, both validly signed by the operator, are provable
 // equivocation.
+//
+// The log and the demand record are both committed and neither is redundant:
+// the record is the current state, the log is the history. A settled or
+// withdrawn demand leaves the record, so only the log can still show that it
+// happened — and only the record can show that it stands.
 //
 // The root must be INJECTIVE or invariant 22 is worthless: if two different
 // served states hash to one root, an operator equivocates with a single
@@ -32,15 +38,11 @@ import {
 } from "./bytes.js";
 import { COMMITMENT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
-import type { BackingSnapshot, DemandRecord, OpLogEntry } from "./ledger.js";
+import type { BackingSnapshot, DemandRecord } from "./ledger.js";
+import { opMessageOfEntry, type OpLogEntry } from "./oplog.js";
+import { encodeDemandMessage } from "./presentation.js";
 
 export type { BackingSnapshot } from "./ledger.js";
-
-const KIND_TAG: Record<OpLogEntry["kind"], number> = {
-  issue: 0x01,
-  transfer: 0x02,
-  burn: 0x03,
-};
 
 export interface Commitment {
   readonly index: bigint;
@@ -61,46 +63,58 @@ function writeAmount(w: ByteWriter, n: bigint, what: string): void {
   w.lengthPrefixed(bigintToMinimalBytes(n));
 }
 
-function writeOpEntry(w: ByteWriter, entry: OpLogEntry, index: number): void {
-  w.u8(KIND_TAG[entry.kind]);
+/**
+ * A logged operation is committed as the exact bytes the party signed. So the
+ * commitment commits the operation a receipt attests to rather than a
+ * re-description of it, "the committed entry reconstructs to the receipt's op
+ * hash" holds by construction, and no kind tag is needed: every message opens
+ * with its own domain tag, and contexts.ts asserts those are prefix-free.
+ */
+function writeOpEntry(w: ByteWriter, name: Uint8Array, entry: OpLogEntry, index: number): void {
   // The position is pinned to the array index, not merely well-formed. A
   // self-declared position lets an operator commit to a log with a gap, so a
   // holder's valid receipt for the missing position proves against nothing
   // while the state itself still verifies — asserted state that hides an
-  // accepted operation.
+  // accepted operation. Pinned, the position carries no information the index
+  // does not, so it is not written.
   if (entry.position !== index) {
     throw new EncodingError("op-log position does not match its index");
   }
-  w.u64(BigInt(entry.position));
-  switch (entry.kind) {
-    case "issue":
-      w.key32(entry.recipient, "recipient key");
-      break;
-    case "transfer":
-      w.key32(entry.from, "from key");
-      w.key32(entry.to, "to key");
-      break;
-    case "burn":
-      w.key32(entry.holder, "holder key");
-      break;
-  }
-  writeAmount(w, entry.quantity, "quantity");
-  w.u64(entry.nonce);
+  w.lengthPrefixed(opMessageOfEntry(name, entry));
 }
 
 /**
- * The demand's own fields, not the hash it declares. Committing a
- * self-declared identity would commit nothing: an operator could publish a
- * genuine hash beside a different quantity and the state would still verify.
- * Committing the fields commits the hash too, since the hash is derived from
- * them - and a verifier can recompute it, which is the point.
+ * A standing demand is committed as the holder's own signed demand, plus the
+ * backer's answer. Committing a self-declared identity would commit nothing: an
+ * operator could publish a genuine hash beside a different quantity and the
+ * state would still verify. Committing the signed bytes commits the hash too,
+ * since the hash is derived from them — and a verifier recomputes it, which is
+ * the point.
  */
-function writeDemand(w: ByteWriter, record: DemandRecord): void {
-  w.key32(record.holder, "holder key");
-  writeAmount(w, record.quantity, "demand quantity");
-  w.u64(record.instant);
-  w.u64(record.deadline);
-  w.u64(record.nonce);
+function writeDemand(w: ByteWriter, name: Uint8Array, record: DemandRecord): void {
+  // An answer may not outlast the demand's own deadline — the range `accept`
+  // enforces. This is not a second mechanism for that rule but the same rule
+  // applied to the other input: served state may come from a hostile operator
+  // rather than from this ledger, so the encoder is what defines which states
+  // are canonical, exactly as it does for op-log positions. Unbounded, an
+  // operator (frequently the backer, §C3) could serve a demand as answered with
+  // no acceptance signature anywhere and isDishonoured — which reads the
+  // committed record — would report the backer's failure as an answer forever.
+  // Bounded, every servable record reports the dishonour past the demand's
+  // deadline, because past it the answer cannot still be live.
+  if (record.acceptedDeadline !== undefined && record.acceptedDeadline > record.deadline) {
+    throw new EncodingError("accepted deadline outlasts the demand's own deadline");
+  }
+  w.lengthPrefixed(
+    encodeDemandMessage(
+      name,
+      record.holder,
+      record.quantity,
+      record.instant,
+      record.deadline,
+      record.nonce,
+    ),
+  );
   // A presence byte, then the value only when present: unambiguous, because
   // the byte decides whether the next eight belong to this field.
   if (record.acceptedDeadline === undefined) {
@@ -131,7 +145,7 @@ function encodeSnapshot(snapshot: BackingSnapshot): Uint8Array {
     writeAmount(w, units, "balance");
   }
   w.u32(snapshot.opLog.length);
-  snapshot.opLog.forEach((entry, i) => writeOpEntry(w, entry, i));
+  snapshot.opLog.forEach((entry, i) => writeOpEntry(w, snapshot.name, entry, i));
   // Invariant 23: the commitment commits to the standing demand record too,
   // so a holder can prove their claims are committed against payment.
   // Ordered by (holder, nonce): both are committed fields and the pair is
@@ -148,7 +162,7 @@ function encodeSnapshot(snapshot: BackingSnapshot): Uint8Array {
     }
   }
   w.u32(demands.length);
-  for (const record of demands) writeDemand(w, record);
+  for (const record of demands) writeDemand(w, snapshot.name, record);
   return w.finish();
 }
 
