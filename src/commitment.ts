@@ -162,9 +162,21 @@ function encodeSnapshot(snapshot: BackingSnapshot): Uint8Array {
     }
   }
   w.u32(balances.length);
+  let held = 0n;
   for (const [key, units] of balances) {
     w.key32(key, "holder key");
     writeAmount(w, units, "balance");
+    held += units;
+  }
+  // Invariant 10: "outstanding = issued - burned, in claim quantity, per
+  // backing, at every published moment" — and a committed state is a published
+  // moment. Unchecked, an operator can commit a state in which nobody holds
+  // anything, go dark, and leave every holder unable to prove a holding, so
+  // §C2b's redemption never opens for anyone. Enforced here rather than only in
+  // the ledger because served state may come from a hostile operator: the
+  // encoder is what decides which states are canonical.
+  if (held !== snapshot.issued - snapshot.burned) {
+    throw new EncodingError("balances do not sum to issued minus burned");
   }
   w.u32(snapshot.opLog.length);
   snapshot.opLog.forEach((entry, i) => writeOpEntry(w, snapshot.name, entry, i));

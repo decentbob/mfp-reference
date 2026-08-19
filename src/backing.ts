@@ -26,6 +26,9 @@
 //              u8 tag 0x01 (backing) || 32-byte target name
 //              || u32 length || count (unsigned big-endian, minimal)
 //   E        u8 tag 0x01 (transparent) || 32-byte operator key
+//            u8 tag 0x02 (transparent, silence clause declared)
+//              || 32-byte operator key
+//              || u64 no-commitment duration || u64 challenge window
 //
 // Tags not listed (threshold obligors, the payout expression language,
 // chain-asset reliance targets, shielded evidence settings) are future slices;
@@ -54,6 +57,7 @@ const TAG_OBLIGOR_ED25519 = 0x01;
 const TAG_PAYOUT_CONSTANT = 0x01;
 const TAG_TARGET_BACKING = 0x01;
 const TAG_EVIDENCE_TRANSPARENT = 0x01;
+const TAG_EVIDENCE_SILENCE = 0x02;
 
 const NAME_LENGTH = 32;
 const MAX_THING_BYTES = 1024;
@@ -78,10 +82,33 @@ export interface RelianceEntry {
   readonly count: bigint;
 }
 
+/**
+ * §C2b's aggravated grade, declared by the backer. Both are durations in
+ * witnessed indices at the venue. Declared in E rather than passed around, so
+ * they are inside the name: a backer cannot edit the standard its own silence is
+ * measured against (invariant 1), and "the holder read the choice before
+ * accepting". The paper leaves the calibration to the backer - "set m low and
+ * one scripted wallet replaces an operator; set it high and the clause never
+ * fires" - so no value is policed here beyond being a u64.
+ */
+export interface SilenceClause {
+  /** No commitment for longer than this is the aggravated grade. */
+  readonly noCommitmentDuration: bigint;
+  /** How long a snapshot redemption stands open to challenge. */
+  readonly challengeWindow: bigint;
+}
+
 export interface TransparentEvidence {
   readonly setting: "transparent";
   /** Verification key of the sequencer that witnesses spends. */
   readonly operator: Uint8Array;
+  /**
+   * Absent (tag 0x01) means the backer declared no silence clause, so snapshot
+   * redemption never opens and claims can go illiquid forever. That is a
+   * coherent setting rather than an oversight - the backer's choice, readable in
+   * the terms before anyone accepts them.
+   */
+  readonly silence?: SilenceClause;
 }
 
 /** The unvalidated input shape accepted by makeBacking. */
@@ -132,10 +159,30 @@ function encodeFields(b: BackingFields): Uint8Array {
     w.lengthPrefixed(bigintToMinimalBytes(entry.count));
   }
 
-  w.u8(TAG_EVIDENCE_TRANSPARENT);
+  const silence = b.evidence.silence;
+  w.u8(silence === undefined ? TAG_EVIDENCE_TRANSPARENT : TAG_EVIDENCE_SILENCE);
   w.key32(b.evidence.operator, "operator key");
+  if (silence !== undefined) {
+    w.u64(silence.noCommitmentDuration);
+    w.u64(silence.challengeWindow);
+  }
 
   return w.finish();
+}
+
+/** Field by field, so nothing rides along on a spread of caller input. */
+function canonicalEvidence(evidence: TransparentEvidence): TransparentEvidence {
+  const operator = copyBytes(evidence.operator);
+  const silence = evidence.silence;
+  if (silence === undefined) return { setting: "transparent", operator };
+  return {
+    setting: "transparent",
+    operator,
+    silence: Object.freeze({
+      noCommitmentDuration: silence.noCommitmentDuration,
+      challengeWindow: silence.challengeWindow,
+    }),
+  };
 }
 
 /**
@@ -201,10 +248,7 @@ export function makeBacking(fields: BackingFields): Backing {
     obligor: copyBytes(fields.obligor),
     payout: Object.freeze({ thing, quantumExponent, perUnit }),
     reliance: Object.freeze(reliance),
-    evidence: Object.freeze({
-      setting: "transparent" as const,
-      operator: copyBytes(fields.evidence.operator),
-    }),
+    evidence: Object.freeze(canonicalEvidence(fields.evidence)),
   };
   const name = sha256(encodeFields(canonical));
   // The brand is a phantom type with no runtime property, so the cast goes
@@ -273,15 +317,25 @@ export function decodeBacking(bytes: Uint8Array): Backing {
     reliance.push({ target, count });
   }
 
-  expectTag(r, TAG_EVIDENCE_TRANSPARENT, "evidence");
+  const evidenceTag = r.u8();
+  if (evidenceTag !== TAG_EVIDENCE_TRANSPARENT && evidenceTag !== TAG_EVIDENCE_SILENCE) {
+    throw new EncodingError(`unsupported evidence tag ${evidenceTag}`);
+  }
   const operator = r.raw(KEY_LENGTH);
+  const silence =
+    evidenceTag === TAG_EVIDENCE_SILENCE
+      ? { noCommitmentDuration: r.u64(), challengeWindow: r.u64() }
+      : undefined;
 
   r.expectEnd();
   return makeBacking({
     obligor,
     payout: { thing, quantumExponent, perUnit },
     reliance,
-    evidence: { setting: "transparent", operator },
+    evidence:
+      silence === undefined
+        ? { setting: "transparent", operator }
+        : { setting: "transparent", operator, silence },
   });
 }
 

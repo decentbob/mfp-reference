@@ -169,6 +169,12 @@ export class ByteReader {
     return n;
   }
 
+  u64(): bigint {
+    let n = 0n;
+    for (let i = 0; i < 8; i++) n = (n << 8n) | BigInt(this.u8());
+    return n;
+  }
+
   raw(length: number): Uint8Array {
     if (this.offset + length > this.bytes.length) throw new EncodingError("truncated");
     const out = copyBytes(this.bytes.subarray(this.offset, this.offset + length));

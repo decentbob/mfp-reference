@@ -216,6 +216,61 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
     );
   });
 
+  it("evidence tag 0x02 carries the silence clause and round-trips", () => {
+    // §C2b's durations are declared in E, so they are inside the name and no
+    // backer can edit the standard its own silence is measured against
+    // (invariant 1). A new tag rather than a new version: tag 0x01 stays exactly
+    // what it was, and the golden vector below proves it.
+    const declared = makeBacking({
+      ...baseFields(),
+      evidence: {
+        setting: "transparent",
+        operator: OPERATOR,
+        silence: { noCommitmentDuration: 10n, challengeWindow: 5n },
+      },
+    });
+    const bytes = encodeBacking(declared);
+    // ...0x02 || operator (32) || u64 10 || u64 5
+    expect(bytesToHex(bytes)).toContain(
+      "02" + bytesToHex(OPERATOR) + "000000000000000a0000000000000005",
+    );
+    const decoded = decodeBacking(bytes);
+    expect(decoded.nameHex).toBe(declared.nameHex);
+    expect(decoded.evidence.silence).toEqual({ noCommitmentDuration: 10n, challengeWindow: 5n });
+  });
+
+  it("a tag-0x01 backing decodes with no silence clause", () => {
+    const bare = makeBacking(baseFields());
+    const decoded = decodeBacking(encodeBacking(bare));
+    expect(decoded.evidence.silence).toBeUndefined();
+    expect(decoded.nameHex).toBe(bare.nameHex);
+  });
+
+  it("rejects an unknown evidence tag rather than guessing", () => {
+    const bytes = encodeBacking(makeBacking(baseFields()));
+    // The evidence tag is the byte before the trailing 32-byte operator key.
+    const tampered = bytes.slice();
+    tampered[tampered.length - 33] = 0x03;
+    expect(() => decodeBacking(tampered)).toThrow(EncodingError);
+  });
+
+  it("rejects a silence duration outside the u64 range", () => {
+    const withClause = (silence: { noCommitmentDuration: bigint; challengeWindow: bigint }) =>
+      makeBacking({
+        ...baseFields(),
+        evidence: { setting: "transparent", operator: OPERATOR, silence },
+      });
+    expect(() => withClause({ noCommitmentDuration: -1n, challengeWindow: 5n })).toThrow(
+      EncodingError,
+    );
+    expect(() => withClause({ noCommitmentDuration: 1n << 64n, challengeWindow: 5n })).toThrow(
+      EncodingError,
+    );
+    expect(() => withClause({ noCommitmentDuration: 5n, challengeWindow: -1n })).toThrow(
+      EncodingError,
+    );
+  });
+
   it("golden vector: the layout and name are frozen", () => {
     // GOLDEN_ENCODING_HEX freezes the documented layout as a literal contract;
     // manualEncoding is the single expected-bytes source checked against the
