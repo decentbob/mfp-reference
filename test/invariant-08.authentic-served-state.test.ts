@@ -405,6 +405,81 @@ describe("a served log must be a history the law could have produced", () => {
     expect(stateIsAuthentic(f.backing, publish(f.venue, forged))).toBe(false);
   });
 
+  it("refuses a spend of units an open demand has committed", () => {
+    // §C3's commitment, applied to served state: a demand commits the quantity
+    // it names, and the ledger refuses to move it. Without this the log can show
+    // a holder at zero with a demand for 100 still standing — a demand no units
+    // back, which is exactly what a redemption leg would read.
+    const f = setup();
+    f.venue.advance(5n);
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 100n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+
+    const move = { backing: f.backing, from: KEYS.alice, to: KEYS.carol, quantity: 100n, nonce: 1n };
+    const signature = ed25519.sign(encodeTransfer(move), SECRETS.alice);
+    expect(() => f.sequencer.submitTransfer(move, signature)).toThrow(/insufficient balance/);
+
+    const snapshot = f.sequencer.snapshot()[0]!;
+    const log = [
+      ...snapshot.opLog,
+      {
+        position: snapshot.opLog.length,
+        kind: "transfer" as const,
+        from: KEYS.alice,
+        to: KEYS.carol,
+        quantity: 100n,
+        nonce: 1n,
+        signature,
+      },
+    ];
+    expect(replayLog(f.backing, log)).toBeUndefined();
+  });
+
+  it("refuses a second demand over units the first already commits", () => {
+    const f = setup();
+    f.venue.advance(5n);
+    const file = (quantity: bigint, nonce: bigint) => {
+      const op = {
+        backing: f.backing,
+        holder: KEYS.alice,
+        quantity,
+        instant: 5n,
+        deadline: 10n,
+        nonce,
+      };
+      return { op, signature: ed25519.sign(encodeDemand(op), SECRETS.alice) };
+    };
+    const first = file(60n, 0n);
+    f.sequencer.submitDemand(first.op, first.signature);
+    const second = file(60n, 1n);
+    expect(() => f.sequencer.submitDemand(second.op, second.signature)).toThrow(
+      /insufficient balance/,
+    );
+
+    const snapshot = f.sequencer.snapshot()[0]!;
+    const log = [
+      ...snapshot.opLog,
+      {
+        position: snapshot.opLog.length,
+        kind: "demand" as const,
+        holder: KEYS.alice,
+        quantity: 60n,
+        instant: 5n,
+        deadline: 10n,
+        nonce: 1n,
+        signature: second.signature,
+      },
+    ];
+    expect(replayLog(f.backing, log)).toBeUndefined();
+  });
+
   it("refuses an acceptance of a demand that was never filed", () => {
     // The backer cannot have answered what nobody presented, and an operator
     // saying otherwise is inventing evidence about the backer.

@@ -227,9 +227,10 @@ export interface LogReplay {
  * the state is consistent with its own lie. Without the **nonce sequence** it
  * does not even need to forge one: it logs a transfer the holder really did sign
  * as many times as the balances will bear, and takes a multiple of the units on
- * one signature. Without the **demand lifecycle** it settles a demand the holder
- * withdrew, using a release the holder signed and the ledger refused. All three
- * were demonstrated before they were closed.
+ * one signature. Without the **demand lifecycle and its lock** it settles a
+ * demand the holder withdrew, using a release the holder signed and the ledger
+ * refused, or spends units an open demand has committed and leaves a demand no
+ * units back. All of them were demonstrated before they were closed.
  *
  * The nonce inside the signed message is what makes a signature single-use, so
  * each signer is held to the sequence the ledger holds them to — starting at 0
@@ -260,6 +261,18 @@ export function replayLog(
       if (units === 0n) balances.delete(hex);
       else balances.set(hex, units);
     };
+    // Units an open demand has committed cannot leave by an ordinary path
+    // (§C3), so the replay reads the same spendable figure the ledger does:
+    // held minus committed. Derived from the standing demands rather than
+    // tracked beside them, so there is one source of truth.
+    const spendable = (key: Uint8Array): bigint => {
+      const hex = bytesToHex(key);
+      let locked = 0n;
+      for (const record of standing.values()) {
+        if (bytesToHex(record.holder) === hex) locked += record.quantity;
+      }
+      return (balances.get(hex) ?? 0n) - locked;
+    };
 
     for (const entry of entries) {
       const signer = signerOf(backing, entry, standing);
@@ -278,13 +291,18 @@ export function replayLog(
           move(entry.recipient, entry.quantity);
           break;
         case "transfer":
+          if (spendable(entry.from) < entry.quantity) return undefined;
           move(entry.from, -entry.quantity);
           move(entry.to, entry.quantity);
           break;
         case "burn":
+          if (spendable(entry.holder) < entry.quantity) return undefined;
           move(entry.holder, -entry.quantity);
           break;
         case "demand": {
+          // Only unlocked units may be committed, or one holding answers two
+          // demands.
+          if (spendable(entry.holder) < entry.quantity) return undefined;
           const hash = sha256(message);
           standing.set(bytesToHex(hash), {
             hash,
@@ -322,6 +340,10 @@ export function replayLog(
           break;
       }
     }
+    // A settlement is the one debit not guarded above, because the demand's own
+    // lock already reserved the units. Sweep once rather than guard twice: a log
+    // that drives any holding below zero is not a history that happened.
+    for (const units of balances.values()) if (units < 0n) return undefined;
     return { balances, demands: [...standing.values()] };
   } catch {
     return undefined;
