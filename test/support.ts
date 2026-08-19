@@ -4,6 +4,7 @@ import {
   signBacking,
   type Backing,
   type RelianceEntry,
+  type SilenceClause,
 } from "../src/backing.js";
 import { TransparentLedger } from "../src/ledger.js";
 import { Venue } from "../src/venue.js";
@@ -42,12 +43,16 @@ export function makeTransparentBacking(
   secret: Uint8Array,
   thing = "EUR",
   reliance: readonly RelianceEntry[] = [],
+  silence?: SilenceClause,
 ): Backing {
   return makeBacking({
     obligor: pub(secret),
     payout: { thing, quantumExponent: -2, perUnit: 100n },
     reliance,
-    evidence: { setting: "transparent", operator: KEYS.operator },
+    evidence:
+      silence === undefined
+        ? { setting: "transparent", operator: KEYS.operator }
+        : { setting: "transparent", operator: KEYS.operator, silence },
   });
 }
 
