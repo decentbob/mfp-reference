@@ -16,6 +16,143 @@ Format:
 
 ---
 
+## 2026-08-19 - Slice 8: the redemption legs are operations, published elsewhere
+
+**Question:** §C2b's payment path - the claim/acceptance/release legs, the
+challenge window, and a returning sequencer adopting what was witnessed during
+the gap. Two things had to be settled first, because both change what a
+redemption claim is: does a standing demand block redemption (open since slice
+6), and do the legs need the law's time-dependent rules replayed, which would
+need a witnessed index per log entry.
+
+**The finding that answered both.** §C2b says redemption "publishes the claim's
+nullifier at the witness venue as the release leg, after the backer's
+acceptance", and §C2 that "the venue-published nullifier stands in for the
+sequencer's lock". So it is not a second protocol beside §C3's
+demand-accept-release. It is that protocol with the legs published at the venue
+because there is no sequencer to submit them to - and under transparent a signed
+spend record IS an operation-log entry. One law, one replay, one nonce sequence:
+the legs go through the same `applyEntry`, and adoption is appending them in the
+order the venue witnessed them.
+
+**Decisions (Bob):**
+
+- **A standing demand is continued, not blocked - and that needed no new rule.**
+  Where the holder filed before the darkness, the claim leg has happened and only
+  the answer and the release are left, which is §C2b's sentence read literally.
+  Where they had not, the claim leg is an ordinary demand, and a demand needs
+  *spendable* units, held minus what open demands commit, so the same units
+  cannot back two claims. The two alternatives both failed: blocking deadlocks
+  the holder, because ending a demand takes a withdrawal and a withdrawal takes
+  the sequencer that is dark; ignoring it lets one holding back a venue
+  redemption and a sequencer demand at once, and the backer concedes two
+  payments for one lot of units.
+
+  It has a structural consequence worth having in view: a demand standing in the
+  snapshot cannot be challenged at all, because its units were locked and its
+  nonce spent before the darkness. The lock had already done the challenge
+  window's job. Only a claim filed *during* the gap is challengeable.
+
+- **No witnessed index per log entry.** A leg published at the venue is stamped
+  by the venue, so it is applied with the venue's own index as its clock and
+  every TIME-marked rule in `applyEntry` is checkable with nobody asserting when.
+  What stays unreplayable is the historic log, and that is safe here because
+  every TIME rule refuses an entry signed by the party it protects: the demand's
+  instant is agreed by two signatures, a dead acceptance deadline costs only the
+  backer, a late release and a premature withdrawal are the holder's own
+  signature, and dishonour cannot be laundered because the acceptance deadline is
+  structurally bounded by the demand's. The alternative - an operator-asserted,
+  committed, monotone index per entry - buys a timeline the operator still
+  chooses inside, for 8 bytes an entry and two replay checks. **Reopen it if a
+  TIME rule ever protects someone who did not sign the entry.**
+
+- **The challenge pays the payee named in the request, not whoever published
+  it.** §C2b says "pays the request's presenter", and the next clause explains
+  why they are normally the same party ("the payee already holds that request").
+  Read literally, anyone who merely saw a holder-signed transfer could publish it
+  and take the payment from the party it was made out to. Flagged as a wording
+  bug rather than built around silently.
+
+- **A transfer published at the venue is evidence, never an operation.** §C2b
+  promises claims "go illiquid rather than dead" while a sequencer is dark, and
+  illiquid means the transfers stop. Applying them would make the venue a second
+  sequencer with no operator, order or receipt. Only the four presentation legs
+  are adopted; issue and burn at the venue do nothing at all.
+
+- **Adoption is enforced structurally, not by a flag.** `submit` adopts before it
+  applies anything and `commit` before it snapshots, so there is no order of
+  calls in which the operator co-signs while ignoring the venue. It is idempotent
+  for the reason a resubmission is - an operation already in the log fails on its
+  own spent nonce - and each leg is adopted at the index the venue stamped it
+  with, so adoption is reproducible by anyone holding the same record.
+
+**Five holes, each demonstrated by running it rather than argued, and four of
+them one question: WHICH RECORD is a publication judged against.**
+
+Found reviewing the implementation (`exploit-gap-veto.mjs`):
+
+- **The veto.** A commitment at the same index as a leg was ending the gap for
+  it, so an operator watching the venue stripped the force from any leg by
+  committing at the index it appeared - one commitment for a veto over the whole
+  clause. The rule now is that **a publication is judged against the record as it
+  stood strictly before its own index**: the venue witnessed both at one index,
+  so neither precedes the other, and the tie must not go to the party watching.
+- **The erasure.** Judged against whatever commitment is latest *now*, an
+  operator killed a settled redemption by publishing one more. Under backer-run -
+  the spec's cold-start default - that is the party that owes the money.
+- **The free challenge.** A request the snapshot could never have served counted
+  as a spend, so a claimant signed a transfer for units they never held and sent
+  their own payment wherever they liked. A request is now put to the law against
+  the snapshot: if the operator would have refused it, it spent nothing.
+
+Found by `/code-review high` (`review-challenge-window.mjs`), both robberies:
+
+- **The window shut when the operator returned.** Requests were gated like legs,
+  so a prompt return decided how long anyone had to object. A request is evidence
+  rather than an operation: the declared window bounds it, and nothing else does.
+- **Only the first spend could be exhibited.** Where the operator served several
+  of the claimant's spends and committed none, the second payee's units were paid
+  to the claimant who had signed them away.
+
+**And two more found reviewing the fixes, which is now five rounds out of five.**
+Both are the recurring shape - the fix bounded one input and left the adjacent
+one open:
+
+- Generalising "one challenge" to "fold the claimant's spends" relaxed the nonce
+  test from `=` to `>=`, and a spend of the claimant's *other* units - free of
+  the demand's lock, so nothing to do with the claimed ones - redirected the
+  payment. **The chain starts where the claim leg stands, or not at all.**
+- The fold read requests in publication order, so a payee who reached the venue
+  ahead of the one before them in the chain was passed over and never
+  reconsidered: whoever was quickest decided who was paid. Folded in sequence
+  order now, with the witnessed index settling the case it is actually for, which
+  is two requests at one nonce - the claimant equivocating, earliest wins.
+
+**Consequences.** `OpLogEntry` is now `PublishedOp & { position }`: an operation
+and where it landed, separated because §C2b needs the operation before it has a
+log to be in, and because no signed message ever contained the position. The
+ledger's seven named methods became adapters over one `apply`, which is the door
+adoption comes through as well. The venue records two kinds of thing now -
+commitments, which operators publish, and operations, which anyone may - and
+judges neither beyond refusing bytes that do not encode.
+
+**Scoped out, with reasons:**
+
+- **Chains beyond one hop.** Alice pays Bob, Bob pays Dave, both during the gap:
+  Bob is paid and Dave is not. The claimant's own spends are folded however many
+  there are; a spend by the payee is a different signer's sequence, and §C2b
+  describes one substitution.
+- **The residue.** A request for more than was claimed redirects only what the
+  redemption pays, so a payee owed more than the claim is short the difference,
+  and the claim layer cannot make it up because the request's nonce is spent.
+- **`snapshotRedemptions` stops resolving once the operator has adopted and
+  committed the legs**, because they are then in the log and the ordinary
+  presentation record covers them. The redemption is still a fact; it is the
+  committed log that carries it.
+
+**Spec change:** the "pays the request's presenter" wording, above. Otherwise
+none needed.
+
 ## 2026-08-19 - Aligning the decisions: the law is applied once
 
 **Question:** Bob asked which recorded decisions no longer serve the goal -
@@ -78,7 +215,8 @@ filter over `opLog` and is gone. src is 2698 lines, from 2968 before the design
 review began.
 
 **Still open, and slice 8 pays money against it:** whether a standing demand
-blocks redemption (recorded in slice 6).
+blocks redemption (recorded in slice 6). *[Closed in slice 8: it is continued,
+not blocked, and the law's spendable check was already the whole rule.]*
 
 **Spec change:** none needed.
 
@@ -258,6 +396,9 @@ witnessed index each operation was accepted at, so they cannot be checked from
 it. Closing that means recording an index per entry (operator-asserted, and so
 only as good as the operator unless it moves into the receipt, which is
 operator-signed). Slice 8 must decide whether its payment path needs it.
+*[Decided in slice 8: it does not. A leg published at the venue carries the
+venue's own stamp, so the rules are checkable without anybody asserting an
+index; see that entry for the condition that would reopen this.]*
 
 **Cost, accepted:** `stateIsAuthentic` verifies every signature in the log, so
 checking a long-lived backing is linear in its whole history and re-checking on

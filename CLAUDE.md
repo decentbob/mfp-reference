@@ -79,11 +79,14 @@ the rule still stands.
 - **An unaccompanied claim is inert, never invalid, and still transferable**
   (inv 17).
 - **Time is a witnessed index, never a clock** (inv 21, 24). Every instant a
-  party asserts is an index in the operator's own published commitment history
-  at the venue; no code reads wall-clock time. One witnessed evaluation instant
-  per presentation, named in the demand and agreed by the acceptance — two
-  signatures over one value — and no later than the latest witnessed index at
-  signing.
+  party asserts is an index in the **venue's** witnessed history, never in the
+  operator's own commitment history — a clock an operator could stop by going
+  quiet would hand it every deadline in its book; no code reads wall-clock time.
+  The venue stamps what it witnesses, commitments and published operations
+  alike, and that stamp is the clock each is judged against. One witnessed
+  evaluation instant per presentation, named in the demand and agreed by the
+  acceptance — two signatures over one value — and no later than the latest
+  witnessed index at signing. See [[DECISIONS.md]].
 - **Every state a sequencer asserts proves against its latest published
   commitment** (inv 22), and the commitment commits to the issuance log, the
   spent set, running totals and the standing demand record (inv 23). The root

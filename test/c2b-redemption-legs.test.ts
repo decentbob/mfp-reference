@@ -506,6 +506,122 @@ describe("§C2b: the challenge window substitutes the payee, and voids nothing",
     expect(compareBytes(redemption.payments[0]!.payee, KEYS.alice)).toBe(0);
   });
 
+  it("hears a challenge after the operator has returned, while the window stands", () => {
+    // The window is a declared period, not a property of the gap. Shut it when
+    // the operator returns and an operator that comes back promptly hands the
+    // double-spender the money — and under backer-run it is the backer's own
+    // operator deciding how long anyone gets to object.
+    const { venue, sequencer, backing } = setup();
+    const served = goDark(venue, sequencer);
+    redeemAtVenue(venue, backing);
+    advanceWitnessedIndex(venue, 14n);
+    sequencer.commit();
+    publishAt(venue, 15n, backing, challengeOf(backing, 100n));
+
+    const redemption = snapshotRedemptions(venue, backing, served)[0]!;
+    expect(compareBytes(redemption.payments[0]!.payee, KEYS.bob)).toBe(0);
+    expect(redemption.payments[0]!.quantity).toBe(100n);
+  });
+
+  it("pays every payee the claimant spent to, not only the first", () => {
+    // The operator served two of Alice's spends and committed neither. Hear
+    // only the first and the second payee's units are paid to the claimant who
+    // signed them away.
+    const { venue, sequencer, backing } = setup();
+    const served = { snapshots: sequencer.snapshot(), commitment: sequencer.commit() };
+    for (const [to, quantity, nonce] of [
+      [KEYS.bob, 30n, 0n],
+      [KEYS.carol, 20n, 1n],
+    ] as const) {
+      sequencer.submitTransfer(
+        { backing, from: KEYS.alice, to, quantity, nonce },
+        ed25519.sign(encodeTransferMessage(backing.name, KEYS.alice, to, quantity, nonce), SECRETS.alice),
+      );
+    }
+    venue.advance(SILENCE.noCommitmentDuration + 1n);
+    redeemAtVenue(venue, backing);
+    publishAt(venue, 15n, backing, challengeOf(backing, 30n, 0n));
+    publishAt(venue, 16n, backing, transfer(backing, SECRETS.alice, KEYS.alice, KEYS.carol, 20n, 1n));
+
+    const redemption = snapshotRedemptions(venue, backing, served)[0]!;
+    expect(redemption.payments.map((p) => p.quantity)).toEqual([30n, 20n, 50n]);
+    expect(compareBytes(redemption.payments[0]!.payee, KEYS.bob)).toBe(0);
+    expect(compareBytes(redemption.payments[1]!.payee, KEYS.carol)).toBe(0);
+    expect(compareBytes(redemption.payments[2]!.payee, KEYS.alice)).toBe(0);
+  });
+
+  it("hears the claimant's spends in sequence order, however they were published", () => {
+    // Publication order across DIFFERENT nonces is whoever got to the venue
+    // first, and must not decide who is paid. Only two requests at ONE nonce
+    // are a race, and there the earlier witnessed one wins.
+    const { venue, sequencer, backing } = setup();
+    const served = { snapshots: sequencer.snapshot(), commitment: sequencer.commit() };
+    for (const [to, quantity, nonce] of [
+      [KEYS.bob, 30n, 0n],
+      [KEYS.carol, 20n, 1n],
+    ] as const) {
+      sequencer.submitTransfer(
+        { backing, from: KEYS.alice, to, quantity, nonce },
+        ed25519.sign(encodeTransferMessage(backing.name, KEYS.alice, to, quantity, nonce), SECRETS.alice),
+      );
+    }
+    venue.advance(SILENCE.noCommitmentDuration + 1n);
+    redeemAtVenue(venue, backing);
+    // Carol gets to the venue first, with the LATER nonce.
+    publishAt(venue, 15n, backing, transfer(backing, SECRETS.alice, KEYS.alice, KEYS.carol, 20n, 1n));
+    publishAt(venue, 16n, backing, challengeOf(backing, 30n, 0n));
+
+    const redemption = snapshotRedemptions(venue, backing, served)[0]!;
+    expect(redemption.payments.map((p) => p.quantity)).toEqual([30n, 20n, 50n]);
+    expect(compareBytes(redemption.payments[0]!.payee, KEYS.bob)).toBe(0);
+    expect(compareBytes(redemption.payments[1]!.payee, KEYS.carol)).toBe(0);
+  });
+
+  it("does not let a spend of the claimant's OTHER units redirect the payment", () => {
+    // Alice has 100, commits 60 to a demand before the darkness, and signs the
+    // free 40 away during it. Those 40 are not the demanded units — the lock
+    // saw to that — so exhibiting the transfer must not take 40 of her 60.
+    const { venue, sequencer, backing } = setup();
+    const claim = demand(backing, SECRETS.alice, KEYS.alice, 60n, 0n, 40n, 0n);
+    sequencer.submitDemand(
+      { backing, holder: KEYS.alice, quantity: 60n, instant: 0n, deadline: 40n, nonce: 0n },
+      claim.signature,
+    );
+    const served = goDark(venue, sequencer);
+    publishAt(venue, 12n, backing, acceptance(backing, SECRETS.backer, claim.hash, 0n, 40n, 1n));
+    publishAt(venue, 13n, backing, release(backing, SECRETS.alice, claim.hash, 1n));
+    publishAt(venue, 15n, backing, challengeOf(backing, 40n, 1n));
+
+    const redemption = snapshotRedemptions(venue, backing, served)[0]!;
+    expect(redemption.payments).toHaveLength(1);
+    expect(compareBytes(redemption.payments[0]!.payee, KEYS.alice)).toBe(0);
+    expect(redemption.payments[0]!.quantity).toBe(60n);
+  });
+
+  it("does not let one spend challenge a later claim in the same gap", () => {
+    // Alice files twice in one gap, at nonces 0 and 2. A request at nonce 0
+    // displaces the FIRST claim; reading it against the second would pay one
+    // spend twice.
+    const { venue, sequencer, backing } = setup();
+    const served = goDark(venue, sequencer);
+    const first = demand(backing, SECRETS.alice, KEYS.alice, 40n, 11n, 40n, 0n);
+    publishAt(venue, 11n, backing, first.op);
+    publishAt(venue, 12n, backing, acceptance(backing, SECRETS.backer, first.hash, 11n, 40n, 1n));
+    publishAt(venue, 13n, backing, release(backing, SECRETS.alice, first.hash, 1n));
+    const second = demand(backing, SECRETS.alice, KEYS.alice, 60n, 14n, 40n, 2n);
+    publishAt(venue, 14n, backing, second.op);
+    publishAt(venue, 15n, backing, acceptance(backing, SECRETS.backer, second.hash, 14n, 40n, 2n));
+    publishAt(venue, 16n, backing, release(backing, SECRETS.alice, second.hash, 3n));
+    publishAt(venue, 17n, backing, challengeOf(backing, 40n, 0n));
+
+    const [one, two] = snapshotRedemptions(venue, backing, served);
+    expect(compareBytes(one!.payments[0]!.payee, KEYS.bob)).toBe(0);
+    expect(one!.payments[0]!.quantity).toBe(40n);
+    expect(two!.payments).toHaveLength(1);
+    expect(compareBytes(two!.payments[0]!.payee, KEYS.alice)).toBe(0);
+    expect(two!.payments[0]!.quantity).toBe(60n);
+  });
+
   it("is unsettled while the window stands and settled once it closes", () => {
     const { venue, sequencer, backing } = setup();
     const served = goDark(venue, sequencer);

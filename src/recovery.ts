@@ -252,19 +252,16 @@ function publishedInGap(venue: Venue, backing: Backing, at: bigint): boolean {
   return at - last > clause.noCommitmentDuration;
 }
 
-/** Everything published against this backing that a gap gave force to (§C2b). */
-function gapOpsFor(venue: Venue, backing: Backing): WitnessedOp[] {
-  return venue.publishedOpsFor(backing.name).filter((w) => publishedInGap(venue, backing, w.at));
-}
-
 /**
- * The operations a returning sequencer adopts: the gap's presentation legs, in
- * the order the venue witnessed them. Exported so adoption and the redemption
- * walk read one definition of what a publication can do, rather than two that
- * have to agree.
+ * The operations a gap gave force to: its presentation legs, in the order the
+ * venue witnessed them. This is what a returning sequencer adopts, and what the
+ * redemption walk folds — exported so the two read one definition of what a
+ * publication can do, rather than two that have to agree.
  */
 export function gapLegsFor(venue: Venue, backing: Backing): WitnessedOp[] {
-  return gapOpsFor(venue, backing).filter((w) => isLeg(w.op));
+  return venue
+    .publishedOpsFor(backing.name)
+    .filter((w) => isLeg(w.op) && publishedInGap(venue, backing, w.at));
 }
 
 /** One party the backer pays for one redemption, and how much of it. */
@@ -317,24 +314,15 @@ function walkGap(
   backing: Backing,
   served: ServedState,
   state: LedgerState,
-): { settlements: Settlement[]; requests: WitnessedOp[] } {
+): Settlement[] {
   const settlements: Settlement[] = [];
-  const requests: WitnessedOp[] = [];
-  // The state before any leg touched it, which is what a request has to have
-  // been servable against to have spent anything.
-  const before = copyState(state);
-  for (const witnessed of gapOpsFor(venue, backing)) {
+  for (const witnessed of gapLegsFor(venue, backing)) {
     // "Redemption against the LAST witnessed snapshot": the snapshot in hand
-    // must be the one that was last when this operation was published. Asked
-    // about the present instead, an operator that would rather a redemption were
+    // must be the one that was last when this leg was published. Asked about the
+    // present instead, an operator that would rather a redemption were
     // unresolvable could make it so by publishing one more commitment — and a
     // backer-run operator is exactly the party with that motive.
     if (!isLatestAt(venue, backing, served, witnessed.at)) continue;
-    if (witnessed.op.kind === "transfer") {
-      requests.push(witnessed);
-      continue;
-    }
-    if (!isLeg(witnessed.op)) continue;
     // A release settles the demand and drops it, so the record has to be read
     // before the law applies the leg that removes it.
     const settling =
@@ -348,67 +336,98 @@ function walkGap(
     }
     if (settling !== undefined) settlements.push({ record: settling, at: witnessed.at });
   }
-  return { settlements, requests: requests.filter((w) => wouldHaveSpent(backing, before, w.op)) };
+  return settlements;
 }
 
 /**
- * The challenge §C2b allows: "anyone may publish at the venue the holder-signed
- * transfer request that spent the named claim."
+ * Who the backer pays for one redemption: §C2b's challenge, generalised to
+ * however many spends the operator swallowed.
  *
- * Under transparent, "spent the named claim" is the claimant's own signature at
- * the same point in their nonce sequence as the claim leg — two operations at
- * one sequence point, which is the claimant equivocating and is exactly what a
- * spend the snapshot has not seen looks like. The earliest witnessed one wins,
- * because witnessing pins order (§C2) and a claimant who signed two conflicting
- * requests does not get to pick.
+ * "Anyone may publish at the venue the holder-signed transfer request that spent
+ * the named claim... on publication the redemption pays the request's presenter
+ * instead." Under transparent a request spent the claim iff the SNAPSHOT could
+ * have served it — the operator would have taken it, and went dark instead — so
+ * the requests are folded onto a copy of the snapshot in the order the venue
+ * witnessed them, and the redemption pays whoever ends up holding the units it
+ * claimed. The law does the judging: a forged signature, a nonce already spent,
+ * units the claimant never had, all refuse themselves.
+ *
+ * That gives four properties without four rules. Two conflicting requests at one
+ * nonce are the claimant equivocating, and the earlier one wins because the
+ * second finds its nonce spent — witnessing pins order (§C2). A chain of the
+ * claimant's own spends pays each payee in turn, rather than the first and
+ * nobody else. A request for more than was claimed redirects only what the
+ * redemption pays. And a demand already standing in the snapshot cannot be
+ * challenged at all, because its units were locked and its nonce spent before
+ * the darkness — the lock had already done this job.
  *
  * **It pays the payee named in the request, not whoever published it.** The
  * spec's words are "pays the request's presenter", and its next clause explains
  * why they are normally the same party ("the payee already holds that request").
  * Read literally, anyone who merely saw a holder-signed transfer could publish
  * it and take the payment from the party it was made out to. See DECISIONS.md.
+ *
+ * The window bounds it and nothing else does: a request is evidence rather than
+ * an operation, so it is not gated on the gap the legs are gated on. §C2b gives
+ * the redemption a DECLARED window, and cutting it short the moment the operator
+ * returns would let a prompt return decide how long anyone has to object.
  */
-function challengeFor(
+function paymentsFor(
+  backing: Backing,
+  snapshot: LedgerState,
   record: DemandRecord,
   requests: readonly WitnessedOp[],
   closesAt: bigint,
-): Payment | undefined {
-  for (const witnessed of requests) {
+): Payment[] {
+  const state = copyState(snapshot);
+  const payments: Payment[] = [];
+  let unpaid = record.quantity;
+  // In sequence order, then in witnessed order. A chain has to be folded in the
+  // order the claimant signed it: read in publication order instead and a payee
+  // who reached the venue ahead of the one before them in the chain is passed
+  // over and never reconsidered — which is whoever was quickest, deciding who
+  // is paid. Witnessed order still settles the case it is for, which is two
+  // requests at ONE nonce: that is the claimant equivocating, and the earlier
+  // one wins (§C2, witnessing pins order).
+  for (const witnessed of inSequenceOrder(requests, record.holder)) {
     const request = witnessed.op;
     if (request.kind !== "transfer") continue;
     if (witnessed.at > closesAt) continue;
-    // The claim leg and the spend it conflicts with occupy ONE point in the
-    // claimant's sequence. Anywhere else is a different operation, not a spend
-    // of this claim — and it is why a demand already standing in the snapshot
-    // cannot be challenged at all: its own nonce was consumed before the
-    // darkness, so the lock had already done this job.
-    if (request.nonce !== record.nonce) continue;
-    if (compareBytes(request.from, record.holder) !== 0) continue;
-    // Capped at the claim: a request for more than was claimed redirects only
-    // what the redemption pays, and the excess is not this mechanism's to move.
-    const quantity = request.quantity < record.quantity ? request.quantity : record.quantity;
-    return { payee: request.to, quantity };
+    // **The chain starts where the claim leg stands, or not at all.** A spend
+    // displaces this claim only by occupying its own point in the claimant's
+    // sequence, or by following one that did. Take any spend that merely folds
+    // and two of them go wrong: a spend of the claimant's OTHER units — free of
+    // the demand's lock, and so nothing to do with the claimed ones — redirects
+    // the payment; and where a holder files twice in one gap, one spend is paid
+    // for against both claims.
+    if (payments.length === 0 && request.nonce !== record.nonce) continue;
+    try {
+      applyEntry(state, backing, request, undefined);
+    } catch {
+      continue;
+    }
+    const quantity = request.quantity < unpaid ? request.quantity : unpaid;
+    payments.push({ payee: copyBytes(request.to), quantity });
+    unpaid -= quantity;
+    if (unpaid === 0n) break;
   }
-  return undefined;
+  if (unpaid > 0n) payments.push({ payee: copyBytes(record.holder), quantity: unpaid });
+  return payments;
 }
 
 /**
- * Whether the snapshot could have served this request — signature, nonce,
- * spendable balance and all, judged by the law rather than by a second list of
- * conditions here. A request the operator would have REFUSED spent nothing, so
- * it is not evidence that the claim was spent; exhibiting one would otherwise
- * let a claimant sign a transfer they never had the units for and redirect their
- * own redemption at will.
- *
- * Asked on a copy, because the answer is wanted without the effect.
+ * This holder's published transfer requests, by nonce and then by the index the
+ * venue witnessed them at. Both keys are needed and neither is enough: the nonce
+ * is the order the claimant signed in, and the witnessed index is the only thing
+ * that separates two requests signed at one nonce.
  */
-function wouldHaveSpent(backing: Backing, before: LedgerState, op: PublishedOp): boolean {
-  try {
-    applyEntry(copyState(before), backing, op, undefined);
-    return true;
-  } catch {
-    return false;
-  }
+function inSequenceOrder(requests: readonly WitnessedOp[], holder: Uint8Array): WitnessedOp[] {
+  return requests
+    .filter((w) => w.op.kind === "transfer" && compareBytes(w.op.from, holder) === 0)
+    .sort((a, b) => {
+      if (a.op.nonce !== b.op.nonce) return a.op.nonce < b.op.nonce ? -1 : 1;
+      return a.at < b.at ? -1 : a.at > b.at ? 1 : 0;
+    });
 }
 
 /** Whether the served state was this operator's latest commitment before `at`. */
@@ -446,18 +465,17 @@ export function snapshotRedemptions(
     const state = replayServedState(backing, served);
     if (state === undefined) return [];
 
-    const { settlements, requests } = walkGap(venue, backing, served, state);
-    return settlements.map(({ record, at }) => {
+    // The snapshot as it stood before any leg touched it: what a request has to
+    // have been servable against to have spent anything.
+    const snapshot = copyState(state);
+    const requests = venue.publishedOpsFor(backing.name);
+    return walkGap(venue, backing, served, state).map(({ record, at }) => {
       const closesAt = at + clause.challengeWindow;
-      const challenge = challengeFor(record, requests, closesAt);
-      const remainder = challenge === undefined ? record.quantity : record.quantity - challenge.quantity;
-      const payments: Payment[] = challenge === undefined ? [] : [challenge];
-      if (remainder > 0n) payments.push({ payee: copyBytes(record.holder), quantity: remainder });
       return {
+        payments: paymentsFor(backing, snapshot, record, requests, closesAt),
         demandHash: copyBytes(record.hash),
         claimant: copyBytes(record.holder),
         quantity: record.quantity,
-        payments,
         releasedAt: at,
         challengeClosesAt: closesAt,
         settled: venue.witnessedIndex() > closesAt,
