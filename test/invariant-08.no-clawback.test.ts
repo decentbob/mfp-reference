@@ -3,7 +3,8 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 import { NonceError, TransparentLedger } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
-import { KEYS, register, SECRETS } from "./support.js";
+import { makeTransparentBacking, KEYS, register, SECRETS } from "./support.js";
+import { signBacking } from "../src/backing.js";
 
 // Invariant 8: no clawback, no reversal, no privileged party who can move
 // claims. The rule is not "don't call it" — the path must not exist. These
@@ -99,5 +100,35 @@ describe("invariant 8: accessors expose no mutation path into ledger state", () 
     backing.obligor[0] = (backing.obligor[0] as number) ^ 0x01;
     // The name was fixed at construction, so the backing still resolves.
     expect(ledger.balance(backing, KEYS.alice)).toBe(100n);
+  });
+});
+
+describe("invariant 8: no accessor exposes the key that authorises issuance", () => {
+  it("the ledger hands out no Backing object at all", () => {
+    const ledger = new TransparentLedger();
+    // A live Backing would expose obligor bytes; Object.freeze does not freeze
+    // the contents of a Uint8Array, so exposing one is a write path to the key
+    // `issue` reads authority from.
+    expect((ledger as unknown as Record<string, unknown>)["registered"]).toBeUndefined();
+  });
+
+  it("mutating a registered backing's obligor cannot forge issuance", () => {
+    const ledger = new TransparentLedger();
+    const backing = makeTransparentBacking(SECRETS.backer);
+    ledger.register(backing, signBacking(SECRETS.backer, backing));
+    // The caller overwrites the obligor in place, then signs as themselves.
+    backing.obligor.set(KEYS.mallory);
+    const op = { backing, recipient: KEYS.alice, quantity: 10n ** 9n, nonce: 0n };
+    expect(() => ledger.issue(op, ed25519.sign(encodeIssuance(op), SECRETS.mallory))).toThrow();
+    expect(ledger.outstanding(backing)).toBe(0n);
+  });
+
+  it("a snapshot's name is a copy, not the ledger's own array", () => {
+    const ledger = new TransparentLedger();
+    const backing = register(ledger, SECRETS.backer);
+    const snap = ledger.snapshotAll()[0]!;
+    const before = snap.name.slice();
+    snap.name.fill(0xff);
+    expect(ledger.snapshotAll()[0]!.name).toEqual(before);
   });
 });

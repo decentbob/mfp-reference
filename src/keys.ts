@@ -1,10 +1,18 @@
 // Key and signature rules shared by every layer.
 //
-// Every verification key that carries authority (an obligor, a holder, an
-// operator) must be a valid, non-small-order Ed25519 point: a small-order key
-// accepts a forged signature over any message under permissive verification,
-// and even under strict verification a balance under an invalid point is
-// unspendable garbage. Verification is strict (non-ZIP215); see DECISIONS.md.
+// Every verification key that carries authority must be a valid,
+// non-small-order Ed25519 point: a small-order key accepts a forged signature
+// over any message under permissive verification, and even under strict
+// verification a balance under an invalid point is unspendable garbage.
+//
+// Applied to obligors (makeBacking) and to holder keys on every ledger
+// operation. E's operator key is length-checked in makeBacking and
+// point-checked by Sequencer.register instead, because it is inside the
+// backing's hashed name: point-checking it at construction would change which
+// backings are representable, and the slice-1 name format is frozen. A backing
+// naming a bogus operator is simply unsequenceable. See DECISIONS.md.
+//
+// Verification is strict (non-ZIP215) throughout.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 

@@ -29,12 +29,12 @@
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { type Backing } from "./backing.js";
 import { compareBytes } from "./bytes.js";
-import { signCommitment, stateRoot, type BackingSnapshot, type Commitment } from "./commitment.js";
+import { signCommitment, stateRoot, type Commitment } from "./commitment.js";
 import { isValidPublicKey } from "./keys.js";
-import { TransparentLedger } from "./ledger.js";
+import { TransparentLedger, type BackingSnapshot } from "./ledger.js";
 import {
   encodeBurn,
   encodeIssuance,
@@ -78,15 +78,25 @@ export class Sequencer {
   }
 
   submitIssue(op: IssuanceOp, signature: Uint8Array): Receipt {
+    this.requireServed(op.backing);
     return this.submit(op.backing, encodeIssuance(op), () => this.ledger.issue(op, signature));
   }
 
   submitTransfer(op: TransferOp, signature: Uint8Array): Receipt {
+    this.requireServed(op.backing);
     return this.submit(op.backing, encodeTransfer(op), () => this.ledger.transfer(op, signature));
   }
 
   submitBurn(op: BurnOp, signature: Uint8Array): Receipt {
+    this.requireServed(op.backing);
     return this.submit(op.backing, encodeBurn(op), () => this.ledger.burn(op, signature));
+  }
+
+  /** Routing is refused before an operation is even encoded. */
+  private requireServed(backing: Backing): void {
+    if (!this.ledger.has(backing)) {
+      throw new SequencerError("backing not served by this sequencer");
+    }
   }
 
   /**
@@ -102,15 +112,7 @@ export class Sequencer {
 
   /** The served state, as it would be published for a verifier (invariant 23). */
   snapshot(): BackingSnapshot[] {
-    return this.ledger.registered().map((backing) => ({
-      name: backing.name,
-      issued: this.ledger.issued(backing),
-      burned: this.ledger.burned(backing),
-      balances: [...this.ledger.balancesOf(backing)].map(
-        ([hex, units]) => [hexToBytes(hex), units] as const,
-      ),
-      opLog: this.ledger.opLog(backing),
-    }));
+    return this.ledger.snapshotAll();
   }
 
   outstanding(backing: Backing): bigint {
@@ -133,9 +135,6 @@ export class Sequencer {
    * nonce still succeeds.
    */
   private submit(backing: Backing, opMessage: Uint8Array, apply: () => OpLogEntryLike): Receipt {
-    if (!this.ledger.has(backing)) {
-      throw new SequencerError("backing not served by this sequencer");
-    }
     const opHash = sha256(opMessage);
     const key = bytesToHex(opHash);
     const existing = this.receipts.get(key);

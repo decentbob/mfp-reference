@@ -174,3 +174,52 @@ describe("verifiers return false on hostile input, never throw", () => {
     expect(stateProvesCommitment(bad, { index: 0n, root: name, operator: name, signature: sig })).toBe(false);
   });
 });
+
+// A root can be injective and still let an operator assert state with more
+// than one meaning, or state that hides an accepted operation. Canonical form
+// closes both.
+
+describe("invariant 22: committed state has exactly one meaning", () => {
+  const name = new Uint8Array(32).fill(0x01);
+  const holder = new Uint8Array(32).fill(0x02);
+
+  it("rejects one holder appearing twice in balances", () => {
+    // Sum, first-wins and last-wins readers would disagree under one valid
+    // signature, and no second root exists to prove a fault.
+    expect(() =>
+      stateRoot([
+        { name, issued: 100n, burned: 0n, balances: [[holder, 100n], [holder, 0n]], opLog: [] },
+      ]),
+    ).toThrow(EncodingError);
+  });
+
+  it("rejects an op-log position that does not match its index", () => {
+    // A gap lets an operator commit to state in which a holder's valid,
+    // operator-signed receipt for the missing position proves against nothing.
+    const entry = (position: number) => ({
+      position,
+      kind: "burn" as const,
+      holder,
+      quantity: 1n,
+      nonce: 0n,
+    });
+    expect(() =>
+      stateRoot([{ name, issued: 2n, burned: 2n, balances: [], opLog: [entry(0), entry(5)] }]),
+    ).toThrow(EncodingError);
+  });
+
+  it("rejects an oversized amount instead of grinding on it", () => {
+    // Unbounded, an attacker-sized integer turns "a malformed state fails the
+    // proof" into a hang.
+    const started = Date.now();
+    expect(
+      stateProvesCommitment([{ name, issued: 1n << 200000n, burned: 0n, balances: [], opLog: [] }], {
+        index: 0n,
+        root: name,
+        operator: name,
+        signature: new Uint8Array(64),
+      }),
+    ).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+});

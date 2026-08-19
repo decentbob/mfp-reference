@@ -28,26 +28,19 @@ import {
   ByteWriter,
   compareBytes,
   EncodingError,
+  MAX_QUANTITY_EXCLUSIVE,
 } from "./bytes.js";
 import { COMMITMENT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
-import type { OpLogEntry } from "./ledger.js";
+import type { BackingSnapshot, OpLogEntry } from "./ledger.js";
+
+export type { BackingSnapshot } from "./ledger.js";
 
 const KIND_TAG: Record<OpLogEntry["kind"], number> = {
   issue: 0x01,
   transfer: 0x02,
   burn: 0x03,
 };
-
-/** One served backing's committed state, as published for verification. */
-export interface BackingSnapshot {
-  readonly name: Uint8Array;
-  readonly issued: bigint;
-  readonly burned: bigint;
-  /** [holder key, units], any order — canonicalized here by key bytes. */
-  readonly balances: readonly (readonly [Uint8Array, bigint])[];
-  readonly opLog: readonly OpLogEntry[];
-}
 
 export interface Commitment {
   readonly index: bigint;
@@ -56,16 +49,27 @@ export interface Commitment {
   readonly signature: Uint8Array;
 }
 
-/** Totals and balances may be zero, so they use the plain non-negative form. */
+/**
+ * Totals and balances may be zero, so they use a non-negative form rather than
+ * the >=1 quantity rule — but they are still bounded. Without the bound an
+ * attacker-supplied state could carry a multi-megabit integer and make the
+ * verifier grind, turning "a malformed state fails the proof" into a hang.
+ */
 function writeAmount(w: ByteWriter, n: bigint, what: string): void {
   if (n < 0n) throw new EncodingError(`${what} is negative`);
+  if (n >= MAX_QUANTITY_EXCLUSIVE) throw new EncodingError(`${what} out of range`);
   w.lengthPrefixed(bigintToMinimalBytes(n));
 }
 
-function writeOpEntry(w: ByteWriter, entry: OpLogEntry): void {
+function writeOpEntry(w: ByteWriter, entry: OpLogEntry, index: number): void {
   w.u8(KIND_TAG[entry.kind]);
-  if (!Number.isSafeInteger(entry.position) || entry.position < 0) {
-    throw new EncodingError("op-log position is not a non-negative integer");
+  // The position is pinned to the array index, not merely well-formed. A
+  // self-declared position lets an operator commit to a log with a gap, so a
+  // holder's valid receipt for the missing position proves against nothing
+  // while the state itself still verifies — asserted state that hides an
+  // accepted operation.
+  if (entry.position !== index) {
+    throw new EncodingError("op-log position does not match its index");
   }
   w.u64(BigInt(entry.position));
   switch (entry.kind) {
@@ -90,13 +94,21 @@ function encodeSnapshot(snapshot: BackingSnapshot): Uint8Array {
   writeAmount(w, snapshot.issued, "issued");
   writeAmount(w, snapshot.burned, "burned");
   const balances = [...snapshot.balances].sort((a, b) => compareBytes(a[0], b[0]));
+  for (let i = 1; i < balances.length; i++) {
+    // One holder twice would leave the committed state without a single
+    // meaning: sum, first-wins and last-wins readers would disagree under one
+    // valid signature, and no second root exists to prove a fault.
+    if (compareBytes((balances[i - 1] as readonly [Uint8Array, bigint])[0], (balances[i] as readonly [Uint8Array, bigint])[0]) === 0) {
+      throw new EncodingError("duplicate holder in balances");
+    }
+  }
   w.u32(balances.length);
   for (const [key, units] of balances) {
     w.key32(key, "holder key");
     writeAmount(w, units, "balance");
   }
   w.u32(snapshot.opLog.length);
-  for (const entry of snapshot.opLog) writeOpEntry(w, entry);
+  snapshot.opLog.forEach((entry, i) => writeOpEntry(w, entry, i));
   return w.finish();
 }
 

@@ -38,9 +38,18 @@ export function copyBytes(bytes: Uint8Array): Uint8Array {
 /** Unsigned big-endian, minimal length: no leading zero byte, 0n -> empty. */
 export function bigintToMinimalBytes(n: bigint): Uint8Array {
   if (n < 0n) throw new EncodingError("negative quantity");
-  const out: number[] = [];
-  for (let v = n; v > 0n; v >>= 8n) out.unshift(Number(v & 0xffn));
-  return Uint8Array.from(out);
+  if (n === 0n) return new Uint8Array(0);
+  // Size first, then fill back-to-front. Prepending per byte would memmove the
+  // whole buffer each time, which is quadratic on an attacker-sized value.
+  let length = 0;
+  for (let v = n; v > 0n; v >>= 8n) length++;
+  const out = new Uint8Array(length);
+  let v = n;
+  for (let i = length - 1; i >= 0; i--) {
+    out[i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
+  return out;
 }
 
 export function minimalBytesToBigint(bytes: Uint8Array): bigint {

@@ -11,10 +11,9 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ByteWriter, compareBytes } from "./bytes.js";
-import type { BackingSnapshot } from "./commitment.js";
 import { RECEIPT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
-import type { OpLogEntry } from "./ledger.js";
+import type { BackingSnapshot, OpLogEntry } from "./ledger.js";
 import { encodeBurnMessage, encodeIssuanceMessage, encodeTransferMessage } from "./messages.js";
 
 export interface Receipt {

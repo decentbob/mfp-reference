@@ -25,8 +25,8 @@
 // balances are primary state rather than a fold over the log; and there are no
 // commitments over ledger state here — the sequencer adds those.
 
-import { bytesToHex } from "@noble/hashes/utils.js";
-import { verifyBackingSignature, type Backing } from "./backing.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
+import { makeBacking, verifyBackingSignature, type Backing } from "./backing.js";
 import { copyBytes, isValidQuantity, MAX_QUANTITY_EXCLUSIVE } from "./bytes.js";
 import { isValidPublicKey, verifySignatureStrict } from "./keys.js";
 import {
@@ -73,6 +73,20 @@ export type OpLogEntry =
       readonly nonce: bigint;
     };
 
+/**
+ * One backing's state, serialized for a verifier. This is what a commitment
+ * commits to (invariant 23) and what a verifier is handed to check against a
+ * root. Every field is a copy.
+ */
+export interface BackingSnapshot {
+  readonly name: Uint8Array;
+  readonly issued: bigint;
+  readonly burned: bigint;
+  /** [holder key, units], canonicalized by key bytes when encoded. */
+  readonly balances: readonly (readonly [Uint8Array, bigint])[];
+  readonly opLog: readonly OpLogEntry[];
+}
+
 /** The issuance-only projection of the op log (§C1 names the first holder). */
 export interface IssuanceLogEntry {
   readonly position: number;
@@ -115,8 +129,13 @@ export class TransparentLedger {
       throw new LedgerError("backing signature invalid");
     }
     if (this.states.has(backing.nameHex)) return;
+    // Store the ledger's OWN copy. Object.freeze does not freeze the bytes
+    // inside a Uint8Array, and `issue` reads authority from the registered
+    // obligor — so keeping the caller's object would leave a live write path
+    // to the key that authorises issuance. makeBacking re-copies every field
+    // and yields the same name (invariant 1).
     this.states.set(backing.nameHex, {
-      backing,
+      backing: makeBacking(backing),
       issued: 0n,
       burned: 0n,
       balances: new Map(),
@@ -124,9 +143,19 @@ export class TransparentLedger {
     });
   }
 
-  /** Every backing this ledger has accepted. */
-  registered(): readonly Backing[] {
-    return [...this.states.values()].map((state) => state.backing);
+  /**
+   * Every backing's state, serialized for a verifier (invariant 23). The
+   * ledger owns its state, so it owns the serialization: no Backing object
+   * leaves, so no caller can reach the obligor key that authorises issuance.
+   */
+  snapshotAll(): BackingSnapshot[] {
+    return [...this.states.values()].map((state) => ({
+      name: copyBytes(state.backing.name),
+      issued: state.issued,
+      burned: state.burned,
+      balances: [...state.balances].map(([hex, units]) => [hexToBytes(hex), units] as const),
+      opLog: state.opLog.map(copyOpEntry),
+    }));
   }
 
   has(backing: Backing): boolean {
