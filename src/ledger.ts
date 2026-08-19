@@ -13,12 +13,21 @@
 //
 // Conservation (invariant 10): outstanding = issued − burned, per backing,
 // after every operation, and the sum of balances equals outstanding.
-// Redemption is not a ledger concept: presenting hands claims to the backer
-// via an ordinary transfer, and only an explicit burn lowers the count.
+// Redemption is not a ledger concept: settling a demand moves the claims to the
+// backer, who is then simply their holder, and only an explicit burn lowers the
+// count.
 //
 // Every operation is atomic: all checks run before any mutation, so it either
-// fully applies or throws with no state change. A signer's nonce is per
-// (signer, backing) and consumed only by a successful operation.
+// fully applies or throws with no state change. Every operation — the three that
+// move value and the four of presentation — appends exactly one entry to the
+// operation log and consumes exactly one nonce, both in `append`, so there is
+// one place where an operation becomes a fact. A signer's nonce is per
+// (signer, backing).
+//
+// Operations whose outcome depends on time take the current witnessed index as
+// an argument. Invariant 21 forbids a time a party asserts alone, so the ledger
+// never reads a clock: the sequencer supplies the index from its own latest
+// published commitment at the venue.
 //
 // NOTE (later slices, see DECISIONS.md): op-log positions are the ledger's own
 // per-backing append indices, a stand-in for witnessed interval time (§C2);
@@ -29,6 +38,7 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { makeBacking, verifyBackingSignature, type Backing } from "./backing.js";
 import { compareBytes, copyBytes, isValidQuantity, MAX_QUANTITY_EXCLUSIVE } from "./bytes.js";
 import { isValidPublicKey, verifySignatureStrict } from "./keys.js";
+import { copyOpEntry, type OpLogEntry } from "./oplog.js";
 import {
   demandHash,
   encodeAcceptance,
@@ -58,31 +68,6 @@ export class LedgerError extends Error {}
  * re-deriving the expected nonce and re-checking it itself.
  */
 export class NonceError extends LedgerError {}
-
-/** One entry in a backing's operation log. `position` is the append index. */
-export type OpLogEntry =
-  | {
-      readonly position: number;
-      readonly kind: "issue";
-      readonly recipient: Uint8Array;
-      readonly quantity: bigint;
-      readonly nonce: bigint;
-    }
-  | {
-      readonly position: number;
-      readonly kind: "transfer";
-      readonly from: Uint8Array;
-      readonly to: Uint8Array;
-      readonly quantity: bigint;
-      readonly nonce: bigint;
-    }
-  | {
-      readonly position: number;
-      readonly kind: "burn";
-      readonly holder: Uint8Array;
-      readonly quantity: bigint;
-      readonly nonce: bigint;
-    };
 
 /**
  * One backing's state, serialized for a verifier. This is what a commitment
@@ -121,12 +106,28 @@ export interface DemandRecord {
 }
 
 /**
+ * An acceptance holds the claims only until its own deadline (§C3): "An
+ * acceptance carries its own deadline, or the backer holds a free option:
+ * accept, keep the claims committed, wait for the payout to move." Release and
+ * withdrawal are complements on this one predicate, so exactly one exit is open
+ * at every index — and dishonour reads the same predicate rather than a second
+ * notion of what counts as an answer.
+ */
+export function acceptanceIsLive(record: DemandRecord, atWitnessedIndex: bigint): boolean {
+  return record.acceptedDeadline !== undefined && atWitnessedIndex <= record.acceptedDeadline;
+}
+
+/**
  * Dishonour is not a separate mechanism (§C3): it is the branch where the
- * acceptance never arrives. Publicly checkable against the committed record
- * and a witnessed index, with nobody reporting anything.
+ * acceptance never arrives. An acceptance that arrived and expired unpaid is
+ * that same branch — read any other way, one free signature naming a deadline
+ * nobody can release against launders the backer's failure forever, and §C3's
+ * "claims still live past the deadline are the backer's visible failure" reports
+ * nothing. Publicly checkable against the committed record and a witnessed
+ * index, with nobody reporting anything.
  */
 export function isDishonoured(record: DemandRecord, atWitnessedIndex: bigint): boolean {
-  return record.acceptedDeadline === undefined && atWitnessedIndex > record.deadline;
+  return !acceptanceIsLive(record, atWitnessedIndex) && atWitnessedIndex > record.deadline;
 }
 
 /** The issuance-only projection of the op log (§C1 names the first holder). */
@@ -149,17 +150,6 @@ interface BackingState {
 
 function copyDemand(record: DemandRecord): DemandRecord {
   return { ...record, hash: copyBytes(record.hash), holder: copyBytes(record.holder) };
-}
-
-function copyOpEntry(entry: OpLogEntry): OpLogEntry {
-  switch (entry.kind) {
-    case "issue":
-      return { ...entry, recipient: copyBytes(entry.recipient) };
-    case "transfer":
-      return { ...entry, from: copyBytes(entry.from), to: copyBytes(entry.to) };
-    case "burn":
-      return { ...entry, holder: copyBytes(entry.holder) };
-  }
 }
 
 export class TransparentLedger {
@@ -297,16 +287,24 @@ export class TransparentLedger {
   }
 
   /**
-   * Present claims for payment (C3). The demand commits the quantity: it can
-   * no longer be transferred or burned, but it is not surrendered - settlement
+   * Present claims for payment (§C3). The demand commits the quantity: it can
+   * no longer be transferred or burned, but it is not surrendered — settlement
    * needs the backer's acceptance and the holder's own release.
    */
-  demand(op: DemandOp, signature: Uint8Array): DemandRecord {
+  demand(op: DemandOp, signature: Uint8Array, atWitnessedIndex: bigint): OpLogEntry {
     const state = this.stateOf(op.backing);
     if (!isValidPublicKey(op.holder)) {
       throw new LedgerError("holder key is not a valid Ed25519 point");
     }
     this.checkOp(op.holder, op.backing.nameHex, op.nonce, op.quantity);
+    // Invariant 24: the instant is "no later than the latest witnessed index at
+    // signing", so a payout is never evaluated at an index nobody has
+    // witnessed. The acceptance has to repeat this exact value, which carries
+    // the same guarantee into the backer's signature — so the rule lives here
+    // alone rather than being re-checked against a second clock.
+    if (op.instant > atWitnessedIndex) {
+      throw new LedgerError("demand instant is later than the latest witnessed index");
+    }
     // Only unlocked units may be committed, or one holding could answer two
     // demands.
     this.checkBalance(state, op.holder, op.quantity);
@@ -317,7 +315,7 @@ export class TransparentLedger {
     // checkOp has already pinned to a value that is consumed on success, so
     // two standing demands cannot share a hash.
     const hash = demandHash(op);
-    const record: DemandRecord = {
+    state.demands.set(bytesToHex(hash), {
       hash,
       holder: copyBytes(op.holder),
       quantity: op.quantity,
@@ -325,31 +323,42 @@ export class TransparentLedger {
       deadline: op.deadline,
       nonce: op.nonce,
       acceptedDeadline: undefined,
-    };
-    state.demands.set(bytesToHex(hash), record);
-    this.consumeNonce(op.holder, op.backing.nameHex);
-    return copyDemand(record);
+    });
+    return this.append(state, op.holder, op.backing.nameHex, {
+      position: state.opLog.length,
+      kind: "demand",
+      holder: copyBytes(op.holder),
+      quantity: op.quantity,
+      instant: op.instant,
+      deadline: op.deadline,
+      nonce: op.nonce,
+    });
   }
 
   /**
-   * Answer a demand (C3). Backer-signed, and it must agree the demand's own
-   * evaluation instant - two signatures over one value (invariant 24). It
+   * Answer a demand (§C3). Backer-signed, and it must agree the demand's own
+   * evaluation instant — two signatures over one value (invariant 24). It
    * carries its own deadline, or the backer would hold a free option: accept,
    * keep the claims committed, and wait for the payout to move.
    */
-  accept(op: AcceptanceOp, signature: Uint8Array, atWitnessedIndex: bigint): DemandRecord {
+  accept(op: AcceptanceOp, signature: Uint8Array, atWitnessedIndex: bigint): OpLogEntry {
     const state = this.stateOf(op.backing);
     const obligor = state.backing.obligor;
     this.checkOpNoQuantity(obligor, op.backing.nameHex, op.nonce);
     const record = this.standingDemand(state, op.demandHash);
-    if (record.acceptedDeadline !== undefined) {
-      throw new LedgerError("demand already accepted");
+    if (acceptanceIsLive(record, atWitnessedIndex)) {
+      throw new LedgerError("a live acceptance already stands");
     }
-    // A demand already past its deadline is publicly dishonoured, and the
-    // holder has earned the right to walk away. Answering it now would let the
-    // backer convert its own failure into a lock on the holder's claims.
-    if (atWitnessedIndex > record.deadline) {
-      throw new LedgerError("demand is past its deadline and cannot be answered");
+    // The answer must be live when signed and must not outlast the window the
+    // holder chose: "The window is the holder's... A backer would be setting
+    // the standard by which its own failure is measured." One range check, and
+    // it subsumes "a demand past its own deadline cannot be answered" — past
+    // that deadline no legal acceptance deadline is left, so a holder who has
+    // earned the right to walk away cannot have it taken back.
+    if (op.deadline < atWitnessedIndex || op.deadline > record.deadline) {
+      throw new LedgerError(
+        "acceptance deadline must be no earlier than now and no later than the demand's deadline",
+      );
     }
     if (op.instant !== record.instant) {
       throw new LedgerError("acceptance does not agree the demand's instant");
@@ -358,30 +367,33 @@ export class TransparentLedger {
       throw new LedgerError("acceptance signature invalid: only the obligor answers");
     }
 
-    const answered: DemandRecord = { ...record, acceptedDeadline: op.deadline };
-    state.demands.set(bytesToHex(record.hash), answered);
-    this.consumeNonce(obligor, op.backing.nameHex);
-    return copyDemand(answered);
+    state.demands.set(bytesToHex(record.hash), { ...record, acceptedDeadline: op.deadline });
+    return this.append(state, obligor, op.backing.nameHex, {
+      position: state.opLog.length,
+      kind: "acceptance",
+      demandHash: copyBytes(record.hash),
+      instant: op.instant,
+      deadline: op.deadline,
+      nonce: op.nonce,
+    });
   }
 
   /**
    * Settle an accepted demand (invariant 27). Takes two signatures: the
    * backer's acceptance, already recorded, and the holder's release here. A
    * backer must never void unilaterally, or non-payment would be recorded as
-   * settlement. The exact quantity offered moves to the backer - presentation
+   * settlement. The exact quantity offered moves to the backer — presentation
    * destroys nothing (invariant 10), so this is a transfer, not a burn.
    */
   release(op: ReleaseOp, signature: Uint8Array, atWitnessedIndex: bigint): OpLogEntry {
     const state = this.stateOf(op.backing);
     const record = this.standingDemand(state, op.demandHash);
     this.checkOpNoQuantity(record.holder, op.backing.nameHex, op.nonce);
-    if (record.acceptedDeadline === undefined) {
-      throw new LedgerError("demand has not been accepted");
-    }
-    // Past the acceptance's own deadline the answer is stale: the holder's
-    // exit is withdrawal, not settlement on terms that have moved.
-    if (atWitnessedIndex > record.acceptedDeadline) {
-      throw new LedgerError("acceptance has expired");
+    // Never answered, and answered-then-expired, are one refusal: no answer is
+    // on the table, and the holder's exit in both cases is withdrawal rather
+    // than settling on terms that have moved.
+    if (!acceptanceIsLive(record, atWitnessedIndex)) {
+      throw new LedgerError("no live acceptance to release against");
     }
     if (!verifySignatureStrict(signature, encodeRelease(op), record.holder)) {
       throw new LedgerError("release signature invalid: only the holder releases");
@@ -392,41 +404,47 @@ export class TransparentLedger {
     }
 
     // Drop the demand first so the settling transfer is not blocked by its own
-    // lock, then move exactly the quantity offered.
+    // lock, then move exactly the quantity offered. The log entry names the
+    // demand rather than the balances: the quantity and the holder live in that
+    // demand's own entry, earlier in this append-only log, and the destination
+    // is the obligor in the backing's terms — neither is the operator's to
+    // assert.
     state.demands.delete(bytesToHex(record.hash));
     this.debit(state, record.holder, record.quantity);
     this.credit(state, backer, record.quantity);
     return this.append(state, record.holder, op.backing.nameHex, {
       position: state.opLog.length,
-      kind: "transfer",
-      from: copyBytes(record.holder),
-      to: copyBytes(backer),
-      quantity: record.quantity,
+      kind: "release",
+      demandHash: copyBytes(record.hash),
       nonce: op.nonce,
     });
   }
 
   /**
-   * End an unanswered demand (C3). Unilateral and holder-signed: the
-   * protection against a backer that stalls, which it cannot wait out. An
-   * accepted demand cannot be withdrawn - the holder has an answer to release
-   * against or to let expire.
+   * End a demand no live acceptance answers (§C3). Unilateral and
+   * holder-signed: the protection against a backer that stalls, which it cannot
+   * wait out. A live acceptance blocks it — the holder has an answer to release
+   * against, or may wait for it to expire and withdraw then.
    */
-  withdraw(op: WithdrawalOp, signature: Uint8Array, atWitnessedIndex: bigint): void {
+  withdraw(op: WithdrawalOp, signature: Uint8Array, atWitnessedIndex: bigint): OpLogEntry {
     const state = this.stateOf(op.backing);
     const record = this.standingDemand(state, op.demandHash);
     this.checkOpNoQuantity(record.holder, op.backing.nameHex, op.nonce);
-    // A live acceptance holds the claims: the holder has an answer to release
-    // against. Once it expires the claims are the holder's again, or a single
-    // free signature from the backer would sterilise them forever.
-    if (record.acceptedDeadline !== undefined && atWitnessedIndex <= record.acceptedDeadline) {
+    // A live acceptance holds the claims. Once it expires they are the holder's
+    // again, or a single free signature from the backer would sterilise them.
+    if (acceptanceIsLive(record, atWitnessedIndex)) {
       throw new LedgerError("a live acceptance stands: release it or wait for it to expire");
     }
     if (!verifySignatureStrict(signature, encodeWithdrawal(op), record.holder)) {
       throw new LedgerError("withdrawal signature invalid: only the holder withdraws");
     }
     state.demands.delete(bytesToHex(record.hash));
-    this.consumeNonce(record.holder, op.backing.nameHex);
+    return this.append(state, record.holder, op.backing.nameHex, {
+      position: state.opLog.length,
+      kind: "withdrawal",
+      demandHash: copyBytes(record.hash),
+      nonce: op.nonce,
+    });
   }
 
   /** The standing demand record (invariant 23), as copies. */

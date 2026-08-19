@@ -22,6 +22,11 @@
 // "specific claims" §C3 requires, expressed as a commitment to the whole
 // demand rather than to a quantity that two demands could share.
 //
+// As in messages.ts, the field-level encoders take the backing NAME rather than
+// the Backing object, so a verifier holding only a committed operation-log
+// entry can reconstruct the exact signed message and hence its hash (oplog.ts).
+// The op-shaped wrappers below feed them backing.name.
+//
 // Instants and deadlines are witnessed indices — the operator's commitment
 // index at the venue — never wall-clock time (§C0b, invariant 21). The
 // acceptance repeats the instant so that agreeing it takes two signatures over
@@ -74,17 +79,83 @@ export interface WithdrawalOp {
   readonly nonce: bigint;
 }
 
-export function encodeDemand(op: DemandOp): Uint8Array {
-  validateQuantity(op.quantity, "demand quantity");
+export function encodeDemandMessage(
+  backingName: Uint8Array,
+  holder: Uint8Array,
+  quantity: bigint,
+  instant: bigint,
+  deadline: bigint,
+  nonce: bigint,
+): Uint8Array {
+  validateQuantity(quantity, "demand quantity");
   const w = new ByteWriter();
   w.context(DEMAND_CONTEXT);
-  w.key32(op.backing.name, "backing name");
-  w.key32(op.holder, "holder key");
-  w.lengthPrefixed(bigintToMinimalBytes(op.quantity));
-  w.u64(op.instant);
-  w.u64(op.deadline);
-  w.u64(op.nonce);
+  w.key32(backingName, "backing name");
+  w.key32(holder, "holder key");
+  w.lengthPrefixed(bigintToMinimalBytes(quantity));
+  w.u64(instant);
+  w.u64(deadline);
+  w.u64(nonce);
   return w.finish();
+}
+
+export function encodeAcceptanceMessage(
+  backingName: Uint8Array,
+  demandHash: Uint8Array,
+  instant: bigint,
+  deadline: bigint,
+  nonce: bigint,
+): Uint8Array {
+  const w = new ByteWriter();
+  w.context(ACCEPTANCE_CONTEXT);
+  w.key32(backingName, "backing name");
+  w.key32(demandHash, "demand hash");
+  w.u64(instant);
+  w.u64(deadline);
+  w.u64(nonce);
+  return w.finish();
+}
+
+/** Release and withdrawal are the same shape: one demand, one nonce. */
+function endOfDemandMessage(
+  context: Uint8Array,
+  backingName: Uint8Array,
+  demandHash: Uint8Array,
+  nonce: bigint,
+): Uint8Array {
+  const w = new ByteWriter();
+  w.context(context);
+  w.key32(backingName, "backing name");
+  w.key32(demandHash, "demand hash");
+  w.u64(nonce);
+  return w.finish();
+}
+
+export function encodeReleaseMessage(
+  backingName: Uint8Array,
+  demandHash: Uint8Array,
+  nonce: bigint,
+): Uint8Array {
+  return endOfDemandMessage(RELEASE_CONTEXT, backingName, demandHash, nonce);
+}
+
+export function encodeWithdrawalMessage(
+  backingName: Uint8Array,
+  demandHash: Uint8Array,
+  nonce: bigint,
+): Uint8Array {
+  return endOfDemandMessage(WITHDRAWAL_CONTEXT, backingName, demandHash, nonce);
+}
+
+export function encodeDemand(op: DemandOp): Uint8Array {
+  return encodeDemandMessage(
+    op.backing.name,
+    op.holder,
+    op.quantity,
+    op.instant,
+    op.deadline,
+    op.nonce,
+  );
 }
 
 /** A demand's identity: the hash of its canonical encoding. */
@@ -93,30 +164,19 @@ export function demandHash(op: DemandOp): Uint8Array {
 }
 
 export function encodeAcceptance(op: AcceptanceOp): Uint8Array {
-  const w = new ByteWriter();
-  w.context(ACCEPTANCE_CONTEXT);
-  w.key32(op.backing.name, "backing name");
-  w.key32(op.demandHash, "demand hash");
-  w.u64(op.instant);
-  w.u64(op.deadline);
-  w.u64(op.nonce);
-  return w.finish();
+  return encodeAcceptanceMessage(
+    op.backing.name,
+    op.demandHash,
+    op.instant,
+    op.deadline,
+    op.nonce,
+  );
 }
 
 export function encodeRelease(op: ReleaseOp): Uint8Array {
-  const w = new ByteWriter();
-  w.context(RELEASE_CONTEXT);
-  w.key32(op.backing.name, "backing name");
-  w.key32(op.demandHash, "demand hash");
-  w.u64(op.nonce);
-  return w.finish();
+  return encodeReleaseMessage(op.backing.name, op.demandHash, op.nonce);
 }
 
 export function encodeWithdrawal(op: WithdrawalOp): Uint8Array {
-  const w = new ByteWriter();
-  w.context(WITHDRAWAL_CONTEXT);
-  w.key32(op.backing.name, "backing name");
-  w.key32(op.demandHash, "demand hash");
-  w.u64(op.nonce);
-  return w.finish();
+  return encodeWithdrawalMessage(op.backing.name, op.demandHash, op.nonce);
 }

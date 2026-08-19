@@ -7,7 +7,7 @@
 // a declared interval it publishes a commitment over the state it serves.
 //
 // It never holds funds. Its added value in the transparent setting (where the
-// ledger already prevents double-spends) is threefold:
+// ledger already prevents double-spends) is fourfold:
 //   - witnessed order: a receipt binds an operation to its committed position;
 //   - idempotent replay (invariant 26): the same operation resubmitted returns
 //     the identical prior receipt, and a different operation at an
@@ -15,17 +15,28 @@
 //     sequencer "refuses a second spend by declining to sign";
 //   - commitments (invariants 22, 23): periodic signed roots over served
 //     state, so a third party can verify state without trusting the
-//     operator's live word.
+//     operator's live word;
+//   - a witnessed clock: presentation (§C3) turns on indices, and invariant 21
+//     forbids a time a party asserts alone, so the index comes from this
+//     operator's own latest published commitment at the venue. Before it has
+//     published anything it has no clock, and declines to serve an operation
+//     that needs one.
+//
+// One venue per sequencer, taken at construction. The spec names the venue in E
+// beside the operator; E carries only the operator key here, so one venue for
+// the operator is the honest simplification — and it means there is exactly one
+// clock, where a venue passed per call could give two answers to one predicate.
 //
 // Boundaries, per the design rules: the sequencer owns routing (is this
-// backing mine?) and raises SequencerError; the ledger owns the law and funds
-// and raises LedgerError/NonceError; malformed fields raise EncodingError from
-// the encoder. No layer re-checks or relabels another's verdict.
+// backing mine?) and the clock, and raises SequencerError; the ledger owns the
+// law and funds and raises LedgerError/NonceError; malformed fields raise
+// EncodingError from the encoder. No layer re-checks or relabels another's
+// verdict.
 //
 // NOTE (later slices, see DECISIONS.md): recovery / snapshot redemption /
 // non-membership proofs (§C2b), silence and non-service grades, revocation,
 // successor sequencers, dated instruments, multi-sequencer transfers, and
-// presentation/dishonour (§C3) are all out of scope here.
+// prepare–decide–commit (§C3's atomicity across operators) are out of scope.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -34,7 +45,11 @@ import { type Backing } from "./backing.js";
 import { compareBytes } from "./bytes.js";
 import { signCommitment, stateRoot, type Commitment } from "./commitment.js";
 import { isValidPublicKey } from "./keys.js";
-import { TransparentLedger, type BackingSnapshot } from "./ledger.js";
+import {
+  TransparentLedger,
+  type BackingSnapshot,
+  type DemandRecord,
+} from "./ledger.js";
 import {
   encodeBurn,
   encodeIssuance,
@@ -43,6 +58,17 @@ import {
   type IssuanceOp,
   type TransferOp,
 } from "./messages.js";
+import { type OpLogEntry } from "./oplog.js";
+import {
+  encodeAcceptance,
+  encodeDemand,
+  encodeRelease,
+  encodeWithdrawal,
+  type AcceptanceOp,
+  type DemandOp,
+  type ReleaseOp,
+  type WithdrawalOp,
+} from "./presentation.js";
 import { signReceipt, type Receipt } from "./receipt.js";
 import { Venue } from "./venue.js";
 
@@ -58,7 +84,10 @@ export class Sequencer {
 
   readonly operator: Uint8Array;
 
-  constructor(private readonly operatorSecret: Uint8Array) {
+  constructor(
+    private readonly operatorSecret: Uint8Array,
+    private readonly venue: Venue,
+  ) {
     this.operator = ed25519.getPublicKey(operatorSecret);
   }
 
@@ -92,6 +121,42 @@ export class Sequencer {
     return this.submit(op.backing, encodeBurn(op), () => this.ledger.burn(op, signature));
   }
 
+  /**
+   * Presentation (§C3), through the same path. Each of the four takes the
+   * witnessed index from this operator's latest commitment — read inside the
+   * apply thunk, so a replay is answered from the receipt store without
+   * consulting the clock at all. That is what invariant 26 requires of a
+   * partition recovery: repeating the request cannot change the answer, even if
+   * the deadline it turned on has since passed.
+   */
+  submitDemand(op: DemandOp, signature: Uint8Array): Receipt {
+    this.requireServed(op.backing);
+    return this.submit(op.backing, encodeDemand(op), () =>
+      this.ledger.demand(op, signature, this.witnessedIndex()),
+    );
+  }
+
+  submitAcceptance(op: AcceptanceOp, signature: Uint8Array): Receipt {
+    this.requireServed(op.backing);
+    return this.submit(op.backing, encodeAcceptance(op), () =>
+      this.ledger.accept(op, signature, this.witnessedIndex()),
+    );
+  }
+
+  submitRelease(op: ReleaseOp, signature: Uint8Array): Receipt {
+    this.requireServed(op.backing);
+    return this.submit(op.backing, encodeRelease(op), () =>
+      this.ledger.release(op, signature, this.witnessedIndex()),
+    );
+  }
+
+  submitWithdrawal(op: WithdrawalOp, signature: Uint8Array): Receipt {
+    this.requireServed(op.backing);
+    return this.submit(op.backing, encodeWithdrawal(op), () =>
+      this.ledger.withdraw(op, signature, this.witnessedIndex()),
+    );
+  }
+
   /** Routing is refused before an operation is even encoded. */
   private requireServed(backing: Backing): void {
     if (!this.ledger.has(backing)) {
@@ -103,11 +168,29 @@ export class Sequencer {
    * Publish a commitment over the served state. The index comes from the
    * venue's record of this operator, so a failed publish does not burn one.
    */
-  commit(venue: Venue): Commitment {
+  commit(): Commitment {
     const root = stateRoot(this.snapshot());
-    const commitment = signCommitment(this.operatorSecret, venue.nextIndexFor(this.operator), root);
-    venue.publish(commitment);
+    const commitment = signCommitment(
+      this.operatorSecret,
+      this.venue.nextIndexFor(this.operator),
+      root,
+    );
+    this.venue.publish(commitment);
     return commitment;
+  }
+
+  /**
+   * The index every time-dependent decision is read at: this operator's latest
+   * published commitment (§C2b, "Finality means witnessed rather than
+   * co-signed"). An operator that has published nothing has no witnessed time,
+   * and says so rather than substituting a number of its own.
+   */
+  witnessedIndex(): bigint {
+    const latest = this.venue.latestFor(this.operator);
+    if (latest === undefined) {
+      throw new SequencerError("no witnessed index yet: publish a commitment first");
+    }
+    return latest.index;
   }
 
   /** The served state, as it would be published for a verifier (invariant 23). */
@@ -123,6 +206,21 @@ export class Sequencer {
     return this.ledger.balance(backing, holder);
   }
 
+  /** Units this holder can still spend: held minus committed by open demands. */
+  availableBalance(backing: Backing, holder: Uint8Array): bigint {
+    return this.ledger.availableBalance(backing, holder);
+  }
+
+  /** The standing demand record (invariant 23), as copies. */
+  openDemands(backing: Backing): DemandRecord[] {
+    return this.ledger.openDemands(backing);
+  }
+
+  /** A copy of the full operation log, all seven kinds. */
+  opLog(backing: Backing): OpLogEntry[] {
+    return this.ledger.opLog(backing);
+  }
+
   nextNonce(signer: Uint8Array, backing: Backing): bigint {
     return this.ledger.nextNonce(signer, backing);
   }
@@ -134,7 +232,7 @@ export class Sequencer {
    * rejected operation records nothing, so a later valid operation at that
    * nonce still succeeds.
    */
-  private submit(backing: Backing, opMessage: Uint8Array, apply: () => OpLogEntryLike): Receipt {
+  private submit(backing: Backing, opMessage: Uint8Array, apply: () => OpLogEntry): Receipt {
     const opHash = sha256(opMessage);
     const key = bytesToHex(opHash);
     const existing = this.receipts.get(key);
@@ -145,9 +243,4 @@ export class Sequencer {
     this.receipts.set(key, receipt);
     return receipt;
   }
-}
-
-/** Just the field submit needs from the ledger's returned log entry. */
-interface OpLogEntryLike {
-  readonly position: number;
 }

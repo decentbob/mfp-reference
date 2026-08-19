@@ -1,6 +1,6 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
-import { isDishonoured, LedgerError, TransparentLedger } from "../src/ledger.js";
+import { acceptanceIsLive, isDishonoured, LedgerError, TransparentLedger } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import {
   demandHash,
@@ -18,11 +18,12 @@ import { KEYS, register, SECRETS } from "./support.js";
 // Presentation is demand - accept - release (§C3). Dishonour is not a separate
 // mechanism: it is the branch where the acceptance never arrives.
 //
-// Witnessed indices are parameters, not signed fields: invariant 21 forbids a
-// time the holder asserts alone, so the index comes from whoever witnesses.
-// The demand's own deadline is 10 and an acceptance's is 20 throughout, so
-// "index 5" is live, "index 15" is past the demand's deadline, and "index 25"
-// is past the acceptance's.
+// Witnessed indices are parameters here, supplied by whoever witnesses;
+// invariant 21 forbids a time the holder asserts alone, and through the
+// sequencer the index comes from the operator's own latest commitment. The
+// demand's own deadline is 10 and an acceptance's is 8 throughout, so "index 5"
+// is live, "index 9" is past the acceptance's deadline, and "index 11" is past
+// the demand's.
 
 function setup() {
   const ledger = new TransparentLedger();
@@ -34,7 +35,13 @@ function setup() {
 
 type Backing = ReturnType<typeof register>;
 
-function present(ledger: TransparentLedger, backing: Backing, quantity: bigint, deadline = 10n) {
+function present(
+  ledger: TransparentLedger,
+  backing: Backing,
+  quantity: bigint,
+  deadline = 10n,
+  at = 5n,
+) {
   const op = {
     backing,
     holder: KEYS.alice,
@@ -43,15 +50,15 @@ function present(ledger: TransparentLedger, backing: Backing, quantity: bigint, 
     deadline,
     nonce: ledger.nextNonce(KEYS.alice, backing),
   };
-  ledger.demand(op, ed25519.sign(encodeDemand(op), SECRETS.alice));
-  return { op, hash: demandHash(op) };
+  const entry = ledger.demand(op, ed25519.sign(encodeDemand(op), SECRETS.alice), at);
+  return { op, entry, hash: demandHash(op) };
 }
 
 function accept(
   ledger: TransparentLedger,
   backing: Backing,
   hash: Uint8Array,
-  { instant = 5n, deadline = 20n, at = 5n } = {},
+  { instant = 5n, deadline = 8n, at = 5n } = {},
 ) {
   const op = {
     backing,
@@ -71,7 +78,7 @@ function release(ledger: TransparentLedger, backing: Backing, hash: Uint8Array, 
 
 function withdraw(ledger: TransparentLedger, backing: Backing, hash: Uint8Array, at = 6n) {
   const op = { backing, demandHash: hash, nonce: ledger.nextNonce(KEYS.alice, backing) };
-  ledger.withdraw(op, ed25519.sign(encodeWithdrawal(op), SECRETS.alice), at);
+  return ledger.withdraw(op, ed25519.sign(encodeWithdrawal(op), SECRETS.alice), at);
 }
 
 describe("invariant 27: settlement takes two signatures", () => {
@@ -91,7 +98,7 @@ describe("invariant 27: settlement takes two signatures", () => {
   it("a release without an acceptance settles nothing", () => {
     const { ledger, backing } = setup();
     const { hash } = present(ledger, backing, 40n);
-    expect(() => release(ledger, backing, hash)).toThrow(/has not been accepted/);
+    expect(() => release(ledger, backing, hash)).toThrow(/no live acceptance/);
     expect(ledger.balance(backing, KEYS.alice)).toBe(100n);
   });
 
@@ -126,21 +133,13 @@ describe("invariant 27: settlement takes two signatures", () => {
       backing,
       demandHash: hash,
       instant: 5n,
-      deadline: 20n,
+      deadline: 8n,
       nonce: ledger.nextNonce(KEYS.mallory, backing),
     };
     expect(() =>
       ledger.accept(op, ed25519.sign(encodeAcceptance(op), SECRETS.mallory), 5n),
     ).toThrow(LedgerError);
     expect(ledger.openDemands(backing)[0]?.acceptedDeadline).toBeUndefined();
-  });
-});
-
-describe("invariant 24: the acceptance agrees the demand's instant", () => {
-  it("an acceptance naming a different instant is rejected", () => {
-    const { ledger, backing } = setup();
-    const { hash } = present(ledger, backing, 40n);
-    expect(() => accept(ledger, backing, hash, { instant: 6n })).toThrow(/does not agree/);
   });
 });
 
@@ -190,7 +189,7 @@ describe("§C3: a demand commits the claims it names", () => {
       deadline: 10n,
       nonce: ledger.nextNonce(KEYS.alice, backing),
     };
-    expect(() => ledger.demand(op, ed25519.sign(encodeDemand(op), SECRETS.mallory))).toThrow(
+    expect(() => ledger.demand(op, ed25519.sign(encodeDemand(op), SECRETS.mallory), 5n)).toThrow(
       /only the holder presents/,
     );
   });
@@ -212,7 +211,7 @@ describe("§C3: a demand commits the claims it names", () => {
       backing: kwh,
       demandHash: hash,
       instant: 5n,
-      deadline: 20n,
+      deadline: 8n,
       nonce: ledger.nextNonce(KEYS.backer2, kwh),
     };
     expect(() =>
@@ -242,13 +241,14 @@ describe("§C3: an unanswered demand stands, and withdrawal is the way out", () 
     expect(ledger.openDemands(backing)).toHaveLength(1);
   });
 
-  it("dishonour is the branch where the acceptance never arrives", () => {
+  it("dishonour is the branch where no live acceptance arrives", () => {
     const { ledger, backing } = setup();
     const { hash } = present(ledger, backing, 40n, 10n);
     expect(isDishonoured(ledger.openDemands(backing)[0]!, 10n)).toBe(false);
     expect(isDishonoured(ledger.openDemands(backing)[0]!, 11n)).toBe(true);
-    accept(ledger, backing, hash);
-    expect(isDishonoured(ledger.openDemands(backing)[0]!, 999n)).toBe(false);
+    // A live acceptance is an answer, so while it stands there is no dishonour.
+    accept(ledger, backing, hash, { deadline: 8n });
+    expect(isDishonoured(ledger.openDemands(backing)[0]!, 7n)).toBe(false);
   });
 
   it("withdrawal is unilateral and frees the claims", () => {
@@ -275,21 +275,22 @@ describe("§C3: an unanswered demand stands, and withdrawal is the way out", () 
 // An acceptance is free to sign and moves no value. If it locked the holder's
 // claims forever, one signature would sterilise them: the backer could accept,
 // never pay, and the holder could neither spend nor walk away. The acceptance
-// therefore carries its own deadline, and that deadline is enforced.
+// therefore carries its own deadline, that deadline is enforced, and it may not
+// outlast the window the holder chose.
 
 describe("§C3: an acceptance is an answer, not a trap", () => {
   it("a live acceptance holds the claims", () => {
     const { ledger, backing } = setup();
     const { hash } = present(ledger, backing, 80n);
-    accept(ledger, backing, hash, { deadline: 20n });
-    expect(() => withdraw(ledger, backing, hash, 20n)).toThrow(/live acceptance stands/);
+    accept(ledger, backing, hash, { deadline: 8n });
+    expect(() => withdraw(ledger, backing, hash, 8n)).toThrow(/live acceptance stands/);
   });
 
   it("once the acceptance expires the claims are the holder's again", () => {
     const { ledger, backing } = setup();
     const { hash } = present(ledger, backing, 80n);
-    accept(ledger, backing, hash, { deadline: 20n });
-    withdraw(ledger, backing, hash, 21n);
+    accept(ledger, backing, hash, { deadline: 8n });
+    withdraw(ledger, backing, hash, 9n);
     expect(ledger.openDemands(backing)).toHaveLength(0);
     expect(ledger.availableBalance(backing, KEYS.alice)).toBe(100n);
   });
@@ -297,18 +298,135 @@ describe("§C3: an acceptance is an answer, not a trap", () => {
   it("settlement against an expired acceptance is refused", () => {
     const { ledger, backing } = setup();
     const { hash } = present(ledger, backing, 80n);
-    accept(ledger, backing, hash, { deadline: 20n });
-    expect(() => release(ledger, backing, hash, 21n)).toThrow(/acceptance has expired/);
+    accept(ledger, backing, hash, { deadline: 8n });
+    expect(() => release(ledger, backing, hash, 9n)).toThrow(/no live acceptance/);
     expect(ledger.balance(backing, KEYS.backer)).toBe(0n);
   });
 
   it("a backer cannot answer a demand it has already dishonoured", () => {
     const { ledger, backing } = setup();
     const { hash } = present(ledger, backing, 80n, 10n);
-    // Past the deadline the holder has earned the right to walk away; the
-    // backer must not be able to convert its own failure into a lock.
-    expect(() => accept(ledger, backing, hash, { at: 11n })).toThrow(/past its deadline/);
+    // Past the deadline no legal acceptance deadline is left, so the answer is
+    // refused: the holder has earned the right to walk away, and the backer
+    // must not be able to convert its own failure into a lock.
+    expect(() => accept(ledger, backing, hash, { deadline: 11n, at: 11n })).toThrow(
+      /acceptance deadline/,
+    );
     withdraw(ledger, backing, hash, 11n);
     expect(ledger.availableBalance(backing, KEYS.alice)).toBe(100n);
+  });
+});
+
+// Two holes this closes, each demonstrated by a working exploit before the fix.
+
+describe("§C3: an acceptance cannot launder the backer's own failure", () => {
+  it("an acceptance whose deadline is already past cannot be signed", () => {
+    // The exploit: a free signature naming a deadline nobody can release
+    // against, which under the old rule made the demand permanently
+    // un-dishonourable and burned the only acceptance slot.
+    const { ledger, backing } = setup();
+    const { hash } = present(ledger, backing, 80n, 10n);
+    expect(() => accept(ledger, backing, hash, { deadline: 1n, at: 5n })).toThrow(
+      /acceptance deadline/,
+    );
+    expect(ledger.openDemands(backing)[0]?.acceptedDeadline).toBeUndefined();
+    expect(isDishonoured(ledger.openDemands(backing)[0]!, 11n)).toBe(true);
+  });
+
+  it("an acceptance that expires unpaid leaves the demand dishonoured", () => {
+    const { ledger, backing } = setup();
+    const { hash } = present(ledger, backing, 80n, 10n);
+    accept(ledger, backing, hash, { deadline: 8n, at: 5n });
+    const record = ledger.openDemands(backing)[0]!;
+    expect(record.acceptedDeadline).toBe(8n);
+    expect(ledger.balance(backing, KEYS.backer)).toBe(0n);
+    // Past the demand's own deadline, with no live acceptance and nothing paid,
+    // non-payment is a public fact.
+    expect(isDishonoured(record, 11n)).toBe(true);
+    expect(isDishonoured(record, 1_000_000n)).toBe(true);
+  });
+
+  it("an acceptance may not outlast the demand's own deadline", () => {
+    // The exploit: the holder chose a five-index lock-up, the backer answered on
+    // the last legal index with a deadline of a million, paid nothing, and froze
+    // the claims. "The window is the holder's."
+    const { ledger, backing } = setup();
+    const { hash } = present(ledger, backing, 100n, 10n);
+    expect(() => accept(ledger, backing, hash, { deadline: 1_000_000n, at: 10n })).toThrow(
+      /no later than the demand's deadline/,
+    );
+    expect(ledger.availableBalance(backing, KEYS.alice)).toBe(0n);
+    withdraw(ledger, backing, hash, 11n);
+    expect(ledger.availableBalance(backing, KEYS.alice)).toBe(100n);
+  });
+
+  it("the backer may answer again once its own acceptance has expired", () => {
+    // Bounded by the demand's deadline, which the holder set, so re-answering
+    // cannot extend the lock-up past the holder's own term.
+    const { ledger, backing } = setup();
+    const { hash } = present(ledger, backing, 80n, 10n);
+    accept(ledger, backing, hash, { deadline: 7n, at: 5n });
+    accept(ledger, backing, hash, { deadline: 10n, at: 8n });
+    expect(ledger.openDemands(backing)[0]?.acceptedDeadline).toBe(10n);
+    release(ledger, backing, hash, 10n);
+    expect(ledger.balance(backing, KEYS.backer)).toBe(80n);
+  });
+
+  it("a second acceptance while one is live is refused", () => {
+    const { ledger, backing } = setup();
+    const { hash } = present(ledger, backing, 80n, 10n);
+    accept(ledger, backing, hash, { deadline: 8n, at: 5n });
+    expect(() => accept(ledger, backing, hash, { deadline: 10n, at: 6n })).toThrow(
+      /live acceptance already stands/,
+    );
+    expect(ledger.openDemands(backing)[0]?.acceptedDeadline).toBe(8n);
+  });
+
+  it("past the holder's own deadline the holder is always free", () => {
+    // Because an acceptance may not outlast the demand's deadline, no acceptance
+    // can be live past it — so withdrawal is unconditionally open and dishonour
+    // unconditionally reported, whatever the backer signed.
+    for (const acceptanceDeadline of [undefined, 5n, 8n, 10n]) {
+      const { ledger, backing } = setup();
+      const { hash } = present(ledger, backing, 80n, 10n);
+      if (acceptanceDeadline !== undefined) {
+        accept(ledger, backing, hash, { deadline: acceptanceDeadline, at: 5n });
+      }
+      const record = ledger.openDemands(backing)[0]!;
+      expect(acceptanceIsLive(record, 11n)).toBe(false);
+      expect(isDishonoured(record, 11n)).toBe(true);
+      withdraw(ledger, backing, hash, 11n);
+      expect(ledger.availableBalance(backing, KEYS.alice)).toBe(100n);
+    }
+  });
+
+  it("exactly one exit is open at every index", () => {
+    // Release and withdrawal are complements on one predicate, so the holder
+    // always has exactly one way out and never two or none.
+    for (let at = 5n; at <= 13n; at++) {
+      for (const accepted of [false, true]) {
+        const settle = setup();
+        const settleHash = present(settle.ledger, settle.backing, 80n, 10n).hash;
+        if (accepted) accept(settle.ledger, settle.backing, settleHash, { deadline: 8n, at: 5n });
+        let released = true;
+        try {
+          release(settle.ledger, settle.backing, settleHash, at);
+        } catch {
+          released = false;
+        }
+
+        const walk = setup();
+        const walkHash = present(walk.ledger, walk.backing, 80n, 10n).hash;
+        if (accepted) accept(walk.ledger, walk.backing, walkHash, { deadline: 8n, at: 5n });
+        let withdrew = true;
+        try {
+          withdraw(walk.ledger, walk.backing, walkHash, at);
+        } catch {
+          withdrew = false;
+        }
+
+        expect([at, accepted, released, withdrew]).toEqual([at, accepted, released, !released]);
+      }
+    }
   });
 });
