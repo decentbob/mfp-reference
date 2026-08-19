@@ -38,7 +38,7 @@
 // balances are primary state rather than a fold over the log; and there are no
 // commitments over ledger state here — the sequencer adds those.
 
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { makeBacking, verifyBackingSignature, type Backing } from "./backing.js";
 import { compareBytes, copyBytes, isValidQuantity, MAX_QUANTITY_EXCLUSIVE } from "./bytes.js";
 import { isValidPublicKey, verifySignatureStrict } from "./keys.js";
@@ -80,13 +80,13 @@ export class NonceError extends LedgerError {}
  */
 export interface BackingSnapshot {
   readonly name: Uint8Array;
-  readonly issued: bigint;
-  readonly burned: bigint;
-  /** [holder key, units], canonicalized by key bytes when encoded. */
-  readonly balances: readonly (readonly [Uint8Array, bigint])[];
+  /**
+   * The whole operation log, which is the whole state: balances, running totals
+   * and the standing demand record are all folds over it (oplog.ts, replayLog),
+   * so serving it serves them. Committing them beside it would be three
+   * mechanisms for what this one fixes — see commitment.ts.
+   */
   readonly opLog: readonly OpLogEntry[];
-  /** The standing demand record (invariant 23), by demand hash. */
-  readonly demands: readonly DemandRecord[];
 }
 
 /**
@@ -194,11 +194,7 @@ export class TransparentLedger {
   snapshotAll(): BackingSnapshot[] {
     return [...this.states.values()].map((state) => ({
       name: copyBytes(state.backing.name),
-      issued: state.issued,
-      burned: state.burned,
-      balances: [...state.balances].map(([hex, units]) => [hexToBytes(hex), units] as const),
       opLog: state.opLog.map(copyOpEntry),
-      demands: [...state.demands.values()].map(copyDemand),
     }));
   }
 
@@ -302,6 +298,17 @@ export class TransparentLedger {
     const state = this.stateOf(op.backing);
     if (!isValidPublicKey(op.holder)) {
       throw new LedgerError("holder key is not a valid Ed25519 point");
+    }
+    // §C3 licenses single-phase presentation "wherever every lock in the set can
+    // be taken in one atomically signed decision: R empty and the payout
+    // settling outside the claim layer". Presenting a backing with reliance
+    // means handing over q·cᵢ units of each target too (invariant 13), and
+    // nothing here moves those legs — so rather than hand a backer a claim
+    // without its accompaniment, the presentation it cannot complete is refused.
+    // Everything else about such a backing keeps working: invariant 17 leaves an
+    // unaccompanied claim inert, never invalid, and still transferable.
+    if (state.backing.reliance.length > 0) {
+      throw new LedgerError("a backing with reliance cannot be presented: its legs are not moved");
     }
     this.checkOp(op.holder, op.backing.nameHex, op.nonce, op.quantity);
     // Invariant 24: the instant is "no later than the latest witnessed index at

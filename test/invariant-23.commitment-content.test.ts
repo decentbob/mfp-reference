@@ -21,7 +21,7 @@ import {
   encodeRelease,
   encodeWithdrawal,
 } from "../src/presentation.js";
-import { opMessageOfEntry } from "../src/oplog.js";
+import { opMessageOfEntry, replayLog } from "../src/oplog.js";
 
 // Invariant 23: a commitment commits to the issuance log, the spent set, and
 // running totals. In the transparent subset that means the root must move
@@ -208,7 +208,7 @@ describe("invariant 23: every presentation operation moves the root", () => {
     sequencer.submitWithdrawal(walk, ed25519.sign(encodeWithdrawal(walk), SECRETS.alice));
     expect(rootOf(sequencer)).not.toBe(withDemand);
     const snapshot = sequencer.snapshot()[0]!;
-    expect(snapshot.demands).toHaveLength(0);
+    expect(replayLog(backing, snapshot.opLog)!.demands).toHaveLength(0);
     expect(snapshot.opLog.map((entry) => entry.kind)).toEqual(["issue", "demand", "withdrawal"]);
   });
 

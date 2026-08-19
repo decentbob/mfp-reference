@@ -210,9 +210,20 @@ function signerOf(
   }
 }
 
-/** The state a log leaves behind: balances by holder hex, and open demands. */
+/**
+ * The state a log leaves behind: balances by holder hex, the running totals, and
+ * the standing demand record. Invariant 23's objects, every one of them a fold
+ * over the log rather than something an operator asserts beside it.
+ *
+ * Invariant 10 holds here by construction rather than by inspection: an issue
+ * credits a holder and raises `issued` by the same amount, a burn debits and
+ * raises `burned`, and transfers and settlements move units without touching
+ * either — so `outstanding = issued − burned` is always the sum of the balances.
+ */
 export interface LogReplay {
   readonly balances: Map<string, bigint>;
+  readonly issued: bigint;
+  readonly burned: bigint;
   readonly demands: readonly DemandRecord[];
 }
 
@@ -252,6 +263,8 @@ export function replayLog(
   try {
     const balances = new Map<string, bigint>();
     const standing = new Map<string, DemandRecord>();
+    let issued = 0n;
+    let burned = 0n;
     const nextNonce = new Map<string, bigint>();
     const move = (key: Uint8Array, delta: bigint): void => {
       const hex = bytesToHex(key);
@@ -289,6 +302,7 @@ export function replayLog(
       switch (entry.kind) {
         case "issue":
           move(entry.recipient, entry.quantity);
+          issued += entry.quantity;
           break;
         case "transfer":
           if (spendable(entry.from) < entry.quantity) return undefined;
@@ -298,8 +312,13 @@ export function replayLog(
         case "burn":
           if (spendable(entry.holder) < entry.quantity) return undefined;
           move(entry.holder, -entry.quantity);
+          burned += entry.quantity;
           break;
         case "demand": {
+          // A backing with reliance cannot be presented at all until its legs
+          // move (§C3, invariant 13), so a log that files one is not a history
+          // the law could have produced.
+          if (backing.reliance.length > 0) return undefined;
           // Only unlocked units may be committed, or one holding answers two
           // demands.
           if (spendable(entry.holder) < entry.quantity) return undefined;
@@ -344,7 +363,7 @@ export function replayLog(
     // lock already reserved the units. Sweep once rather than guard twice: a log
     // that drives any holding below zero is not a history that happened.
     for (const units of balances.values()) if (units < 0n) return undefined;
-    return { balances, demands: [...standing.values()] };
+    return { balances, issued, burned, demands: [...standing.values()] };
   } catch {
     return undefined;
   }

@@ -37,9 +37,8 @@
 // operator served, so it returns false on any malformed input and never throws.
 
 import { type Backing } from "./backing.js";
-import type { DemandRecord } from "./ledger.js";
 import { compareBytes, isValidQuantity } from "./bytes.js";
-import { replayLog } from "./oplog.js";
+import { replayLog, type LogReplay } from "./oplog.js";
 import {
   stateProvesCommitment,
   type BackingSnapshot,
@@ -76,63 +75,41 @@ export function isSilent(venue: Venue, backing: Backing): boolean {
   return quietFor(venue, backing.evidence.operator) > clause.noCommitmentDuration;
 }
 
-/** Two demand records agree on every field the law fixes. */
-function sameDemand(a: DemandRecord, b: DemandRecord): boolean {
-  return (
-    compareBytes(a.holder, b.holder) === 0 &&
-    a.quantity === b.quantity &&
-    a.instant === b.instant &&
-    a.deadline === b.deadline &&
-    a.nonce === b.nonce &&
-    a.acceptedDeadline === b.acceptedDeadline
-  );
-}
-
 /**
  * The one check on served state, and what everything else here rests on: it is
- * the state this backing's operator committed to, and it is a state that could
- * have happened — its operation log replays under the law, and the balances and
- * standing demands it publishes are exactly what that replay leaves behind.
+ * the state this backing's operator committed to, and its operation log replays
+ * under the law.
  *
- * Three properties because an operator can lie in three places, and closing any
- * two leaves the third open. Committed-but-inconsistent is the sweep: reassign
- * the balances and conservation still passes, because nothing was destroyed.
- * Consistent-but-unauthorised is the fabricated append: add the transfers you
- * want, and the arithmetic agrees with them. Authorised-but-impossible is the
- * refused release: replay a settlement of a demand the holder had withdrawn, on
- * a signature the holder really made. All three were demonstrated before they
- * were closed.
+ * Two properties, because a committed log is the whole of what is served: what
+ * the operator asserts, and whether it could have happened. Balances, totals and
+ * standing demands are not compared against anything, because they are not
+ * asserted separately — they are what the replay returns.
  *
  * A verifier: the state comes from an operator with a motive, so any malformed
  * field is a failed check rather than a crash.
  */
 export function stateIsAuthentic(backing: Backing, served: ServedState): boolean {
+  return replayServedState(backing, served) !== undefined;
+}
+
+/**
+ * The state a served snapshot replays to, or undefined if it is not this
+ * backing's committed state or not a history that could have happened. The
+ * shared body behind stateIsAuthentic and provesHolding, so a caller that needs
+ * the numbers does not verify twice.
+ */
+function replayServedState(backing: Backing, served: ServedState): LogReplay | undefined {
   try {
     const operator = backing.evidence.operator;
     // Signed by the operator E names — anyone can sign a valid commitment over
     // any state they like, and a stranger's says nothing about this backing.
-    if (compareBytes(served.commitment.operator, operator) !== 0) return false;
-    if (!stateProvesCommitment(served.snapshots, served.commitment)) return false;
-
+    if (compareBytes(served.commitment.operator, operator) !== 0) return undefined;
+    if (!stateProvesCommitment(served.snapshots, served.commitment)) return undefined;
     const snapshot = served.snapshots.find((s) => compareBytes(s.name, backing.name) === 0);
-    if (snapshot === undefined) return false;
-    const replay = replayLog(backing, snapshot.opLog);
-    if (replay === undefined) return false;
-
-    if (replay.balances.size !== snapshot.balances.length) return false;
-    for (const [key, units] of snapshot.balances) {
-      if (replay.balances.get(bytesToHex(key)) !== units) return false;
-    }
-
-    if (replay.demands.length !== snapshot.demands.length) return false;
-    const replayed = new Map(replay.demands.map((d) => [bytesToHex(d.hash), d]));
-    for (const record of snapshot.demands) {
-      const expected = replayed.get(bytesToHex(record.hash));
-      if (expected === undefined || !sameDemand(record, expected)) return false;
-    }
-    return true;
+    if (snapshot === undefined) return undefined;
+    return replayLog(backing, snapshot.opLog);
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -157,16 +134,14 @@ export function provesHolding(
 ): boolean {
   try {
     if (!isValidQuantity(quantity)) return false;
-    if (!stateIsAuthentic(backing, served)) return false;
     const latest = venue.latestFor(backing.evidence.operator);
     if (latest === undefined) return false;
     if (latest.sequence !== served.commitment.sequence) return false;
     if (compareBytes(latest.root, served.commitment.root) !== 0) return false;
 
-    const snapshot = served.snapshots.find((s) => compareBytes(s.name, backing.name) === 0);
-    if (snapshot === undefined) return false;
-    const held = snapshot.balances.find(([key]) => compareBytes(key, holder) === 0);
-    return held !== undefined && held[1] >= quantity;
+    const replay = replayServedState(backing, served);
+    if (replay === undefined) return false;
+    return (replay.balances.get(bytesToHex(holder)) ?? 0n) >= quantity;
   } catch {
     return false;
   }
