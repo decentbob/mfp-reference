@@ -1,4 +1,5 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 import { signBacking } from "../src/backing.js";
 import {
@@ -223,5 +224,77 @@ describe("invariant 22: committed state has exactly one meaning", () => {
       }),
     ).toBe(false);
     expect(Date.now() - started).toBeLessThan(1000);
+  });
+});
+
+describe("a hostile standing demand record fails the proof, never throws", () => {
+  const name = new Uint8Array(32).fill(0x01);
+  const base = { name, issued: 0n, burned: 0n, balances: [], opLog: [] };
+  const commitment = {
+    index: 0n,
+    root: name,
+    operator: name,
+    signature: new Uint8Array(64),
+  };
+  const demand = (over: Record<string, unknown>) => [
+    {
+      ...base,
+      demands: [
+        {
+          hash: name,
+          holder: name,
+          quantity: 1n,
+          instant: 0n,
+          deadline: 0n,
+          nonce: 0n,
+          acceptedDeadline: undefined,
+          ...over,
+        },
+      ],
+    },
+  ];
+
+  it("rejects malformed demand fields at the encoder", () => {
+    expect(() => stateRoot(demand({ holder: new Uint8Array(31) }))).toThrow(EncodingError);
+    expect(() => stateRoot(demand({ quantity: -5n }))).toThrow(EncodingError);
+    expect(() => stateRoot(demand({ deadline: -1n }))).toThrow(EncodingError);
+    expect(() => stateRoot(demand({ nonce: -1n }))).toThrow(EncodingError);
+  });
+
+  it("does not commit the self-declared hash, so it cannot be lied about", () => {
+    // The hash is derived from the committed fields. Committing it instead
+    // would let an operator publish a genuine hash beside a false quantity.
+    const a = demand({ hash: new Uint8Array(32).fill(0xaa) });
+    const b = demand({ hash: new Uint8Array(32).fill(0xbb) });
+    expect(bytesToHex(stateRoot(a))).toBe(bytesToHex(stateRoot(b)));
+    // The fields themselves still move it.
+    expect(bytesToHex(stateRoot(demand({ quantity: 2n })))).not.toBe(bytesToHex(stateRoot(a)));
+  });
+
+  it("rejects one demand appearing twice", () => {
+    expect(() =>
+      stateRoot([
+        {
+          ...base,
+          demands: [
+            { hash: name, holder: name, quantity: 1n, instant: 0n, deadline: 0n, nonce: 0n, acceptedDeadline: undefined },
+            { hash: name, holder: name, quantity: 2n, instant: 0n, deadline: 0n, nonce: 0n, acceptedDeadline: undefined },
+          ],
+        },
+      ]),
+    ).toThrow(EncodingError);
+  });
+
+  it("the verifier returns false rather than propagating the throw", () => {
+    expect(stateProvesCommitment(demand({ quantity: -5n }), commitment)).toBe(false);
+    expect(stateProvesCommitment(demand({ nonce: -1n }), commitment)).toBe(false);
+  });
+
+  it("an unanswered demand does not encode like one accepted at index 0", () => {
+    // The presence byte must actually separate the two, or a backer could be
+    // shown as having answered when it has not.
+    expect(bytesToHex(stateRoot(demand({ acceptedDeadline: undefined })))).not.toBe(
+      bytesToHex(stateRoot(demand({ acceptedDeadline: 0n }))),
+    );
   });
 });

@@ -27,7 +27,7 @@
 
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { makeBacking, verifyBackingSignature, type Backing } from "./backing.js";
-import { copyBytes, isValidQuantity, MAX_QUANTITY_EXCLUSIVE } from "./bytes.js";
+import { compareBytes, copyBytes, isValidQuantity, MAX_QUANTITY_EXCLUSIVE } from "./bytes.js";
 import { isValidPublicKey, verifySignatureStrict } from "./keys.js";
 import {
   demandHash,
@@ -114,6 +114,8 @@ export interface DemandRecord {
   readonly instant: bigint;
   /** Witnessed index past which non-payment is a public fact. */
   readonly deadline: bigint;
+  /** The holder's nonce, so a verifier can recompute the demand's hash. */
+  readonly nonce: bigint;
   /** The backer's answer, once given. Absent means unanswered. */
   readonly acceptedDeadline: bigint | undefined;
 }
@@ -311,19 +313,20 @@ export class TransparentLedger {
     if (!verifySignatureStrict(signature, encodeDemand(op), op.holder)) {
       throw new LedgerError("demand signature invalid: only the holder presents a holding");
     }
+    // No duplicate check: the demand hash binds the holder's nonce, which
+    // checkOp has already pinned to a value that is consumed on success, so
+    // two standing demands cannot share a hash.
     const hash = demandHash(op);
-    const hex = bytesToHex(hash);
-    if (state.demands.has(hex)) throw new LedgerError("demand already standing");
-
     const record: DemandRecord = {
       hash,
       holder: copyBytes(op.holder),
       quantity: op.quantity,
       instant: op.instant,
       deadline: op.deadline,
+      nonce: op.nonce,
       acceptedDeadline: undefined,
     };
-    state.demands.set(hex, record);
+    state.demands.set(bytesToHex(hash), record);
     this.consumeNonce(op.holder, op.backing.nameHex);
     return copyDemand(record);
   }
@@ -334,13 +337,19 @@ export class TransparentLedger {
    * carries its own deadline, or the backer would hold a free option: accept,
    * keep the claims committed, and wait for the payout to move.
    */
-  accept(op: AcceptanceOp, signature: Uint8Array): DemandRecord {
+  accept(op: AcceptanceOp, signature: Uint8Array, atWitnessedIndex: bigint): DemandRecord {
     const state = this.stateOf(op.backing);
     const obligor = state.backing.obligor;
     this.checkOpNoQuantity(obligor, op.backing.nameHex, op.nonce);
     const record = this.standingDemand(state, op.demandHash);
     if (record.acceptedDeadline !== undefined) {
       throw new LedgerError("demand already accepted");
+    }
+    // A demand already past its deadline is publicly dishonoured, and the
+    // holder has earned the right to walk away. Answering it now would let the
+    // backer convert its own failure into a lock on the holder's claims.
+    if (atWitnessedIndex > record.deadline) {
+      throw new LedgerError("demand is past its deadline and cannot be answered");
     }
     if (op.instant !== record.instant) {
       throw new LedgerError("acceptance does not agree the demand's instant");
@@ -362,12 +371,17 @@ export class TransparentLedger {
    * settlement. The exact quantity offered moves to the backer - presentation
    * destroys nothing (invariant 10), so this is a transfer, not a burn.
    */
-  release(op: ReleaseOp, signature: Uint8Array): OpLogEntry {
+  release(op: ReleaseOp, signature: Uint8Array, atWitnessedIndex: bigint): OpLogEntry {
     const state = this.stateOf(op.backing);
     const record = this.standingDemand(state, op.demandHash);
     this.checkOpNoQuantity(record.holder, op.backing.nameHex, op.nonce);
     if (record.acceptedDeadline === undefined) {
       throw new LedgerError("demand has not been accepted");
+    }
+    // Past the acceptance's own deadline the answer is stale: the holder's
+    // exit is withdrawal, not settlement on terms that have moved.
+    if (atWitnessedIndex > record.acceptedDeadline) {
+      throw new LedgerError("acceptance has expired");
     }
     if (!verifySignatureStrict(signature, encodeRelease(op), record.holder)) {
       throw new LedgerError("release signature invalid: only the holder releases");
@@ -398,12 +412,15 @@ export class TransparentLedger {
    * accepted demand cannot be withdrawn - the holder has an answer to release
    * against or to let expire.
    */
-  withdraw(op: WithdrawalOp, signature: Uint8Array): void {
+  withdraw(op: WithdrawalOp, signature: Uint8Array, atWitnessedIndex: bigint): void {
     const state = this.stateOf(op.backing);
     const record = this.standingDemand(state, op.demandHash);
     this.checkOpNoQuantity(record.holder, op.backing.nameHex, op.nonce);
-    if (record.acceptedDeadline !== undefined) {
-      throw new LedgerError("an accepted demand cannot be withdrawn");
+    // A live acceptance holds the claims: the holder has an answer to release
+    // against. Once it expires the claims are the holder's again, or a single
+    // free signature from the backer would sterilise them forever.
+    if (record.acceptedDeadline !== undefined && atWitnessedIndex <= record.acceptedDeadline) {
+      throw new LedgerError("a live acceptance stands: release it or wait for it to expire");
     }
     if (!verifySignatureStrict(signature, encodeWithdrawal(op), record.holder)) {
       throw new LedgerError("withdrawal signature invalid: only the holder withdraws");
@@ -521,19 +538,13 @@ export class TransparentLedger {
    * truth and no counter that can desync from the demands themselves.
    */
   private lockedIn(state: BackingState, holder: Uint8Array): bigint {
-    const hex = bytesToHex(holder);
     let locked = 0n;
     for (const record of state.demands.values()) {
-      if (bytesToHex(record.holder) === hex) locked += record.quantity;
+      if (compareBytes(record.holder, holder) === 0) locked += record.quantity;
     }
     return locked;
   }
 
-  /**
-   * Spendable units: held minus committed. §C3's commitment is enforced here —
-   * claims under an open demand cannot leave by any ordinary path, so the
-   * holder cannot present the same units and also spend them.
-   */
   /** The nonce half of checkOp, for operations that carry no quantity. */
   private checkOpNoQuantity(signer: Uint8Array, nameHex: string, nonce: bigint): void {
     const expected = this.nonces.get(this.nonceKey(signer, nameHex)) ?? 0n;
@@ -552,6 +563,11 @@ export class TransparentLedger {
     return record;
   }
 
+  /**
+   * Spendable units: held minus committed. §C3's commitment is enforced here —
+   * claims under an open demand cannot leave by any ordinary path, so the
+   * holder cannot present the same units and also spend them.
+   */
   private checkBalance(state: BackingState, holder: Uint8Array, quantity: bigint): void {
     if (this.balanceIn(state, holder) - this.lockedIn(state, holder) < quantity) {
       throw new LedgerError("insufficient balance");
@@ -570,7 +586,10 @@ export class TransparentLedger {
   private debit(state: BackingState, holder: Uint8Array, quantity: bigint): void {
     const hex = bytesToHex(holder);
     const held = state.balances.get(hex) ?? 0n;
-    const remaining = held - quantity; // checkBalance ran first, so >= 0n
+    const remaining = held - quantity;
+    // Every caller checks first, but a mint-capable line must not rest on a
+    // cross-method argument: refuse rather than persist a negative balance.
+    if (remaining < 0n) throw new LedgerError("debit exceeds the holding");
     // Drop the entry at zero so balancesOf enumerates current holders only.
     if (remaining === 0n) state.balances.delete(hex);
     else state.balances.set(hex, remaining);

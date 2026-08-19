@@ -114,7 +114,7 @@ describe("invariant 23: the commitment commits to the standing demand record", (
       deadline: 20n,
       nonce: ledger.nextNonce(KEYS.backer, backing),
     };
-    ledger.accept(answer, ed25519.sign(encodeAcceptance(answer), SECRETS.backer));
+    ledger.accept(answer, ed25519.sign(encodeAcceptance(answer), SECRETS.backer), 5n);
     expect(rootNow()).not.toBe(afterDemand);
   });
 });
