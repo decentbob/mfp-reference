@@ -141,7 +141,7 @@ export function stateProvesCommitment(
 
 function commitmentMessage(index: bigint, root: Uint8Array): Uint8Array {
   const w = new ByteWriter();
-  w.fixed(COMMITMENT_CONTEXT, COMMITMENT_CONTEXT.length, "context");
+  w.context(COMMITMENT_CONTEXT);
   w.u64(index);
   w.key32(root, "root");
   return w.finish();

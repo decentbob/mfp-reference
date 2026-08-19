@@ -29,7 +29,7 @@ export interface Receipt {
 /** Both 32-byte fields are asserted, so one signature covers one receipt. */
 function receiptMessage(backingName: Uint8Array, opHash: Uint8Array, position: bigint): Uint8Array {
   const w = new ByteWriter();
-  w.fixed(RECEIPT_CONTEXT, RECEIPT_CONTEXT.length, "context");
+  w.context(RECEIPT_CONTEXT);
   w.key32(backingName, "backing name");
   w.key32(opHash, "op hash");
   w.u64(position);

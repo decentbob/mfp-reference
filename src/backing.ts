@@ -292,7 +292,7 @@ export function backingName(backing: Backing): Uint8Array {
 
 function signedMessage(name: Uint8Array): Uint8Array {
   const w = new ByteWriter();
-  w.fixed(BACKING_SIGNATURE_CONTEXT, BACKING_SIGNATURE_CONTEXT.length, "context");
+  w.context(BACKING_SIGNATURE_CONTEXT);
   w.key32(name, "backing name");
   return w.finish();
 }

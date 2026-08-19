@@ -51,7 +51,7 @@ export interface BurnOp {
 /** Context, then the backing name — the head every operation message shares. */
 function head(context: Uint8Array, backingName: Uint8Array): ByteWriter {
   const w = new ByteWriter();
-  w.fixed(context, context.length, "context");
+  w.context(context);
   w.key32(backingName, "backing name");
   return w;
 }

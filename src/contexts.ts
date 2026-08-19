@@ -27,3 +27,34 @@ export const COMMITMENT_CONTEXT = tag("mfp/commitment/v1");
  *  decode(encode(s)) === s for every well-formed string. */
 export const utf8Encoder = encoder;
 export const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/**
+ * The property the whole scheme rests on: no tag is a prefix of another, so
+ * writing a tag unframed as a message's first field can never let one message
+ * type be read as another. Asserted at load rather than assumed, because a tag
+ * added later is exactly when this would silently stop holding.
+ */
+const ALL_CONTEXTS = [
+  BACKING_SIGNATURE_CONTEXT,
+  ISSUANCE_CONTEXT,
+  TRANSFER_CONTEXT,
+  BURN_CONTEXT,
+  RECEIPT_CONTEXT,
+  COMMITMENT_CONTEXT,
+];
+
+export function contextsArePrefixFree(tags: readonly Uint8Array[] = ALL_CONTEXTS): boolean {
+  for (let i = 0; i < tags.length; i++) {
+    for (let j = 0; j < tags.length; j++) {
+      if (i === j) continue;
+      const a = tags[i] as Uint8Array;
+      const b = tags[j] as Uint8Array;
+      if (a.length <= b.length && a.every((byte, k) => byte === b[k])) return false;
+    }
+  }
+  return true;
+}
+
+if (!contextsArePrefixFree()) {
+  throw new Error("domain-separation tags are not prefix-free");
+}

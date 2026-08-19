@@ -117,6 +117,17 @@ export class ByteWriter {
     this.fixed(bytes, FIXED32, what);
   }
 
+  /**
+   * A domain-separation tag, written first and unframed. This is the one
+   * legitimate raw write: contexts are compile-time constants from
+   * contexts.ts, and that module asserts they are prefix-free, so the first
+   * field of two different message types always differs within the shorter
+   * tag. Framing them would add bytes without adding a property.
+   */
+  context(tag: Uint8Array): void {
+    for (const b of tag) this.out.push(b);
+  }
+
   /** u32 length followed by the bytes. */
   lengthPrefixed(bytes: Uint8Array): void {
     this.u32(bytes.length);
