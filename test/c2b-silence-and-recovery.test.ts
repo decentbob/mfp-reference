@@ -171,7 +171,9 @@ describe("§C2b: the holder proves the claim unspent as of the last snapshot", (
       ...state,
       snapshots: state.snapshots.map((s) => ({
         ...s,
-        balances: s.balances.map(([key, units]) => [key, units + 1n] as const),
+        opLog: s.opLog.map((entry) =>
+          entry.kind === "issue" ? { ...entry, quantity: entry.quantity + 1n } : entry,
+        ),
       })),
     };
     expect(provesHolding(venue, backing, tampered, KEYS.alice, 101n)).toBe(false);
@@ -187,14 +189,7 @@ describe("§C2b: the holder proves the claim unspent as of the last snapshot", (
     const { venue, backing } = setup();
     const junk = {
       snapshots: [
-        {
-          name: new Uint8Array(31),
-          issued: -1n,
-          burned: 0n,
-          balances: [],
-          opLog: [],
-          demands: [],
-        },
+        { name: new Uint8Array(31), opLog: [] },
       ],
       commitment: {
         sequence: -1n,

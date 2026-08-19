@@ -89,11 +89,13 @@ describe("invariant 22: state proves against the latest commitment", () => {
     const { sequencer } = setup();
     const commitment = sequencer.commit();
     const snapshot = sequencer.snapshot();
-    // Reassign the holding rather than inflate it, so the totals still
-    // reconcile and the root is what has to catch it.
+    // Retarget the issuance in the log — the log is the whole of what is
+    // committed, so the root is what has to catch it.
     const tampered = snapshot.map((s) => ({
       ...s,
-      balances: s.balances.map(([, v]) => [KEYS.mallory, v] as const),
+      opLog: s.opLog.map((entry) =>
+        entry.kind === "issue" ? { ...entry, recipient: KEYS.mallory } : entry,
+      ),
     }));
     expect(stateRoot(tampered)).not.toEqual(commitment.root);
   });
@@ -139,26 +141,15 @@ describe("invariant 22: the state root is injective", () => {
     const state = (from: Uint8Array, to: Uint8Array) => [
       {
         name,
-        issued: 0n,
-        burned: 0n,
-        balances: [],
         opLog: [{ position: 0, kind: "transfer" as const, from, to, quantity: 7n, nonce: 0n, signature: new Uint8Array(64) }],
-        demands: [],
       },
     ];
     expect(() => stateRoot(state(bytes.slice(0, 32), bytes.slice(32)))).not.toThrow();
     expect(() => stateRoot(state(bytes.slice(0, 31), bytes.slice(31)))).toThrow(EncodingError);
   });
 
-  it("rejects an over-long balance key that would swallow later fields", () => {
-    const long = new Uint8Array(87).fill(0xbb);
-    expect(() =>
-      stateRoot([{ name, issued: 0n, burned: 0n, balances: [[long, 0n]], opLog: [], demands: [] }]),
-    ).toThrow(EncodingError);
-  });
-
   it("rejects two snapshots for one backing", () => {
-    const one = { name, issued: 0n, burned: 0n, balances: [], opLog: [], demands: [] };
+    const one = { name, issued: 0n, burned: 0n, opLog: [] };
     expect(() => stateRoot([one, one])).toThrow(EncodingError);
   });
 });
@@ -178,18 +169,14 @@ describe("verifiers return false on hostile input, never throw", () => {
   it("a non-integer served position fails the proof instead of crashing", () => {
     const hostile = {
       name,
-      issued: 0n,
-      burned: 0n,
-      balances: [],
       opLog: [{ position: 1.5, kind: "burn" as const, holder: name, quantity: 1n, nonce: 0n, signature: new Uint8Array(64) }],
-      demands: [],
     };
     const receipt = { backingName: name, opHash: name, position: 0n, operator: name, signature: sig };
     expect(receiptProvenBy(receipt, hostile)).toBe(false);
   });
 
   it("a negative served amount fails the commitment check instead of crashing", () => {
-    const bad = [{ name, issued: -1n, burned: 0n, balances: [], opLog: [], demands: [] }];
+    const bad = [{ name, issued: -1n, burned: 0n, opLog: [] }];
     expect(stateProvesCommitment(bad, { sequence: 0n, root: name, operator: name, signature: sig })).toBe(false);
   });
 });
@@ -201,42 +188,6 @@ describe("verifiers return false on hostile input, never throw", () => {
 describe("invariant 22: committed state has exactly one meaning", () => {
   const name = new Uint8Array(32).fill(0x01);
   const holder = new Uint8Array(32).fill(0x02);
-
-  it("rejects one holder appearing twice in balances", () => {
-    // Sum, first-wins and last-wins readers would disagree under one valid
-    // signature, and no second root exists to prove a fault.
-    expect(() =>
-      stateRoot([
-        { name, issued: 100n, burned: 0n, balances: [[holder, 100n], [holder, 0n]], opLog: [], demands: [] },
-      ]),
-    ).toThrow(EncodingError);
-  });
-
-  it("rejects committed state that breaks conservation (invariant 10)", () => {
-    // "outstanding = issued - burned, in claim quantity, per backing, AT EVERY
-    // PUBLISHED MOMENT" — and a committed state is a published moment. Without
-    // this an operator can commit a state in which nobody holds anything and go
-    // dark, so no holder can prove a holding and §C2b's redemption never opens.
-    const state = (issued: bigint, burned: bigint, balances: readonly (readonly [Uint8Array, bigint])[]) => [
-      { name, issued, burned, balances, opLog: [], demands: [] },
-    ];
-    expect(() => stateRoot(state(100n, 0n, [[holder, 100n]]))).not.toThrow();
-    expect(() => stateRoot(state(100n, 30n, [[holder, 70n]]))).not.toThrow();
-    // Balances erased while issued stands: the shape that hides a holding.
-    expect(() => stateRoot(state(100n, 0n, []))).toThrow(EncodingError);
-    // Balances inflated beyond what was issued.
-    expect(() => stateRoot(state(100n, 0n, [[holder, 101n]]))).toThrow(EncodingError);
-    // More burned than ever issued.
-    expect(() => stateRoot(state(10n, 20n, []))).toThrow(EncodingError);
-    expect(
-      stateProvesCommitment(state(100n, 0n, []), {
-        sequence: 0n,
-        root: name,
-        operator: name,
-        signature: new Uint8Array(64),
-      }),
-    ).toBe(false);
-  });
 
   it("rejects an op-log position that does not match its index", () => {
     // A gap lets an operator commit to state in which a holder's valid,
@@ -250,126 +201,36 @@ describe("invariant 22: committed state has exactly one meaning", () => {
       signature: new Uint8Array(64),
     });
     expect(() =>
-      stateRoot([{ name, issued: 0n, burned: 0n, balances: [], opLog: [entry(0), entry(5)], demands: [] }]),
+      stateRoot([{ name, opLog: [entry(0), entry(5)] }]),
     ).toThrow(EncodingError);
   });
 
-  it("rejects an accepted deadline the law could not have produced", () => {
-    // `accept` enforces acceptedDeadline <= the demand's own deadline. A record
-    // outside that range is state the ledger cannot reach, and isDishonoured
-    // reads the committed record — so an operator (frequently the backer) could
-    // otherwise serve a demand as answered forever with no acceptance signature
-    // anywhere. The encoder defines canonical committed state independently of
-    // who produced it, exactly as it does for op-log positions.
-    const state = (acceptedDeadline: bigint | undefined) => [
-      {
-        name,
-        issued: 0n,
-        burned: 0n,
-        balances: [],
-        opLog: [],
-        demands: [
-          { hash: name, holder, quantity: 1n, instant: 0n, deadline: 10n, nonce: 0n, acceptedDeadline },
-        ],
-      },
-    ];
-    expect(() => stateRoot(state(10n))).not.toThrow();
-    expect(() => stateRoot(state(11n))).toThrow(EncodingError);
-    expect(
-      stateProvesCommitment(state(1_000_000n), {
-        sequence: 0n,
-        root: name,
-        operator: name,
-        signature: new Uint8Array(64),
-      }),
-    ).toBe(false);
-  });
-
-  it("rejects an oversized amount instead of grinding on it", () => {
+  it("rejects an oversized quantity in a logged operation", () => {
     // Unbounded, an attacker-sized integer turns "a malformed state fails the
-    // proof" into a hang.
+    // proof" into a hang. The bound now lives in one place, the message
+    // encoders, rather than beside every committed amount.
     const started = Date.now();
     expect(
-      stateProvesCommitment([{ name, issued: 1n << 200000n, burned: 0n, balances: [], opLog: [], demands: [] }], {
-        sequence: 0n,
-        root: name,
-        operator: name,
-        signature: new Uint8Array(64),
-      }),
+      stateProvesCommitment(
+        [
+          {
+            name,
+            opLog: [
+              {
+                position: 0,
+                kind: "burn" as const,
+                holder,
+                quantity: 1n << 200000n,
+                nonce: 0n,
+                signature: new Uint8Array(64),
+              },
+            ],
+          },
+        ],
+        { sequence: 0n, root: name, operator: name, signature: new Uint8Array(64) },
+      ),
     ).toBe(false);
     expect(Date.now() - started).toBeLessThan(1000);
-  });
-});
-
-describe("a hostile standing demand record fails the proof, never throws", () => {
-  const name = new Uint8Array(32).fill(0x01);
-  const base = { name, issued: 0n, burned: 0n, balances: [], opLog: [] };
-  const commitment = {
-    sequence: 0n,
-    root: name,
-    operator: name,
-    signature: new Uint8Array(64),
-  };
-  const demand = (over: Record<string, unknown>) => [
-    {
-      ...base,
-      demands: [
-        {
-          hash: name,
-          holder: name,
-          quantity: 1n,
-          instant: 0n,
-          deadline: 0n,
-          nonce: 0n,
-          acceptedDeadline: undefined,
-          ...over,
-        },
-      ],
-    },
-  ];
-
-  it("rejects malformed demand fields at the encoder", () => {
-    expect(() => stateRoot(demand({ holder: new Uint8Array(31) }))).toThrow(EncodingError);
-    expect(() => stateRoot(demand({ quantity: -5n }))).toThrow(EncodingError);
-    expect(() => stateRoot(demand({ deadline: -1n }))).toThrow(EncodingError);
-    expect(() => stateRoot(demand({ nonce: -1n }))).toThrow(EncodingError);
-  });
-
-  it("does not commit the self-declared hash, so it cannot be lied about", () => {
-    // The hash is derived from the committed fields. Committing it instead
-    // would let an operator publish a genuine hash beside a false quantity.
-    const a = demand({ hash: new Uint8Array(32).fill(0xaa) });
-    const b = demand({ hash: new Uint8Array(32).fill(0xbb) });
-    expect(bytesToHex(stateRoot(a))).toBe(bytesToHex(stateRoot(b)));
-    // The fields themselves still move it.
-    expect(bytesToHex(stateRoot(demand({ quantity: 2n })))).not.toBe(bytesToHex(stateRoot(a)));
-  });
-
-  it("rejects one demand appearing twice", () => {
-    expect(() =>
-      stateRoot([
-        {
-          ...base,
-          demands: [
-            { hash: name, holder: name, quantity: 1n, instant: 0n, deadline: 0n, nonce: 0n, acceptedDeadline: undefined },
-            { hash: name, holder: name, quantity: 2n, instant: 0n, deadline: 0n, nonce: 0n, acceptedDeadline: undefined },
-          ],
-        },
-      ]),
-    ).toThrow(EncodingError);
-  });
-
-  it("the verifier returns false rather than propagating the throw", () => {
-    expect(stateProvesCommitment(demand({ quantity: -5n }), commitment)).toBe(false);
-    expect(stateProvesCommitment(demand({ nonce: -1n }), commitment)).toBe(false);
-  });
-
-  it("an unanswered demand does not encode like one accepted at index 0", () => {
-    // The presence byte must actually separate the two, or a backer could be
-    // shown as having answered when it has not.
-    expect(bytesToHex(stateRoot(demand({ acceptedDeadline: undefined })))).not.toBe(
-      bytesToHex(stateRoot(demand({ acceptedDeadline: 0n }))),
-    );
   });
 });
 
@@ -382,9 +243,8 @@ describe("invariant 22: hostile presentation entries fail the proof, never throw
   const holder = new Uint8Array(32).fill(0x02);
   const sig = new Uint8Array(64);
   const commitment = { sequence: 0n, root: name, operator: name, signature: sig };
-  const withLog = (entry: unknown) => [
-    { name, issued: 0n, burned: 0n, balances: [], opLog: [entry], demands: [] },
-  ] as Parameters<typeof stateRoot>[0];
+  const withLog = (entry: unknown) =>
+    [{ name, opLog: [entry] }] as Parameters<typeof stateRoot>[0];
 
   it("rejects a short demand hash on an acceptance, release or withdrawal", () => {
     const short = new Uint8Array(31);

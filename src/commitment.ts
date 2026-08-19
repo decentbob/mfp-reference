@@ -1,19 +1,24 @@
 // Commitments over ledger state (invariants 22, 23).
 //
 // At each interval a sequencer publishes a commitment: a signed hash over the
-// state it serves. Invariant 23 (transparent subset): the commitment commits
-// to "the issuance log, the spent set, running totals and the standing demand
-// record" — here, per backing, its name, issued/burned totals, current
-// balances, the full operation log (all seven kinds, presentation included) and
-// the open demands. Invariant 22: every state a sequencer asserts must prove
-// against its latest published commitment, so two commitments at the same index
-// with different roots, both validly signed by the operator, are provable
-// equivocation.
+// state it serves — per backing, its name and its full operation log, all seven
+// kinds with presentation included. Invariant 22: every state a sequencer
+// asserts must prove against its latest published commitment, so two
+// commitments at one sequence number over different roots, both validly signed
+// by the operator, are provable equivocation.
 //
-// The log and the demand record are both committed and neither is redundant:
-// the record is the current state, the log is the history. A settled or
-// withdrawn demand leaves the record, so only the log can still show that it
-// happened — and only the record can show that it stands.
+// **The log is all that is committed, because the log is all there is.**
+// Invariant 23 asks the commitment to commit to "the issuance log, the spent
+// set, running totals and the standing demand record"; under transparent the log
+// determines every one of them, so committing it commits them all. Balances,
+// totals and the standing demands were once committed beside it and re-derived
+// by the verifier — three mechanisms for data one of them fixes, and the source
+// of a run of "field X is not tied to the log" bugs, each patched separately.
+// Deriving them instead does not check that class of lie; it makes it
+// unsayable. Invariant 10 comes with it: every operation the replay applies
+// either conserves the total or moves issued/burned with it, so
+// `outstanding = issued − burned` is a property of the fold rather than an
+// assertion to police.
 //
 // The root must be INJECTIVE or invariant 22 is worthless: if two different
 // served states hash to one root, an operator equivocates with a single
@@ -29,19 +34,11 @@
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import {
-  bigintToMinimalBytes,
-  ByteWriter,
-  compareBytes,
-  copyBytes,
-  EncodingError,
-  MAX_QUANTITY_EXCLUSIVE,
-} from "./bytes.js";
+import { ByteWriter, compareBytes, copyBytes, EncodingError } from "./bytes.js";
 import { COMMITMENT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
-import type { BackingSnapshot, DemandRecord } from "./ledger.js";
+import type { BackingSnapshot } from "./ledger.js";
 import { opMessageOfEntry, type OpLogEntry } from "./oplog.js";
-import { encodeDemandMessage } from "./presentation.js";
 
 export type { BackingSnapshot } from "./ledger.js";
 
@@ -74,18 +71,6 @@ export function copyCommitment(commitment: Commitment): Commitment {
 }
 
 /**
- * Totals and balances may be zero, so they use a non-negative form rather than
- * the >=1 quantity rule — but they are still bounded. Without the bound an
- * attacker-supplied state could carry a multi-megabit integer and make the
- * verifier grind, turning "a malformed state fails the proof" into a hang.
- */
-function writeAmount(w: ByteWriter, n: bigint, what: string): void {
-  if (n < 0n) throw new EncodingError(`${what} is negative`);
-  if (n >= MAX_QUANTITY_EXCLUSIVE) throw new EncodingError(`${what} out of range`);
-  w.lengthPrefixed(bigintToMinimalBytes(n));
-}
-
-/**
  * A logged operation is committed as the exact bytes the party signed. So the
  * commitment commits the operation a receipt attests to rather than a
  * re-description of it, "the committed entry reconstructs to the receipt's op
@@ -105,98 +90,11 @@ function writeOpEntry(w: ByteWriter, name: Uint8Array, entry: OpLogEntry, index:
   w.lengthPrefixed(opMessageOfEntry(name, entry));
 }
 
-/**
- * A standing demand is committed as the holder's own signed demand, plus the
- * backer's answer. Committing a self-declared identity would commit nothing: an
- * operator could publish a genuine hash beside a different quantity and the
- * state would still verify. Committing the signed bytes commits the hash too,
- * since the hash is derived from them — and a verifier recomputes it, which is
- * the point.
- */
-function writeDemand(w: ByteWriter, name: Uint8Array, record: DemandRecord): void {
-  // An answer may not outlast the demand's own deadline — the range `accept`
-  // enforces. This is not a second mechanism for that rule but the same rule
-  // applied to the other input: served state may come from a hostile operator
-  // rather than from this ledger, so the encoder is what defines which states
-  // are canonical, exactly as it does for op-log positions. Unbounded, an
-  // operator (frequently the backer, §C3) could serve a demand as answered with
-  // no acceptance signature anywhere and isDishonoured — which reads the
-  // committed record — would report the backer's failure as an answer forever.
-  // Bounded, every servable record reports the dishonour past the demand's
-  // deadline, because past it the answer cannot still be live.
-  if (record.acceptedDeadline !== undefined && record.acceptedDeadline > record.deadline) {
-    throw new EncodingError("accepted deadline outlasts the demand's own deadline");
-  }
-  w.lengthPrefixed(
-    encodeDemandMessage(
-      name,
-      record.holder,
-      record.quantity,
-      record.instant,
-      record.deadline,
-      record.nonce,
-    ),
-  );
-  // A presence byte, then the value only when present: unambiguous, because
-  // the byte decides whether the next eight belong to this field.
-  if (record.acceptedDeadline === undefined) {
-    w.u8(0);
-  } else {
-    w.u8(1);
-    w.u64(record.acceptedDeadline);
-  }
-}
-
 function encodeSnapshot(snapshot: BackingSnapshot): Uint8Array {
   const w = new ByteWriter();
   w.key32(snapshot.name, "backing name");
-  writeAmount(w, snapshot.issued, "issued");
-  writeAmount(w, snapshot.burned, "burned");
-  const balances = [...snapshot.balances].sort((a, b) => compareBytes(a[0], b[0]));
-  for (let i = 1; i < balances.length; i++) {
-    // One holder twice would leave the committed state without a single
-    // meaning: sum, first-wins and last-wins readers would disagree under one
-    // valid signature, and no second root exists to prove a fault.
-    if (compareBytes((balances[i - 1] as readonly [Uint8Array, bigint])[0], (balances[i] as readonly [Uint8Array, bigint])[0]) === 0) {
-      throw new EncodingError("duplicate holder in balances");
-    }
-  }
-  w.u32(balances.length);
-  let held = 0n;
-  for (const [key, units] of balances) {
-    w.key32(key, "holder key");
-    writeAmount(w, units, "balance");
-    held += units;
-  }
-  // Invariant 10: "outstanding = issued - burned, in claim quantity, per
-  // backing, at every published moment" — and a committed state is a published
-  // moment. Unchecked, an operator can commit a state in which nobody holds
-  // anything, go dark, and leave every holder unable to prove a holding, so
-  // §C2b's redemption never opens for anyone. Enforced here rather than only in
-  // the ledger because served state may come from a hostile operator: the
-  // encoder is what decides which states are canonical.
-  if (held !== snapshot.issued - snapshot.burned) {
-    throw new EncodingError("balances do not sum to issued minus burned");
-  }
   w.u32(snapshot.opLog.length);
   snapshot.opLog.forEach((entry, i) => writeOpEntry(w, snapshot.name, entry, i));
-  // Invariant 23: the commitment commits to the standing demand record too,
-  // so a holder can prove their claims are committed against payment.
-  // Ordered by (holder, nonce): both are committed fields and the pair is
-  // unique per demand, so the order is a function of the committed data rather
-  // than of anything the operator declares separately.
-  const demands = [...snapshot.demands].sort(
-    (a, b) => compareBytes(a.holder, b.holder) || (a.nonce < b.nonce ? -1 : a.nonce > b.nonce ? 1 : 0),
-  );
-  for (let i = 1; i < demands.length; i++) {
-    const previous = demands[i - 1] as DemandRecord;
-    const current = demands[i] as DemandRecord;
-    if (compareBytes(previous.holder, current.holder) === 0 && previous.nonce === current.nonce) {
-      throw new EncodingError("duplicate demand in state");
-    }
-  }
-  w.u32(demands.length);
-  for (const record of demands) writeDemand(w, snapshot.name, record);
   return w.finish();
 }
 

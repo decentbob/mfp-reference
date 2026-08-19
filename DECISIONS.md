@@ -16,6 +16,87 @@ Format:
 
 ---
 
+## 2026-08-19 - Design review: commit the log, and enforce presentability
+
+**Question:** Bob asked for a review of the merged implementation against the
+reference goal - maximally simple and general while enforcing what is necessary
+- rather than a hunt for bugs. Two things came out of it.
+
+**Decisions (Bob):**
+
+- **The commitment commits the operation log, and nothing else.**
+  `encodeSnapshot` wrote issued, burned, balances and the standing demands -
+  sorting them, deduping them, checking conservation - and `stateIsAuthentic`
+  then re-derived every one of them from the log and demanded equality. Three
+  mechanisms for data one of them fixes.
+
+  It was also the direct cause of three findings in slices 6 and 7, each of which
+  was the same sentence - "field X is not tied to the log" - and each of which
+  got its own patch. Deriving the fields instead does not check that class of lie;
+  it makes it unsayable. Invariant 23 asks the commitment to commit to "the
+  issuance log, the spent set, running totals and the standing demand record",
+  and under transparent the log determines every one, so committing it commits
+  them all.
+
+  `BackingSnapshot` is now `{ name, opLog }`. Six rules left `commitment.ts` and
+  every one was accounted for rather than dropped:
+
+  | rule | where it went |
+  | --- | --- |
+  | amounts non-negative and bounded | the amounts are gone; log quantities are bounded by `validateQuantity` in the message encoders, which is the one place a quantity is written |
+  | balances sum to issued − burned | structural: every operation the replay applies either conserves the total or moves issued/burned with it |
+  | no duplicate holder in balances | balances are a Map built by the replay, one entry per holder by construction |
+  | no duplicate demand in state | two demands by one holder need distinct nonces, which the per-signer nonce sequence already enforces |
+  | accepted deadline within the demand's | **moved into `replayLog`** - and it was missed on the first pass; see below |
+  | op-log position pinned to its index | kept, and now the only canonicality rule the encoder has |
+
+  Invariant 10 stops being policed and becomes a property of the fold. Its test
+  changed to match: the identity is checked over every prefix of a log carrying
+  all seven operation kinds, rather than an encoder refusing a state that breaks
+  it.
+
+- **Invariant 13 is enforced where presentation happens, by refusing what cannot
+  be completed.** `presentableFor` - "a holding is presentable at b for q iff it
+  contains q units of b and q·cᵢ units of each (bᵢ, cᵢ) in R(b)" - was written in
+  slice 2 and called by nothing but its own tests. `demand` checked only the
+  backing's own balance and `release` moved only its own units, so reliance was
+  inert everywhere.
+
+  That is right for transfer, where invariant 17 keeps an unaccompanied claim
+  inert rather than invalid. It is wrong for presentation, and it left the
+  implementation running outside the condition that licensed its own design: the
+  slice-4 decision quotes §C3's "R empty and the payout settling outside the
+  claim layer", and nothing checked R empty.
+
+  So a demand on a backing with reliance is refused, on both inputs - the ledger
+  and the replay. Such a backing stays fully usable for issue, transfer and burn;
+  only the presentation whose legs cannot move is declined. Implementing the legs
+  is the other reading of §C3 ("the whole set and the paying leg inside one
+  operator") and needs a decision about targets served by another operator, which
+  is the multi-sequencer case.
+
+**Found by the review of the change, and fixed:** deleting `writeDemand` dropped
+the acceptance-deadline range rule that slice 6 added to close
+dishonour-laundering, and it was not moved into `replayLog`, which now produces
+the demand record. The hole reopened one layer down: the backer signs an
+acceptance running to a million, the ledger refuses it, the operator serves it in
+the log anyway - genuine signature, correct nonce, demand standing - and
+`isDishonoured` reported false forever. Demonstrated, then closed with one line
+beside the lifecycle checks.
+
+**Deliberately not done:** the `replayLog` walk re-implements the ledger's
+structural rules, which is a second implementation that must stay in step with
+the first. The clean end state is a shared step function used incrementally by
+the ledger and from scratch by the verifier, so there is one implementation of
+the law's arithmetic. It is a refactor rather than a patch, and it is more
+attractive now that the replay is the only definition of state.
+
+**Also noted, not acted on:** `issuanceLog`/`IssuanceLogEntry` and `balancesOf`
+are projections used by nothing but tests, and are deletable whenever they stop
+earning their place.
+
+**Spec change:** none needed.
+
 ## 2026-08-19 - Slice 7: committed state is self-authenticating
 
 **Question:** slice 6 left one open and named it must-settle: nothing tied

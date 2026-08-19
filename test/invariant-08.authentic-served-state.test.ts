@@ -72,16 +72,23 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
     expect(provesHolding(venue, backing, served, KEYS.alice, 100n)).toBe(true);
   });
 
-  it("refuses the sweep: balances reassigned to the operator", () => {
+  it("refuses the sweep, which now has to be told in the log", () => {
+    // The sweep used to be a lie in the balances line: reassign the holdings,
+    // conservation still passes, every holder locked out. There is no balances
+    // line any more, so the only way to tell it is to retarget the log — and
+    // that is caught twice, because the backer signed a message naming Alice and
+    // her receipt is bound to the message it named.
     const { venue, sequencer, backing, receipts } = setup();
-    const swept = sequencer.snapshot().map((s) => ({ ...s, balances: [[KEYS.backer, 160n] as const] }));
+    const swept = sequencer.snapshot().map((s) => ({
+      ...s,
+      opLog: s.opLog.map((entry) =>
+        entry.kind === "issue" ? { ...entry, recipient: KEYS.backer } : entry,
+      ),
+    }));
     const served = publish(venue, swept);
 
-    // It is the committed state, and it conserves — those were never the
-    // properties that made it a lie.
     expect(stateProvesCommitment(swept, served.commitment)).toBe(true);
-    // Its own log says otherwise, and the receipts still prove against it.
-    expect(receiptProvenBy(receipts[0]!, swept[0]!)).toBe(true);
+    expect(receiptProvenBy(receipts[0]!, swept[0]!)).toBe(false);
     expect(stateIsAuthentic(backing, served)).toBe(false);
     expect(provesHolding(venue, backing, served, KEYS.backer, 160n)).toBe(false);
   });
@@ -92,7 +99,6 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
     const forged = [
       {
         ...snapshot,
-        balances: [[KEYS.backer, 160n] as const],
         opLog: [
           ...snapshot.opLog,
           {
@@ -143,7 +149,6 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
       {
         ...snapshot,
         opLog: log,
-        balances: [[KEYS.alice, 10n], [KEYS.bob, 60n], [KEYS.carol, 90n]] as const,
       },
     ];
     expect(stateIsAuthentic(backing, publish(venue, forged))).toBe(false);
@@ -166,7 +171,6 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
       {
         ...snapshot,
         opLog: log,
-        balances: [[KEYS.alice, 90n], [KEYS.bob, 60n], [KEYS.carol, 10n]] as const,
       },
     ];
     expect(stateIsAuthentic(backing, publish(venue, forged))).toBe(false);
@@ -201,14 +205,6 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
     };
     f.sequencer.submitRelease(settle, ed25519.sign(encodeRelease(settle), SECRETS.alice));
     expect(stateIsAuthentic(f.backing, publish(f.venue, f.sequencer.snapshot()))).toBe(true);
-  });
-
-  it("refuses balances that do not follow from the log", () => {
-    const { venue, sequencer, backing } = setup();
-    const snapshot = sequencer.snapshot()[0]!;
-    // Totals conserved, holders swapped, log untouched.
-    const swapped = [{ ...snapshot, balances: [[KEYS.carol, 160n] as const] }];
-    expect(stateIsAuthentic(backing, publish(venue, swapped))).toBe(false);
   });
 
   it("refuses a tampered signature on an otherwise honest state", () => {
@@ -385,11 +381,6 @@ describe("a served log must be a history the law could have produced", () => {
             signature,
           },
         ],
-        balances: [
-          [KEYS.alice, 60n],
-          [KEYS.backer, 40n],
-          [KEYS.bob, 60n],
-        ] as const,
       },
     ];
     expect(stateIsAuthentic(f.backing, publish(f.venue, forged))).toBe(false);
@@ -480,6 +471,73 @@ describe("a served log must be a history the law could have produced", () => {
     expect(replayLog(f.backing, log)).toBeUndefined();
   });
 
+  it("refuses an acceptance that outlasts the demand's own deadline", () => {
+    // The rule slice 6 wrote into the committed demand record, which is no
+    // longer committed: an answer may not outlast the window the holder chose.
+    // The backer signs it hoping to use it, the ledger refuses, and a log
+    // carrying it must be refused too — otherwise isDishonoured reads a
+    // laundered acceptance and the failure never becomes a public fact.
+    const f = setup();
+    f.venue.advance(5n);
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 80n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    const answer = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      instant: 5n,
+      deadline: 1_000_000n,
+      nonce: f.sequencer.nextNonce(KEYS.backer, f.backing),
+    };
+    const signature = ed25519.sign(encodeAcceptance(answer), SECRETS.backer);
+    expect(() => f.sequencer.submitAcceptance(answer, signature)).toThrow(/acceptance deadline/);
+
+    const snapshot = f.sequencer.snapshot()[0]!;
+    const log = [
+      ...snapshot.opLog,
+      {
+        position: snapshot.opLog.length,
+        kind: "acceptance" as const,
+        demandHash: demandHash(demand),
+        instant: 5n,
+        deadline: 1_000_000n,
+        nonce: answer.nonce,
+        signature,
+      },
+    ];
+    expect(replayLog(f.backing, log)).toBeUndefined();
+  });
+
+  it("accepts an answer inside the demand's window", () => {
+    const f = setup();
+    f.venue.advance(5n);
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 80n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    const answer = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.backer, f.backing),
+    };
+    f.sequencer.submitAcceptance(answer, ed25519.sign(encodeAcceptance(answer), SECRETS.backer));
+    const replay = replayLog(f.backing, f.sequencer.snapshot()[0]!.opLog)!;
+    expect(replay.demands[0]?.acceptedDeadline).toBe(10n);
+  });
+
   it("refuses an acceptance of a demand that was never filed", () => {
     // The backer cannot have answered what nobody presented, and an operator
     // saying otherwise is inventing evidence about the backer.
@@ -527,13 +585,11 @@ describe("a served log must be a history the law could have produced", () => {
     const snapshot = f.sequencer.snapshot()[0]!;
     expect(stateIsAuthentic(f.backing, publish(f.venue, [snapshot]))).toBe(true);
 
-    // Drop the standing demand while the log still files it.
-    expect(stateIsAuthentic(f.backing, publish(f.venue, [{ ...snapshot, demands: [] }]))).toBe(false);
-    // Or show it answered when no acceptance is in the log.
-    const answered = [
-      { ...snapshot, demands: snapshot.demands.map((d) => ({ ...d, acceptedDeadline: 9n })) },
-    ];
-    expect(stateIsAuthentic(f.backing, publish(f.venue, answered))).toBe(false);
+    // The standing record is not asserted beside the log any more, so there is
+    // nothing to disagree with it: it IS what the log leaves standing.
+    const replay = replayLog(f.backing, snapshot.opLog)!;
+    expect(replay.demands).toHaveLength(1);
+    expect(replay.demands[0]).toMatchObject({ quantity: 40n, acceptedDeadline: undefined });
   });
 
   it("a settled demand leaves the standing record, and the units move", () => {
@@ -582,7 +638,7 @@ describe("authenticity verifiers return false on hostile input, never throw", ()
     expect(
       stateIsAuthentic(backing, {
         snapshots: [
-          { name: new Uint8Array(31), issued: -1n, burned: 0n, balances: [], opLog: junk, demands: [] },
+          { name: new Uint8Array(31), opLog: junk },
         ],
         commitment: {
           sequence: -1n,

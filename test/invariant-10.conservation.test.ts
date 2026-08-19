@@ -3,7 +3,17 @@ import { describe, expect, it } from "vitest";
 import { type Backing } from "../src/backing.js";
 import { LedgerError, TransparentLedger } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
-import { KEYS, pub, register, SECRETS } from "./support.js";
+import { signBacking } from "../src/backing.js";
+import { replayLog } from "../src/oplog.js";
+import {
+  demandHash,
+  encodeAcceptance,
+  encodeDemand,
+  encodeRelease,
+} from "../src/presentation.js";
+import { Sequencer } from "../src/sequencer.js";
+import { Venue } from "../src/venue.js";
+import { KEYS, makeTransparentBacking, pub, register, SECRETS } from "./support.js";
 
 // Invariant 10: outstanding = issued − burned, in claim quantity, per
 // backing, at every published moment. Presentation destroys nothing: handing
@@ -87,6 +97,66 @@ describe("invariant 10: outstanding = issued - burned at every moment", () => {
     expect(applied.issue).toBeGreaterThan(0);
     expect(applied.transfer).toBeGreaterThan(0);
     expect(applied.burn).toBeGreaterThan(0);
+  });
+
+  it("holds in served state by construction, not by inspection", () => {
+    // The committed state used to carry issued, burned and balances beside the
+    // log, and an encoder check policed the identity between them. They are
+    // folds over the log now, so the identity is a property of the fold: every
+    // operation either conserves the total or moves issued/burned with it. This
+    // is that property, checked over a log carrying all seven operation kinds.
+    const venue = new Venue();
+    const sequencer = new Sequencer(SECRETS.operator, venue);
+    const backing = makeTransparentBacking(SECRETS.backer);
+    sequencer.register(backing, signBacking(SECRETS.backer, backing));
+    const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
+    sequencer.submitIssue(issue, ed25519.sign(encodeIssuance(issue), SECRETS.backer));
+    const move = { backing, from: KEYS.alice, to: KEYS.bob, quantity: 30n, nonce: 0n };
+    sequencer.submitTransfer(move, ed25519.sign(encodeTransfer(move), SECRETS.alice));
+    const burn = { backing, holder: KEYS.bob, quantity: 10n, nonce: 0n };
+    sequencer.submitBurn(burn, ed25519.sign(encodeBurn(burn), SECRETS.bob));
+
+    venue.advance(5n);
+    const demand = {
+      backing,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: sequencer.nextNonce(KEYS.alice, backing),
+    };
+    sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    const answer = {
+      backing,
+      demandHash: demandHash(demand),
+      instant: 5n,
+      deadline: 10n,
+      nonce: sequencer.nextNonce(KEYS.backer, backing),
+    };
+    sequencer.submitAcceptance(answer, ed25519.sign(encodeAcceptance(answer), SECRETS.backer));
+    const settle = {
+      backing,
+      demandHash: demandHash(demand),
+      nonce: sequencer.nextNonce(KEYS.alice, backing),
+    };
+    sequencer.submitRelease(settle, ed25519.sign(encodeRelease(settle), SECRETS.alice));
+
+    const log = sequencer.snapshot()[0]!.opLog;
+    expect(log.map((entry) => entry.kind)).toEqual([
+      "issue",
+      "transfer",
+      "burn",
+      "demand",
+      "acceptance",
+      "release",
+    ]);
+    // The identity, over every prefix of the log: it cannot be broken part-way
+    // through and repaired later.
+    for (let i = 0; i <= log.length; i++) {
+      const replay = replayLog(backing, log.slice(0, i))!;
+      const held = [...replay.balances.values()].reduce((a, b) => a + b, 0n);
+      expect(held).toBe(replay.issued - replay.burned);
+    }
   });
 
   it("presentation destroys nothing: redemption is a transfer to the backer", () => {
