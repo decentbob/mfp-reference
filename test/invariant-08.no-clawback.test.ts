@@ -82,7 +82,7 @@ describe("invariant 8: accessors expose no mutation path into ledger state", () 
     expect(ledger.outstanding(backing)).toBe(100n);
   });
 
-  it("mutating the array from opLog/issuanceLog cannot fabricate records", () => {
+  it("mutating the array from opLog cannot fabricate records", () => {
     const { ledger, backing } = setup();
     ledger.opLog(backing).push({
       position: 99,
@@ -92,9 +92,10 @@ describe("invariant 8: accessors expose no mutation path into ledger state", () 
       nonce: 0n,
       signature: new Uint8Array(64),
     });
-    ledger.issuanceLog(backing)[0]!.recipient.fill(0xff);
+    const logged = ledger.opLog(backing)[0]!;
+    if (logged.kind === "issue") logged.recipient.fill(0xff);
     expect(ledger.opLog(backing).length).toBe(1);
-    expect(ledger.issuanceLog(backing)[0]!.recipient).toEqual(KEYS.alice);
+    expect(ledger.opLog(backing).filter((e) => e.kind === "issue")[0]!.recipient).toEqual(KEYS.alice);
     expect(ledger.outstanding(backing)).toBe(100n);
   });
 

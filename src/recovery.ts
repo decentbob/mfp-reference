@@ -37,8 +37,8 @@
 // operator served, so it returns false on any malformed input and never throws.
 
 import { type Backing } from "./backing.js";
+import { replayLog, type LedgerState } from "./ledger.js";
 import { compareBytes, isValidQuantity } from "./bytes.js";
-import { replayLog, type LogReplay } from "./oplog.js";
 import {
   stateProvesCommitment,
   type BackingSnapshot,
@@ -98,7 +98,7 @@ export function stateIsAuthentic(backing: Backing, served: ServedState): boolean
  * shared body behind stateIsAuthentic and provesHolding, so a caller that needs
  * the numbers does not verify twice.
  */
-function replayServedState(backing: Backing, served: ServedState): LogReplay | undefined {
+function replayServedState(backing: Backing, served: ServedState): LedgerState | undefined {
   try {
     const operator = backing.evidence.operator;
     // Signed by the operator E names — anyone can sign a valid commitment over

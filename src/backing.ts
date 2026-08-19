@@ -201,8 +201,14 @@ export function makeBacking(fields: BackingFields): Backing {
   if (fields.evidence.setting !== "transparent") {
     throw new EncodingError(`unsupported evidence setting ${String(fields.evidence.setting)}`);
   }
-  if (fields.evidence.operator.length !== KEY_LENGTH) {
-    throw new EncodingError(`operator key must be ${KEY_LENGTH} bytes`);
+  // The same rule as K, at the same boundary. It was once length-only here and
+  // point-checked at the sequencer instead, on the ground that checking it here
+  // would change which backings are representable and the slice-1 name format is
+  // frozen -- but the golden vector's own operator key is a valid non-small-order
+  // point, so the format is untouched and one property stops being enforced at
+  // two boundaries. See DECISIONS.md.
+  if (!isValidPublicKey(fields.evidence.operator)) {
+    throw new EncodingError("operator key is not a valid non-small-order Ed25519 point");
   }
 
   const { thing, quantumExponent, perUnit } = fields.payout;

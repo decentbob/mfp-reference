@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { backingName, type Backing, type RelianceEntry } from "../src/backing.js";
 import { TransparentLedger } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
-import { replayLog } from "../src/oplog.js";
+import { replayLog } from "../src/ledger.js";
 import { presentableFor } from "../src/presentability.js";
 import { encodeDemand } from "../src/presentation.js";
 import { KEYS, register, SECRETS } from "./support.js";

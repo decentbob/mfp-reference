@@ -16,6 +16,72 @@ Format:
 
 ---
 
+## 2026-08-19 - Aligning the decisions: the law is applied once
+
+**Question:** Bob asked which recorded decisions no longer serve the goal -
+simplicity, security, and enforcement exactly where it is necessary. Three came
+out of the review, and all three are acted on here.
+
+**Decisions (Bob):**
+
+- **Reopened: "balances remain primary state, not a fold over the log"**
+  (slice 2). It was a modelling convenience then. It had become the last place
+  the law's arithmetic existed twice - the ledger mutating its own book, and
+  `replayLog` folding a served one - and written twice they drifted. Twice, both
+  caught only after shipping: the acceptance-deadline range enforced in the
+  ledger and not the replay, and invariant 27's "settlement takes two
+  signatures", demonstrated by serving a release the ledger had refused with no
+  acceptance anywhere and watching 40 units settle on one signature.
+
+  `applyEntry` is now the whole law in one function: the ledger applies entries
+  as operations arrive, a verifier folds a served log through the same function.
+  Each operation method becomes "build the entry, append it". The ledger's
+  checkOp, checkBalance, lockedIn, debit, credit, consumeNonce and
+  standingDemand all collapse into it.
+
+  **The clock is an explicit parameter, never an optional one.** The rules that
+  read it are exactly the rules a served log cannot answer - the log does not
+  record the index each operation was accepted at - and they are the only ones
+  marked TIME. That makes the one place a replay is weaker than the ledger
+  visible in one place, instead of being a property of two diverging copies.
+
+- **Reopened: the operator key is validated at the sequencer** (slices 1 and 3).
+  The obligor was point-checked in `makeBacking`, the operator length-checked
+  there and point-checked in `Sequencer.register`: one property, two boundaries.
+  The recorded reason was that checking it at construction "would change which
+  backings are representable, and the slice-1 name format is frozen" - but the
+  golden vector's own operator key is a valid non-small-order point, so the
+  format is untouched and the reason had lapsed. The sequencer keeps the only
+  question that was ever its own: is this operator me.
+
+- **Two over-enforcements removed with them.** A valid strict signature already
+  proves the signer key is a valid non-small-order point, because verification
+  decompresses it and rejects small order - so the ledger's `isValidPublicKey` on
+  signer keys checked nothing new. It is kept for recipients and destinations,
+  which sign nothing and which no signature vouches for. And pre-checking a
+  malformed signer key so the caller got a `LedgerError` was the exact
+  anti-pattern CLAUDE.md names ("does not pre-check in order to relabel an
+  error"); it also made the ledger disagree with the sequencer, which encodes
+  first and always surfaced the encoder's refusal. Both paths now agree, and the
+  error names the boundary that actually saw the malformed field.
+
+- **Stale entries are marked rather than rewritten.** Six decisions that later
+  slices reversed or closed now carry a one-line pointer to where. The file is
+  newest-first and later entries do supersede, but its own preamble asks that
+  reopening happen "with the earlier reasoning in view", and a reader landing on
+  the slice-3 entry was getting a confidently wrong picture of what is committed.
+  Nothing is deleted: the earlier reasoning is the point.
+
+**Consequences.** `oplog.ts` returns to what its header always claimed - the
+entry and its canonical bytes, knowing nothing of the law. `issuanceLog` was a
+filter over `opLog` and is gone. src is 2698 lines, from 2968 before the design
+review began.
+
+**Still open, and slice 8 pays money against it:** whether a standing demand
+blocks redemption (recorded in slice 6).
+
+**Spec change:** none needed.
+
 ## 2026-08-19 - Design review: commit the log, and enforce presentability
 
 **Question:** Bob asked for a review of the merged implementation against the
@@ -561,7 +627,8 @@ applies here, and what is in scope?
   arrives." Instants and deadlines are witnessed indices supplied by the
   caller, never wall-clock time (invariant 21).
 
-- **Presentation is a claim-layer operation this slice.** The four operations
+- **Presentation is a claim-layer operation this slice.** *[Done in slice 5.]*
+  The four operations
   live on TransparentLedger, and the standing demand record travels in the
   snapshot so a commitment commits to it (invariant 23). They are NOT yet
   reachable through Sequencer. The reason is a design one rather than a scope
@@ -600,7 +667,9 @@ applies here, and what is in scope?
   fields, and demands are ordered and deduped by (holder, nonce), both of which
   are committed, rather than by the hash.
 
-- **Invariant 24 is only half-enforced, deliberately.** The instant is named
+- **Invariant 24 is only half-enforced, deliberately.** *[Closed in slice 5:
+  the sequencer supplies the witnessed index, and the other half is enforced.]*
+  The instant is named
   in the demand and agreed by the acceptance - two signatures over one value,
   which is the part that matters for consent and is enforced. The rest of the
   invariant ("no later than the latest witnessed index at signing") is NOT
@@ -699,7 +768,9 @@ coherent transparent-only core, and how are the pieces the spec assumes
   `Venue` is the honest stand-in, with a seam where a real venue and its
   depth/gadget finality plug in later.
 
-- **The commitment is over the whole served state.** Invariant 23's objects,
+- **The commitment is over the whole served state.** *[Superseded by the design
+  review: the commitment is over the log alone, because the log determines the
+  rest.]* Invariant 23's objects,
   transparent subset: per backing, its name, issued/burned totals, current
   balances, and the full operation log. Verifying a state against a commitment
   means being given that state and recomputing the root — the spec's
@@ -714,7 +785,8 @@ coherent transparent-only core, and how are the pieces the spec assumes
 
 - **Operator-key validity is enforced at the sequencer boundary**, revisiting
   the slice-1 note that E's operator "carries no verification weight in the
-  transparent core yet". `makeBacking` still validates the operator by length
+  transparent core yet". *[Reopened: `makeBacking` point-checks it, one boundary
+  for both keys a backing names - see "One boundary owns both keys".]* `makeBacking` still validates the operator by length
   only (so the slice-1 canonical name format is untouched), but a `Sequencer`
   serves a backing only if E names a valid, non-small-order point equal to its
   own key. A backing naming a bogus operator is simply unsequenceable — the
@@ -733,7 +805,9 @@ flagged three of them as deviating from CLAUDE.md's wording without a record.
 
 **Decisions (Bob):**
 
-- **Replay is a rejection, not idempotence (inv 26).** The ledger rejects a
+- **Replay is a rejection, not idempotence (inv 26).** *[Superseded: the
+  sequencer returns the identical prior receipt from slice 3, and for
+  presentation from slice 5.]* The ledger rejects a
   replayed message via a per-(signer, backing) nonce. Invariant 26's
   "identical prior response" needs the sequencer's request/response store and
   arrives with slice 3. Until then, replay is an error. Nonces are keyed per
@@ -747,7 +821,9 @@ flagged three of them as deviating from CLAUDE.md's wording without a record.
   construction and is neither implemented nor tested in this slice.
 
 - **The operation log records all three op kinds** (issue, transfer, burn),
-  so the record is honest about what happened. But balances remain primary
+  so the record is honest about what happened. *[Reopened: the log carries all
+  seven kinds from slice 5, and balances became a fold in "The law is applied
+  once" - see that entry.]* But balances remain primary
   state, not a fold over the log, and there are no commitments over ledger
   state yet. Both — replayable state and commitments — arrive with the
   sequencer (slice 3). `position` is a per-backing append index, a stand-in

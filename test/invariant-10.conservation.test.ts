@@ -4,7 +4,7 @@ import { type Backing } from "../src/backing.js";
 import { LedgerError, TransparentLedger } from "../src/ledger.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { signBacking } from "../src/backing.js";
-import { replayLog } from "../src/oplog.js";
+import { replayLog } from "../src/ledger.js";
 import {
   demandHash,
   encodeAcceptance,

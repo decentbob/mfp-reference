@@ -2,8 +2,8 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
 import { signBacking } from "../src/backing.js";
 import { signCommitment, stateProvesCommitment, stateRoot } from "../src/commitment.js";
-import { encodeIssuance, encodeTransfer } from "../src/messages.js";
-import { replayLog } from "../src/oplog.js";
+import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
+import { replayLog } from "../src/ledger.js";
 import {
   demandHash,
   encodeAcceptance,
@@ -535,7 +535,7 @@ describe("a served log must be a history the law could have produced", () => {
     };
     f.sequencer.submitAcceptance(answer, ed25519.sign(encodeAcceptance(answer), SECRETS.backer));
     const replay = replayLog(f.backing, f.sequencer.snapshot()[0]!.opLog)!;
-    expect(replay.demands[0]?.acceptedDeadline).toBe(10n);
+    expect([...replay.demands.values()][0]?.acceptedDeadline).toBe(10n);
   });
 
   it("refuses an acceptance of a demand that was never filed", () => {
@@ -588,8 +588,8 @@ describe("a served log must be a history the law could have produced", () => {
     // The standing record is not asserted beside the log any more, so there is
     // nothing to disagree with it: it IS what the log leaves standing.
     const replay = replayLog(f.backing, snapshot.opLog)!;
-    expect(replay.demands).toHaveLength(1);
-    expect(replay.demands[0]).toMatchObject({ quantity: 40n, acceptedDeadline: undefined });
+    expect([...replay.demands.values()]).toHaveLength(1);
+    expect([...replay.demands.values()][0]).toMatchObject({ quantity: 40n, acceptedDeadline: undefined });
   });
 
   it("a settled demand leaves the standing record, and the units move", () => {
@@ -621,7 +621,7 @@ describe("a served log must be a history the law could have produced", () => {
 
     const snapshot = f.sequencer.snapshot()[0]!;
     const replay = replayLog(f.backing, snapshot.opLog)!;
-    expect(replay.demands).toHaveLength(0);
+    expect([...replay.demands.values()]).toHaveLength(0);
     expect(replay.balances.get(Buffer.from(KEYS.backer).toString("hex"))).toBe(40n);
     expect(stateIsAuthentic(f.backing, publish(f.venue, [snapshot]))).toBe(true);
   });
@@ -666,5 +666,146 @@ describe("a transfer still needs the holder's own signature in served state", ()
     expect(provesHolding(venue, backing, served, KEYS.carol, 30n)).toBe(true);
     expect(provesHolding(venue, backing, served, KEYS.alice, 71n)).toBe(false);
     expect(provesHolding(venue, backing, served, KEYS.alice, 70n)).toBe(true);
+  });
+});
+
+// The ledger enforces the law as operations arrive; the replay enforces it over
+// a log somebody serves. Written twice, they drift — the acceptance-deadline
+// range and "settlement takes two signatures" were each enforced in one and not
+// the other, and each was found only after it had shipped. One `applyEntry` is
+// what stops that: the same function the ledger applies as it goes, folded from
+// scratch by a verifier.
+//
+// The time-dependent rules are the exception, and are visible as one: they are
+// applied only when a clock is supplied, because the log does not record the
+// witnessed index each operation was accepted at.
+
+describe("the law is applied once, so the ledger and the replay cannot drift", () => {
+  it("refuses a settlement with no acceptance in the log (invariant 27)", () => {
+    // "Settlement takes two signatures: acceptance from the backer, and void
+    // only on the holder's release." The ledger refuses a release with nothing
+    // to release against; a log carrying one must be refused too, or the units
+    // settle on one signature with no acceptance anywhere.
+    const f = setup();
+    f.venue.advance(5n);
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    const settle = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    const signature = ed25519.sign(encodeRelease(settle), SECRETS.alice);
+    expect(() => f.sequencer.submitRelease(settle, signature)).toThrow(/acceptance/);
+
+    const snapshot = f.sequencer.snapshot()[0]!;
+    const log = [
+      ...snapshot.opLog,
+      {
+        position: snapshot.opLog.length,
+        kind: "release" as const,
+        demandHash: demandHash(demand),
+        nonce: settle.nonce,
+        signature,
+      },
+    ];
+    expect(replayLog(f.backing, log)).toBeUndefined();
+  });
+
+  it("the ledger's own state is always the replay of its own log", () => {
+    // The property the shared step function buys: whatever the ledger did to
+    // its book, folding the log it wrote reproduces it exactly. Checked after
+    // every step of a sequence exercising all seven operation kinds.
+    const f = setup();
+    f.venue.advance(5n);
+    const agree = () => {
+      const replay = replayLog(f.backing, f.sequencer.opLog(f.backing))!;
+      expect(replay).toBeDefined();
+      expect(replay.issued - replay.burned).toBe(f.sequencer.outstanding(f.backing));
+      for (const [holder, name] of [
+        [KEYS.alice, "alice"],
+        [KEYS.bob, "bob"],
+        [KEYS.backer, "backer"],
+      ] as const) {
+        expect([name, replay.balances.get(Buffer.from(holder).toString("hex")) ?? 0n]).toEqual([
+          name,
+          f.sequencer.balance(f.backing, holder),
+        ]);
+      }
+      expect(replay.demands.size).toBe(f.sequencer.openDemands(f.backing).length);
+      return replay;
+    };
+    agree();
+
+    const move = { backing: f.backing, from: KEYS.alice, to: KEYS.bob, quantity: 30n, nonce: 0n };
+    f.sequencer.submitTransfer(move, ed25519.sign(encodeTransfer(move), SECRETS.alice));
+    agree();
+
+    const burn = { backing: f.backing, holder: KEYS.bob, quantity: 10n, nonce: 0n };
+    f.sequencer.submitBurn(burn, ed25519.sign(encodeBurn(burn), SECRETS.bob));
+    agree();
+
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    expect([...agree().demands.values()][0]).toMatchObject({ quantity: 40n, acceptedDeadline: undefined });
+
+    const answer = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.backer, f.backing),
+    };
+    f.sequencer.submitAcceptance(answer, ed25519.sign(encodeAcceptance(answer), SECRETS.backer));
+    expect([...agree().demands.values()][0]).toMatchObject({ acceptedDeadline: 10n });
+
+    const settle = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitRelease(settle, ed25519.sign(encodeRelease(settle), SECRETS.alice));
+    expect(agree().demands).toHaveLength(0);
+  });
+
+  it("a withdrawal leaves the two agreeing too", () => {
+    const f = setup();
+    f.venue.advance(5n);
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    f.venue.advance(6n);
+    const walk = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitWithdrawal(walk, ed25519.sign(encodeWithdrawal(walk), SECRETS.alice));
+    const replay = replayLog(f.backing, f.sequencer.opLog(f.backing))!;
+    expect([...replay.demands.values()]).toHaveLength(0);
+    expect(f.sequencer.openDemands(f.backing)).toHaveLength(0);
+    expect(replay.balances.get(Buffer.from(KEYS.alice).toString("hex"))).toBe(
+      f.sequencer.balance(f.backing, KEYS.alice),
+    );
   });
 });

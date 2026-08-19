@@ -11,7 +11,7 @@ import {
   encodeWithdrawal,
 } from "../src/presentation.js";
 import { receiptProvenBy, verifyReceipt } from "../src/receipt.js";
-import { replayLog } from "../src/oplog.js";
+import { replayLog } from "../src/ledger.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
 import { Venue } from "../src/venue.js";
 import { advanceWitnessedIndex, KEYS, makeTransparentBacking, SECRETS } from "./support.js";
@@ -225,7 +225,7 @@ describe("invariant 26: a presentation receipt proves against committed state", 
     advanceWitnessedIndex(f.venue, 11n);
     const { receipt } = withdraw(f, hash);
     const snapshot = f.sequencer.snapshot()[0]!;
-    expect(replayLog(f.backing, snapshot.opLog)!.demands).toHaveLength(0);
+    expect([...replayLog(f.backing, snapshot.opLog)!.demands.values()]).toHaveLength(0);
     expect(receiptProvenBy(receipt, snapshot)).toBe(true);
   });
 
@@ -235,7 +235,7 @@ describe("invariant 26: a presentation receipt proves against committed state", 
     accept(f, hash);
     release(f, hash);
     const snapshot = f.sequencer.snapshot()[0]!;
-    expect(replayLog(f.backing, snapshot.opLog)!.demands).toHaveLength(0);
+    expect([...replayLog(f.backing, snapshot.opLog)!.demands.values()]).toHaveLength(0);
     const logged = snapshot.opLog.find((entry) => entry.kind === "demand");
     expect(logged).toMatchObject({ quantity: 40n, instant: 5n, deadline: 10n });
   });
@@ -287,6 +287,22 @@ describe("the sequencer owns routing and the clock", () => {
     expect(() => sequencer.submitDemand(op, ed25519.sign(encodeDemand(op), SECRETS.alice))).toThrow(
       SequencerError,
     );
+  });
+
+  it("a routing question is answered by the sequencer, not the law", () => {
+    // "The sequencer owns routing (is this backing mine?) and raises
+    // SequencerError; the ledger owns the law and funds and raises
+    // LedgerError." A client must be able to tell "you do not serve this" from
+    // "the law refused me", and every read accessor is a place that can be
+    // asked about a backing this operator never took on.
+    const sequencer = new Sequencer(SECRETS.operator, new Venue());
+    const stranger = makeTransparentBacking(SECRETS.backer2, "kWh");
+    expect(() => sequencer.nextNonce(KEYS.alice, stranger)).toThrow(SequencerError);
+    expect(() => sequencer.balance(stranger, KEYS.alice)).toThrow(SequencerError);
+    expect(() => sequencer.availableBalance(stranger, KEYS.alice)).toThrow(SequencerError);
+    expect(() => sequencer.outstanding(stranger)).toThrow(SequencerError);
+    expect(() => sequencer.openDemands(stranger)).toThrow(SequencerError);
+    expect(() => sequencer.opLog(stranger)).toThrow(SequencerError);
   });
 
   it("the clock it reads is the venue's", () => {
