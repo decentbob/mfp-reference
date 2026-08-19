@@ -195,6 +195,36 @@ describe("§C2: a commitment's sequence is the operator's own count", () => {
     expect(isEquivocation(honest, f.sequencer.commit())).toBe(false);
   });
 
+  it("the venue records when each commitment was witnessed", () => {
+    // "Witnessed at index i" is the spec's core notion (§C2b: a revocation is
+    // "effective for each backing at its witnessed index on that backing's
+    // declared venue"), and the height is the venue's own word — never the
+    // operator's, which is the party that would want to misstate it.
+    const f = setup();
+    expect(f.venue.witnessedAtFor(f.sequencer.operator)).toBeUndefined();
+    f.venue.advance(20n);
+    f.sequencer.commit();
+    expect(f.venue.witnessedAtFor(f.sequencer.operator)).toBe(20n);
+    f.venue.advance(5n);
+    f.sequencer.commit();
+    expect(f.venue.witnessedAtFor(f.sequencer.operator)).toBe(25n);
+  });
+
+  it("so a verifier can tell how long an operator has been quiet", () => {
+    // Without this the venue records what was published but never when, and a
+    // stale-but-valid commitment is indistinguishable from a current one. It is
+    // also the input §C2b's silence clause is measured on.
+    const f = setup();
+    f.venue.advance(5n);
+    f.sequencer.commit();
+    f.venue.advance(500n);
+    const quietFor =
+      f.venue.witnessedIndex() - (f.venue.witnessedAtFor(f.sequencer.operator) as bigint);
+    expect(quietFor).toBe(500n);
+    // The operator's own sequence number says nothing about it.
+    expect(f.venue.latestFor(f.sequencer.operator)?.sequence).toBe(0n);
+  });
+
   it("the venue still refuses a sequence that does not extend the operator's history", () => {
     const f = setup();
     const first = f.sequencer.commit();

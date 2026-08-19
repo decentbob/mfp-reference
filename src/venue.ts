@@ -20,7 +20,8 @@
 // So a commitment's `sequence` — the operator's own count of its commitments,
 // which equivocation is keyed on — is a different number from the venue's
 // witnessed index, and the two are named differently here so they cannot be
-// read as one.
+// read as one. The venue records both: what was published, and the index it was
+// witnessed at, which is the only trustworthy source for the latter.
 //
 // Anyone may publish, so every query is per operator: a stranger's commitments
 // must not be mistaken for the operator you are checking. The venue does not
@@ -32,11 +33,17 @@ import { verifyCommitment, type Commitment } from "./commitment.js";
 
 export class VenueError extends Error {}
 
+/** A commitment together with the venue's own word on when it was witnessed. */
+interface Witnessed {
+  readonly commitment: Commitment;
+  readonly at: bigint;
+}
+
 export class Venue {
   /** The venue's own clock: the latest witnessed index (immediate finality). */
   private height = 0n;
   /** Operator hex -> that operator's commitments, in published order. */
-  private readonly byOperator = new Map<string, Commitment[]>();
+  private readonly byOperator = new Map<string, Witnessed[]>();
 
   /**
    * The latest witnessed index at this venue — the clock instants, deadlines and
@@ -66,20 +73,38 @@ export class Venue {
       throw new VenueError("commitment signature invalid");
     }
     const key = bytesToHex(commitment.operator);
+    const witnessed: Witnessed = { commitment, at: this.height };
     const log = this.byOperator.get(key);
     if (log === undefined) {
-      this.byOperator.set(key, [commitment]);
+      this.byOperator.set(key, [witnessed]);
       return;
     }
-    const highest = (log[log.length - 1] as Commitment).sequence;
+    const highest = (log[log.length - 1] as Witnessed).commitment.sequence;
     if (commitment.sequence <= highest) {
       throw new VenueError("commitment sequence does not extend the operator's history");
     }
-    log.push(commitment);
+    log.push(witnessed);
   }
 
   /** This operator's most recent commitment, or undefined if it has none. */
   latestFor(operator: Uint8Array): Commitment | undefined {
+    return this.latestWitnessedFor(operator)?.commitment;
+  }
+
+  /**
+   * The witnessed index this operator's latest commitment was published at, or
+   * undefined if it has none. "Witnessed at index i" is the spec's own notion —
+   * §C2b makes a revocation "effective for each backing at its witnessed index
+   * on that backing's declared venue" — and the height is the venue's word, not
+   * the operator's, which is the party that would want to misstate it. Subtract
+   * it from witnessedIndex() and you have how long this operator has been quiet,
+   * which is what §C2b's silence clause is measured on.
+   */
+  witnessedAtFor(operator: Uint8Array): bigint | undefined {
+    return this.latestWitnessedFor(operator)?.at;
+  }
+
+  private latestWitnessedFor(operator: Uint8Array): Witnessed | undefined {
     const log = this.byOperator.get(bytesToHex(operator));
     return log?.[log.length - 1];
   }
