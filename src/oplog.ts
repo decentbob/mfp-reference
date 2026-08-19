@@ -212,12 +212,21 @@ function signerOf(
 }
 
 /**
- * Whether every operation in this log carries the signature that authorised it.
+ * Whether every operation in this log carries the signature that authorised it,
+ * and no signature authorises more than one operation.
  *
- * This is invariant 8 applied to served state: without it an operator can append
- * transfers nobody signed, make the balances agree with them, and lock every
- * holder out — conservation and the fold both pass, because nothing was
- * destroyed and the state is consistent with its own lie.
+ * This is invariant 8 applied to served state, and it needs both halves. Without
+ * the signature an operator appends transfers nobody signed, makes the balances
+ * agree with them, and locks every holder out — conservation and the fold both
+ * pass, because nothing was destroyed and the state is consistent with its own
+ * lie. Without the nonce sequence it does not even need to forge one: it logs a
+ * transfer the holder really did sign as many times as the balances will bear,
+ * and takes a multiple of the units on one signature.
+ *
+ * The nonce inside the signed message is what makes a signature single-use, so
+ * the walk holds each signer to the sequence the ledger holds them to — starting
+ * at 0 and rising by 1 — which also rejects a log with a gap, since an operation
+ * dropped from the middle leaves the next one at a nonce nobody reached.
  *
  * The signature is served rather than committed: the entry's canonical message
  * is already inside the root, and only the true signer can produce a signature
@@ -230,9 +239,17 @@ function signerOf(
 export function entriesAreAuthentic(backing: Backing, entries: readonly OpLogEntry[]): boolean {
   try {
     const demandHolders = new Map<string, Uint8Array>();
+    const nextNonce = new Map<string, bigint>();
     for (const entry of entries) {
       const signer = signerOf(backing, entry, demandHolders);
       if (signer === undefined) return false;
+      // Nonce first: it is the cheap half, and a hostile log should not buy a
+      // signature verification per entry before being refused.
+      const signerHex = bytesToHex(signer);
+      const expected = nextNonce.get(signerHex) ?? 0n;
+      if (entry.nonce !== expected) return false;
+      nextNonce.set(signerHex, expected + 1n);
+
       const message = opMessageOfEntry(backing.name, entry);
       if (!verifySignatureStrict(entry.signature, message, signer)) return false;
       if (entry.kind === "demand") {

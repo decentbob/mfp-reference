@@ -1,4 +1,5 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 import { signBacking } from "../src/backing.js";
 import { signCommitment, stateProvesCommitment, stateRoot } from "../src/commitment.js";
@@ -125,6 +126,77 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
     expect(stateProvesCommitment(forged, served.commitment)).toBe(true);
     expect(stateIsAuthentic(backing, served)).toBe(false);
     expect(provesHolding(venue, backing, served, KEYS.backer, 160n)).toBe(false);
+  });
+
+  it("refuses a signed operation logged more than once", () => {
+    // A signature authorises ONE operation, and the nonce inside it is what
+    // makes it single-use. Unchecked, the operator replays a transfer the holder
+    // really did sign and takes a multiple of the units on one signature.
+    const { venue, sequencer, backing } = setup();
+    const move = { backing, from: KEYS.alice, to: KEYS.carol, quantity: 30n, nonce: 0n };
+    sequencer.submitTransfer(move, ed25519.sign(encodeTransfer(move), SECRETS.alice));
+    const snapshot = sequencer.snapshot()[0]!;
+    const replayed = snapshot.opLog[2]!;
+    const log = [...snapshot.opLog, { ...replayed, position: 3 }, { ...replayed, position: 4 }];
+
+    // Every entry still carries a signature the holder really made.
+    const folded = foldBalances(backing, log);
+    const forged = [
+      { ...snapshot, opLog: log, balances: [...folded].map(([hex, units]) => [hexToBytes(hex), units] as const) },
+    ];
+    expect(folded.get(Buffer.from(KEYS.carol).toString("hex"))).toBe(90n);
+    expect(stateIsAuthentic(backing, publish(venue, forged))).toBe(false);
+  });
+
+  it("refuses a log with a gap in a signer's nonce sequence", () => {
+    // The same rule read the other way: dropping an operation from the middle
+    // leaves the next one at a nonce nobody reached.
+    const { venue, sequencer, backing } = setup();
+    const move = { backing, from: KEYS.alice, to: KEYS.carol, quantity: 30n, nonce: 0n };
+    sequencer.submitTransfer(move, ed25519.sign(encodeTransfer(move), SECRETS.alice));
+    const second = { backing, from: KEYS.alice, to: KEYS.carol, quantity: 10n, nonce: 1n };
+    sequencer.submitTransfer(second, ed25519.sign(encodeTransfer(second), SECRETS.alice));
+    const snapshot = sequencer.snapshot()[0]!;
+    // Drop Alice's first transfer, renumbering so the positions stay dense.
+    const log = snapshot.opLog
+      .filter((_, i) => i !== 2)
+      .map((entry, i) => ({ ...entry, position: i }));
+    const folded = foldBalances(backing, log);
+    const forged = [
+      { ...snapshot, opLog: log, balances: [...folded].map(([hex, units]) => [hexToBytes(hex), units] as const) },
+    ];
+    expect(stateIsAuthentic(backing, publish(venue, forged))).toBe(false);
+  });
+
+  it("accepts a signer whose operations interleave with another's", () => {
+    // The sequence is per signer, not per log: the obligor's issuances and
+    // acceptances share one counter while a holder keeps their own.
+    const f = setup();
+    f.venue.advance(5n);
+    const demand = {
+      backing: f.backing,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
+    const answer = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      instant: 5n,
+      deadline: 10n,
+      nonce: f.sequencer.nextNonce(KEYS.backer, f.backing),
+    };
+    f.sequencer.submitAcceptance(answer, ed25519.sign(encodeAcceptance(answer), SECRETS.backer));
+    const settle = {
+      backing: f.backing,
+      demandHash: demandHash(demand),
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
+    };
+    f.sequencer.submitRelease(settle, ed25519.sign(encodeRelease(settle), SECRETS.alice));
+    expect(stateIsAuthentic(f.backing, publish(f.venue, f.sequencer.snapshot()))).toBe(true);
   });
 
   it("refuses balances that do not follow from the log", () => {
