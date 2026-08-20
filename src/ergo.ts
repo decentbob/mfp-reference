@@ -58,7 +58,9 @@ import {
 import { utf8Encoder } from "./contexts.js";
 import { decodePublishedOp, type PublishedOp } from "./oplog.js";
 import { decodeReplacement, type Replacement, type WitnessedReplacement } from "./replacement.js";
+import { successionOf } from "./replacement.js";
 import { UNNAMED_VENUE, VenueError, type Venue, type WitnessedOp } from "./venue.js";
+import { type Backing } from "./backing.js";
 
 /**
  * One box, as the node's indexed API returns it, reduced to what a venue reads.
@@ -120,7 +122,12 @@ export interface ErgoAddressing {
  */
 export function ergoVenueId(chain: string, depth: bigint, publicationScript: string): Uint8Array {
   const w = new ByteWriter();
-  w.context(utf8Encoder.encode("mfp/venue/ergo/v1"));
+  // Length-prefixed, not written raw. ByteWriter.context is the one legitimate
+  // raw write and its licence is narrow: contexts.ts asserts its tags are
+  // prefix-free, and this one is not among them. Borrowing the escape hatch
+  // outside the condition that justifies it is how a checked invariant turns
+  // into a convention.
+  w.lengthPrefixed(utf8Encoder.encode("mfp/venue/ergo/v1"));
   w.lengthPrefixed(utf8Encoder.encode(chain));
   w.u64(depth);
   w.lengthPrefixed(utf8Encoder.encode(publicationScript));
@@ -176,6 +183,10 @@ export class ErgoVenue implements Venue {
   private readonly ops = new Map<string, Witnessed<PublishedOp>[]>();
   /** Backing name hex -> replacements, in witnessed order. */
   private readonly replacements = new Map<string, Witnessed<Replacement>[]>();
+  /** The backings this view was gathered for. Anything else it will not answer. */
+  private readonly covered = new Set<string>();
+  /** The operators it fetched — every one in a covered backing's chain. */
+  private readonly fetched = new Set<string>();
 
   constructor(id: Uint8Array, depth: bigint, addressing: ErgoAddressing) {
     if (!(id instanceof Uint8Array) || id.length !== 32) {
@@ -192,38 +203,110 @@ export class ErgoVenue implements Venue {
   }
 
   /**
-   * Take the chain's current word on one operator and one backing.
+   * Take the chain's current word on every target this venue answers for.
    *
    * The height is the indexed height less the declared depth, and **nothing
    * deeper than that is read at all**: a box whose inclusion height is inside the
    * unfinalised zone is not yet witnessed, so admitting it would let the venue
    * change its mind about the past when the chain reorganises.
    *
+   * **The whole view is replaced, and it takes every target at once.** A venue
+   * has one height, because `witnessedIndex` answers without being asked about a
+   * backing — so it must have one coherent set of records to go with it.
+   * Refreshing part of the view while the height moved for all of it grades a
+   * punctual operator silent: its records stop where the last partial sync left
+   * them while the clock runs on, which opens snapshot redemption against
+   * somebody who committed seven blocks ago. A grade is meant to be a fact a
+   * stranger checks, not an artefact of the order somebody synced in.
+   *
    * A box that does not decode is skipped rather than fatal. Anyone may create a
    * box at these addresses, so noise there is ordinary — the same posture the
    * local venue takes toward a publication it cannot read.
    */
-  async sync(node: ErgoNode, operator: Uint8Array, backingName: Uint8Array): Promise<void> {
+  async sync(node: ErgoNode, backings: readonly Backing[]): Promise<void> {
     const indexed = await node.indexedHeight();
     this.height = indexed > this.depth ? indexed - this.depth : 0n;
+    this.commitments.clear();
+    this.ops.clear();
+    this.replacements.clear();
+    this.covered.clear();
+    this.fetched.clear();
 
-    const finalised = <T>(boxes: ErgoBoxView[], read: (box: ErgoBoxView) => T): Witnessed<T>[] => {
-      const out: Witnessed<T>[] = [];
-      for (const box of boxes) {
-        if (box.inclusionHeight > this.height) continue;
-        try {
-          out.push({ value: read(box), at: box.inclusionHeight });
-        } catch {
-          continue;
+    for (const backing of backings) {
+      await this.syncPublications(node, backing.name);
+      this.covered.add(backing.nameHex);
+    }
+    // Then every operator the backing has had, not only the key E names. The
+    // chain is only walkable once the replacements are in, and each successor's
+    // commitments have to be in before the walk can tell whether it took force —
+    // so the frontier widens until it stops revealing anyone new. Bounded by the
+    // chain's own length, which is bounded by the replacements published.
+    for (const backing of backings) {
+      for (;;) {
+        const chain = successionOf(backing, this);
+        const missing = chain
+          .map((link) => link.operator)
+          .filter((operator) => !this.fetched.has(bytesToHex(operator)));
+        if (missing.length === 0) break;
+        for (const operator of missing) {
+          this.fetched.add(bytesToHex(operator));
+          await this.syncCommitments(node, operator);
         }
       }
-      return out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
-    };
+    }
+  }
+
+  /**
+   * The boxes this venue will read at all: finalised, decodable, in the order
+   * the chain witnessed them. Everything else is skipped rather than fatal,
+   * since anyone may create a box at these addresses.
+   */
+  private finalised<T>(boxes: ErgoBoxView[], read: (box: ErgoBoxView) => T): Witnessed<T>[] {
+    const out: Witnessed<T>[] = [];
+    for (const box of boxes) {
+      if (box.inclusionHeight > this.height) continue;
+      try {
+        out.push({ value: read(box), at: box.inclusionHeight });
+      } catch {
+        continue;
+      }
+    }
+    return out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  }
+
+  /**
+   * Whether this view was gathered for a backing. **False is not an answer about
+   * the backing**, it is the absence of one: a venue asked about something it
+   * never synced would report no commitments, and no commitments reads as
+   * silence — an accusation built out of not having looked.
+   */
+  private requireCovered(backingName: Uint8Array): void {
+    if (!this.covered.has(bytesToHex(backingName))) {
+      throw new VenueError("this view was not synced for that backing");
+    }
+  }
+
+  /**
+   * The same rule for an operator. It has to be here as well as on the backing
+   * reads: a backing declaring no replacement rule never reaches
+   * replacementsFor at all, so the grade would be computed from an operator this
+   * view never fetched — no commitments, which reads as silence since genesis.
+   * Every operator in a covered backing's chain is fetched, so succession is
+   * unaffected.
+   */
+  private requireFetched(operator: Uint8Array): void {
+    if (!this.fetched.has(bytesToHex(operator))) {
+      throw new VenueError("this view was not synced for that operator");
+    }
+  }
+
+  private async syncCommitments(node: ErgoNode, operator: Uint8Array): Promise<void> {
+
 
     const commitmentBoxes = await node.boxesByAddress(this.addressing.commitments(operator));
     this.commitments.set(
       bytesToHex(operator),
-      finalised(commitmentBoxes, (box) => {
+      this.finalised(commitmentBoxes, (box) => {
         // Reassembled in the record's own order, which the table gives.
         const record = new Uint8Array(136);
         for (const [name, start, end] of COMMITMENT_LAYOUT) {
@@ -243,11 +326,14 @@ export class ErgoVenue implements Venue {
       }),
     );
 
+  }
+
+  private async syncPublications(node: ErgoNode, backingName: Uint8Array): Promise<void> {
     const publicationBoxes = await node.boxesByAddress(this.addressing.publications(backingName));
     const key = bytesToHex(backingName);
     this.ops.set(
       key,
-      finalised(publicationBoxes, (box) => {
+      this.finalised(publicationBoxes, (box) => {
         const decoded = decodePublishedOp(register(box, "R5"));
         if (compareBytes(decoded.backingName, backingName) !== 0) {
           throw new EncodingError("record is not this backing's");
@@ -257,7 +343,7 @@ export class ErgoVenue implements Venue {
     );
     this.replacements.set(
       key,
-      finalised(publicationBoxes, (box) => {
+      this.finalised(publicationBoxes, (box) => {
         const decoded = decodeReplacement(register(box, "R5"));
         if (compareBytes(decoded.backingName, backingName) !== 0) {
           throw new EncodingError("record is not this backing's");
@@ -284,24 +370,29 @@ export class ErgoVenue implements Venue {
   }
 
   publishedOpsFor(backingName: Uint8Array): WitnessedOp[] {
+    this.requireCovered(backingName);
     const log = this.ops.get(bytesToHex(backingName)) ?? [];
     return log.map((w) => ({ op: w.value, at: w.at }));
   }
 
   replacementsFor(backingName: Uint8Array): WitnessedReplacement[] {
+    this.requireCovered(backingName);
     const log = this.replacements.get(bytesToHex(backingName)) ?? [];
     return log.map((w) => ({ replacement: w.value, at: w.at }));
   }
 
   latestFor(operator: Uint8Array, asOf?: bigint): Commitment | undefined {
+    this.requireFetched(operator);
     return this.latestWitnessedFor(operator, asOf)?.value;
   }
 
   witnessedAtFor(operator: Uint8Array, asOf?: bigint): bigint | undefined {
+    this.requireFetched(operator);
     return this.latestWitnessedFor(operator, asOf)?.at;
   }
 
   firstCommitmentFor(operator: Uint8Array, notBefore = 0n): bigint | undefined {
+    this.requireFetched(operator);
     for (const witnessed of this.commitments.get(bytesToHex(operator)) ?? []) {
       if (witnessed.at >= notBefore) return witnessed.at;
     }
@@ -309,6 +400,7 @@ export class ErgoVenue implements Venue {
   }
 
   nextSequenceFor(operator: Uint8Array): bigint {
+    this.requireFetched(operator);
     const latest = this.latestWitnessedFor(operator);
     return latest === undefined ? 0n : latest.value.sequence + 1n;
   }

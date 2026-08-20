@@ -114,7 +114,7 @@ describe("a venue's identity commits to its finality rule", () => {
 describe("the witnessed index is the block that included the box", () => {
   it("reads a commitment at its inclusion height", async () => {
     const v = venue();
-    await v.sync(new FakeNode().at(100n).putCommitment(commitment(0n, 0xaa), 40n), KEYS.operator, backing.name);
+    await v.sync(new FakeNode().at(100n).putCommitment(commitment(0n, 0xaa), 40n), [backing]);
     expect(v.witnessedAtFor(KEYS.operator)).toBe(40n);
     expect(v.latestFor(KEYS.operator)?.sequence).toBe(0n);
   });
@@ -124,11 +124,11 @@ describe("the witnessed index is the block that included the box", () => {
     // that changed its mind about the past would unmake settled answers.
     const node = new FakeNode().at(100n).putCommitment(commitment(0n, 0xaa), 98n);
     const v = venue();
-    await v.sync(node, KEYS.operator, backing.name);
+    await v.sync(node, [backing]);
     expect(v.witnessedIndex()).toBe(97n);
     expect(v.latestFor(KEYS.operator)).toBeUndefined();
 
-    await v.sync(node.at(101n), KEYS.operator, backing.name);
+    await v.sync(node.at(101n), [backing]);
     expect(v.witnessedIndex()).toBe(98n);
     expect(v.latestFor(KEYS.operator)?.sequence).toBe(0n);
   });
@@ -139,7 +139,7 @@ describe("the witnessed index is the block that included the box", () => {
       .at(100n)
       .putCommitment(commitment(0n, 0xaa), 10n)
       .putCommitment(commitment(1n, 0xbb), 50n);
-    await v.sync(node, KEYS.operator, backing.name);
+    await v.sync(node, [backing]);
 
     expect(v.latestFor(KEYS.operator)?.sequence).toBe(1n);
     expect(v.latestFor(KEYS.operator, 49n)?.sequence).toBe(0n);
@@ -157,8 +157,7 @@ describe("the witnessed index is the block that included the box", () => {
         .at(100n)
         .putCommitment(commitment(1n, 0xbb), 50n)
         .putCommitment(commitment(0n, 0xaa), 10n),
-      KEYS.operator,
-      backing.name,
+      [backing],
     );
     expect(v.firstCommitmentFor(KEYS.operator)).toBe(10n);
     expect(v.latestFor(KEYS.operator)?.sequence).toBe(1n);
@@ -175,8 +174,7 @@ describe("nothing rests on the address alone", () => {
         inclusionHeight: 10n,
         registers: commitmentRegisters(stranger),
       }),
-      KEYS.operator,
-      backing.name,
+      [backing],
     );
     expect(v.latestFor(KEYS.operator)).toBeUndefined();
   });
@@ -189,8 +187,7 @@ describe("nothing rests on the address alone", () => {
         inclusionHeight: 10n,
         registers: commitmentRegisters(torn),
       }),
-      KEYS.operator,
-      backing.name,
+      [backing],
     );
     expect(v.latestFor(KEYS.operator)).toBeUndefined();
   });
@@ -206,8 +203,7 @@ describe("nothing rests on the address alone", () => {
           registers: { R4: new Uint8Array(3), R5: new Uint8Array(1), R6: new Uint8Array(0), R7: new Uint8Array(2) },
         })
         .putCommitment(commitment(0n, 0xaa), 10n),
-      KEYS.operator,
-      backing.name,
+      [backing],
     );
     expect(v.latestFor(KEYS.operator)?.sequence).toBe(0n);
   });
@@ -230,8 +226,7 @@ describe("nothing rests on the address alone", () => {
         inclusionHeight: 20n,
         registers: { R4: backing.name, R5: encodePublishedOp(backing.name, op) },
       }),
-      KEYS.operator,
-      backing.name,
+      [backing],
     );
     const published = v.publishedOpsFor(backing.name);
     expect(published).toHaveLength(1);
@@ -256,13 +251,13 @@ describe("the seam is real: the existing predicates take this venue", () => {
     // with nothing changed in them.
     const v = venue();
     const node = new FakeNode().at(100n).putCommitment(commitment(0n, 0xaa), 40n);
-    await v.sync(node, KEYS.operator, backing.name);
+    await v.sync(node, [backing]);
 
     expect(quietFor(v, KEYS.operator)).toBe(57n);
     expect(isSilent(v, backing)).toBe(true);
 
     // And it stops being silent the moment a later commitment is witnessed.
-    await v.sync(node.at(101n).putCommitment(commitment(1n, 0xbb), 95n), KEYS.operator, backing.name);
+    await v.sync(node.at(101n).putCommitment(commitment(1n, 0xbb), 95n), [backing]);
     expect(isSilent(v, backing)).toBe(false);
   });
 
@@ -275,7 +270,7 @@ describe("the seam is real: the existing predicates take this venue", () => {
       },
     });
     const v = venue();
-    await v.sync(new FakeNode().at(1000n), KEYS.operator, elsewhere.name);
+    await v.sync(new FakeNode().at(1000n), [elsewhere]);
     expect(isSilent(v, elsewhere)).toBe(false);
   });
 
@@ -285,10 +280,57 @@ describe("the seam is real: the existing predicates take this venue", () => {
     const snapshots = [{ name: backing.name, opLog: [] }];
     const anchored = signCommitment(SECRETS.operator, 0n, stateRoot(snapshots));
     const v = venue();
-    await v.sync(new FakeNode().at(100n).putCommitment(anchored, 40n), KEYS.operator, backing.name);
+    await v.sync(new FakeNode().at(100n).putCommitment(anchored, 40n), [backing]);
     // No issuance in this log, so nobody holds anything — what is being checked
     // is that the served state resolves against a chain-read commitment at all.
     expect(provesHolding(v, backing, { snapshots, commitment: anchored }, KEYS.alice, 1n)).toBe(false);
     expect(v.latestFor(KEYS.operator)?.root).toEqual(anchored.root);
+  });
+});
+
+describe("a view answers only for what it was synced for", () => {
+  it("refuses an operator it never fetched, rather than grading it silent", async () => {
+    // The finding this group exists for. A venue has one height, because
+    // witnessedIndex answers without being asked about a backing — so it must
+    // have one coherent set of records to go with it. Refreshing part of the
+    // view while the clock moved for all of it graded a punctual operator
+    // silent: its records stopped where the last partial sync left them, which
+    // opens snapshot redemption against somebody who committed moments ago.
+    //
+    // Absence of data must not read as an accusation, so the venue refuses
+    // instead of answering. VenueError names the boundary: this is a caller
+    // asking the wrong object, not adversary input.
+    const other = makeBacking({
+      obligor: KEYS.backer2,
+      payout: { thing: "USD", quantumExponent: -2, perUnit: 100n },
+      reliance: [],
+      evidence: {
+        setting: "transparent",
+        operator: KEYS.mallory,
+        silence: { noCommitmentDuration: 10n, challengeWindow: 5n },
+        witnessing: { venue: VENUE_ID, interval: 5n },
+      },
+    });
+    const v = venue();
+    // Committed two blocks inside the view, so a correct reading is "not silent".
+    const node = new FakeNode().at(200n).putCommitment(commitment(0n, 0xaa), 195n);
+    await v.sync(node, [other]);
+
+    expect(() => isSilent(v, backing)).toThrow(VenueError);
+    expect(() => v.publishedOpsFor(backing.name)).toThrow(VenueError);
+
+    // Synced for it, and the punctual operator reads as punctual.
+    await v.sync(node, [other, backing]);
+    expect(isSilent(v, backing)).toBe(false);
+  });
+
+  it("fetches every operator in a covered backing's chain, so succession still reads", async () => {
+    // The guard must not break succession: sync widens until the chain stops
+    // revealing operators, so operatorAt can never reach one that was not
+    // fetched.
+    const v = venue();
+    await v.sync(new FakeNode().at(100n).putCommitment(commitment(0n, 0xaa), 40n), [backing]);
+    expect(() => v.latestFor(KEYS.operator)).not.toThrow();
+    expect(v.latestFor(KEYS.operator)?.sequence).toBe(0n);
   });
 });

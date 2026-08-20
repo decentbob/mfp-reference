@@ -96,6 +96,33 @@ index, so we need what it does not.
   needs a secp256k1 key we do not name - which wants a node and experiments
   rather than a decision from reading. The venue's logic does not depend on it.
 
+**Found by `/code-review high`, and it is the shape again.** `sync` set one
+shared height but refreshed records for only the target it was called with, so a
+wallet holding two backings synced each in turn and the first one's punctual
+operator read as silent - its records stopping where the last sync left them
+while the clock ran on. Fifty-seven indices of silence against somebody who had
+committed seven blocks earlier, which opens snapshot redemption against an honest
+operator. Demonstrated in `review-stale-view.mjs`.
+
+A venue has **one** height, because `witnessedIndex` answers without being asked
+about a backing - so it must have one coherent set of records. `sync` now takes
+every backing the view answers for and rebuilds the whole thing.
+
+And reviewing that fix: rebuilding was not enough, because **absence of data
+still read as an accusation**. A backing the view was never synced for has no
+commitments, and no commitments is silence since genesis. The first guard went on
+the backing-keyed reads and did not fire, since a backing declaring no
+replacement rule never reaches `replacementsFor` at all - so the operator-keyed
+reads are guarded too, and a view refuses rather than answers. `sync` widens
+until the chain stops revealing operators, so every key `operatorAt` can produce
+was fetched and succession is untouched.
+
+A second, smaller one: `ergoVenueId` wrote its tag through `ByteWriter.context`,
+whose licence is narrow - contexts.ts asserts its tags are prefix-free and this
+one is not among them. Length-prefixed now. Same class as the slice-15 finding,
+one step further along: there the reason was misstated, here the mechanism was
+used outside the conditions that justify it.
+
 **Not built, and deliberately: writes.** Building and submitting a transaction
 needs an Ergo library, and CLAUDE.md limits dependencies to `@noble/hashes` and
 `@noble/curves`. A verifier never publishes - only an operator does - so the read
