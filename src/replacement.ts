@@ -181,14 +181,17 @@ export interface Succession {
  *
  * What is not checked, and cannot be from the venue alone: that the successor's
  * commitment is "over a spent set it serves in full". A commitment is a root, so
- * whether it carries this backing at all is unreadable without the served state.
- * committedLogFor now answers exactly that question — but only of a state it is
- * handed, and this walk has none, so the bound below stays the bound. What IS
- * checked
- * is that the commitment came at or after the handover was witnessed, so it is
- * at least one the successor could have made for this backing; without that
- * bound the second stage means nothing at all for a successor that already
- * operates something else.
+ * whether it carries this backing is unreadable without the served state — §C2
+ * now says so, on invariant 23's standing rule that anything checked against a
+ * commitment has to be served. committedLogFor answers exactly that question, but
+ * only of a state it is handed, and this walk has none, so the bound stays the
+ * bound.
+ *
+ * What IS checked is that the commitment came at or after the handover was
+ * witnessed, so it is at least one the successor could have made for this
+ * backing. Slice 13 found that bound necessary and §C2 now carries it: "without
+ * that bound a successor already operating something else answers with a
+ * commitment made before anyone named it."
  */
 export function successionOf(backing: Backing, venue: Venue): Succession[] {
   const chain: Succession[] = [

@@ -550,11 +550,13 @@ describe("§C2: the remedy, and the successor that can now take it", () => {
     // rule that does not exist; the aggravated grade never fires because the
     // operator publishes; so the claims freeze permanently.
     //
-    // The paper was asked and answered: the aggravated grade is NOT read per
-    // backing, because a venue witnesses a root. So this is the setting the
-    // holder read rather than a defect — §C2b makes replaceability "answered in
-    // E" — and it stays pinned because a holder reading "silence clause: yes"
-    // would reasonably expect an exit, and here there is none.
+    // The paper was asked and answered twice. The aggravated grade is NOT read
+    // per backing, because a venue witnesses a root; and §C2b now names this
+    // exact case, the remedy being "inert wherever that rule names the backer,
+    // and absent wherever E names no rule at all". So it is the setting the
+    // holder read rather than a defect, and it stays pinned because a holder
+    // reading "silence clause: yes" would reasonably expect an exit, and here
+    // there is none.
     const { venue, eur, lastGood } = toHandover(false);
     expect(isNonServing(venue, eur, lastGood)).toBe(true);
     expect(isSilent(venue, eur)).toBe(false);

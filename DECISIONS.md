@@ -139,7 +139,23 @@ replaceability "answered in E") rather than a defect. An `OPEN:` test keeps it
 visible, because a holder reading "silence clause: yes" would reasonably expect an
 exit and here there is none.
 
-**Spec change:** made directly, minimal, at Bob's instruction -
+**Spec change:** two, both made directly and minimally at Bob's instruction.
+
+`money-from-first-principles@576fc5c` took the three items this slice put on the
+list for the paper. §C2's two-stage replacement was **vacuous** as written - "has
+published its own commitment" is answered by any commitment that key ever made,
+so a successor already operating something else arrived already in force - and is
+bounded now to at or after the replacement was witnessed, with "in full" checked
+against the served state rather than a root. §C2's "failure to serve the trail on
+request" was called an aggravated-grade condition with no object, duration or
+aggregate to make it checkable, and is now "a reason to have replicated rather
+than a condition anyone can fire", pointing at the non-service grade instead -
+which is the paper adopting CLAUDE.md's fifth party rule in its own words, "so a
+holder keeps one". And §C2b's "Firing opens E's replacement rule" said "opens"
+four lines above a sentence where "opens" is a real gate; it now makes the case
+for a rule that stands either way, and names the second inert remedy, "absent
+wherever E names no rule at all", which is this slice's OPEN test.
+
 `money-from-first-principles@e9fd937`, "C2b: say what the aggravated grade is
 actually checkable on". The grade read as if a stranger could check it per
 backing; for the shared operator §C2 recommends it cannot, since that operator
@@ -328,6 +344,10 @@ ever do, since silence does not move money either; it opens a path a holder then
 walks.
 
 **Spec change:** none needed, unless the gated reading above was intended.
+*[Landed 2026-08-20 in money-from-first-principles@576fc5c: "Firing makes the
+case for E's replacement rule, which stands whether or not a grade has fired."
+The ungated reading was right, so nothing here changed. The ambiguity came from
+the neighbouring sentence using "opens" as a real gate four lines below.]*
 
 ## 2026-08-20 - Slice 15: a venue's records are bytes, and Venue is an interface
 
@@ -648,6 +668,12 @@ their units; the remedy is a successor, and E has to say who may appoint one.
   arrives already in force and the second stage means nothing. The commitment
   must now come at or after the handover was witnessed, so it is at least one the
   successor could have made for this backing.
+
+  *[Landed 2026-08-20 in money-from-first-principles@576fc5c: §C2 carries the
+  bound now, with the reason - "without that bound a successor already operating
+  something else answers with a commitment made before anyone named it" - and the
+  rule that "in full" is checked against the served state rather than read from
+  the root. The code already did both.]*
 
 **What this slice deliberately does not do: let the successor serve.** The chain
 is declared, walkable, and read by the verifiers that ask who is in force -

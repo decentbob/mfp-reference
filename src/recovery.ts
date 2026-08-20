@@ -294,14 +294,16 @@ export function unservedRequests(
  * backing that conceded no non-service grade is never non-serving, and a state
  * that is not this backing's operator's says nothing either way.
  *
- * **What firing does here, and what it deliberately does not.** §C2b: "Firing
- * opens E's replacement rule and moves no dates, and the remedy is inert
- * wherever that rule names the backer." Read as a gate - the rule closed until
- * the grade fires - it would make §C2's ordinary replacement unwritable, and §C2
- * plainly contemplates a backer changing operators deliberately rather than only
- * under a failure. So "opens" is read as bringing the remedy into play rather
- * than unlocking it, and the grade is a fact a stranger checks, exactly like
- * silence and dishonour. Flagged rather than chosen silently; see DECISIONS.md.
+ * **What firing does here, and what it deliberately does not.** §C2b says it
+ * outright now: "Firing makes the case for E's replacement rule, which stands
+ * whether or not a grade has fired." So the grade unlocks nothing - it is a fact
+ * a stranger checks, exactly like silence and dishonour. Slice 16 read it that
+ * way while the word was "opens" and flagged the choice rather than taking it
+ * silently; the paper settled it.
+ *
+ * The remedy "is inert wherever that rule names the backer, and absent wherever
+ * E names no rule at all" - the second of those is the OPEN case pinned in
+ * c2-dropped-backing. See DECISIONS.md.
  */
 export function isNonServing(venue: Venue, backing: Backing, served: ServedState): boolean {
   const terms = backing.evidence.nonService;

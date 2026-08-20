@@ -158,8 +158,10 @@ construction — which is why they are rules here rather than code.
   over from it (`takeOver`). The party who would otherwise serve it on request is
   the one with the motive not to, which is the same shape as the receipt rule
   above: obtain the evidence while the party holding it still has a reason to give
-  it to you. §C2 makes failing to serve the trail its own aggravated-grade
-  condition, and that grade is not built here.
+  it to you. §C2 names no grade for it — nothing declares the object, duration or
+  aggregate that would make failing to serve the trail checkable — so the paper's
+  own answer is this rule: the non-service grade is "read against the last state a
+  holder was given, so a holder keeps one".
 - **A payment is final when witnessed, not when co-signed.** §C2: "Finality
   means witnessed rather than co-signed", and §C3 applies it to the release: "a
   release nobody witnessed did not happen." An operation accepted after the
