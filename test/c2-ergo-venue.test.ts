@@ -14,6 +14,7 @@ import { encodePublishedOp } from "../src/oplog.js";
 import { encodeTransferMessage } from "../src/messages.js";
 import { isSilent, provesHolding, quietFor } from "../src/recovery.js";
 import { VenueError } from "../src/venue.js";
+import { operatorAt } from "../src/replacement.js";
 import { KEYS, SECRETS } from "./support.js";
 
 // Ergo read as a witness venue. The chain witnesses and adjudicates nothing, so
@@ -323,6 +324,49 @@ describe("a view answers only for what it was synced for", () => {
     // Synced for it, and the punctual operator reads as punctual.
     await v.sync(node, [other, backing]);
     expect(isSilent(v, backing)).toBe(false);
+  });
+
+  it("refuses an unsynced backing whose operator IS fetched, which is the common case", async () => {
+    // Found regression-reviewing slice 19, and the guard above passes for a
+    // coincidental reason: its unsynced backing has an operator nobody fetched,
+    // so the operator-keyed guard fires. §C5 recommends one operator serving
+    // many backings, and then syncing backing A fetches that operator — so
+    // asking about unsynced backing B sails past both guards.
+    //
+    // It takes a backing that DECLARES a replacement rule, because that is when
+    // the chain is read at all: without one successionOf never reaches the venue,
+    // and the answer it gives is right, since an operator's commitments are the
+    // operator's and were fetched.
+    //
+    // What answered instead was successionOf's catch, which turned the venue's
+    // refusal into the GENESIS chain: the pre-succession answer slice 14 warned
+    // a caller must never get silently. On a backing whose operator had been
+    // replaced that reads the RETIRED key as the one in force, so a successor
+    // committing on schedule grades as silent and snapshot redemption opens
+    // against an honest operator — out of not having looked.
+    const sameOperator = makeBacking({
+      obligor: KEYS.backer2,
+      payout: { thing: "USD", quantumExponent: -2, perUnit: 100n },
+      reliance: [],
+      evidence: {
+        setting: "transparent",
+        operator: KEYS.operator,
+        silence: { noCommitmentDuration: 10n, challengeWindow: 5n },
+        replacementRule: KEYS.backer2,
+        witnessing: { venue: VENUE_ID, interval: 5n },
+      },
+    });
+    const v = venue();
+    const node = new FakeNode().at(200n).putCommitment(commitment(0n, 0xaa), 195n);
+    await v.sync(node, [backing]);
+
+    // The operator is fetched, so the operator-keyed guard cannot fire.
+    expect(() => v.latestFor(KEYS.operator)).not.toThrow();
+    expect(() => isSilent(v, sameOperator)).toThrow(VenueError);
+    expect(() => operatorAt(sameOperator, v, v.witnessedIndex())).toThrow(VenueError);
+
+    await v.sync(node, [backing, sameOperator]);
+    expect(isSilent(v, sameOperator)).toBe(false);
   });
 
   it("fetches every operator in a covered backing's chain, so succession still reads", async () => {

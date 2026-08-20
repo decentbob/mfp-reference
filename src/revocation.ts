@@ -29,10 +29,10 @@
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import type { Backing } from "./backing.js";
-import { ByteReader, ByteWriter, compareBytes, copyBytes } from "./bytes.js";
+import { ByteReader, ByteWriter, copyBytes } from "./bytes.js";
 import { REVOCATION_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
-import type { Venue } from "./venue.js";
+import { venueIsDeclared, type Venue } from "./venue.js";
 
 /** K's own signature that K issues no more. */
 export interface Revocation {
@@ -128,17 +128,18 @@ export function isSignedRevocation(revocation: Revocation): boolean {
  * the setting its backer chose.
  */
 export function revokedAt(venue: Venue, backing: Backing): bigint | undefined {
-  try {
-    const declared = backing.evidence.witnessing?.venue;
-    if (declared !== undefined && compareBytes(venue.id, declared) !== 0) return undefined;
-    let earliest: bigint | undefined;
-    for (const witnessed of venue.revocationsFor(backing.obligor)) {
-      if (earliest === undefined || witnessed.at < earliest) earliest = witnessed.at;
-    }
-    return earliest;
-  } catch {
-    return undefined;
+  if (!venueIsDeclared(venue, backing)) return undefined;
+  // **No catch here, and that is the whole point.** Undefined means NOT REVOKED,
+  // so swallowing an exception turns a venue that declines to answer into a
+  // clean bill of health for a stolen key — and a view that was never synced for
+  // this obligor is exactly the case ErgoVenue guards against. Nothing here
+  // reads adversary-supplied data: the backing is validated, and a venue's
+  // records were checked when it took them. isSilent takes the same posture.
+  let earliest: bigint | undefined;
+  for (const witnessed of venue.revocationsFor(backing.obligor)) {
+    if (earliest === undefined || witnessed.at < earliest) earliest = witnessed.at;
   }
+  return earliest;
 }
 
 /** A copy, for the same reason every other record hands out copies. */

@@ -69,7 +69,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { opHashOfEntry } from "./oplog.js";
 import { operatorAt, operatorIn, successionOf, type Succession } from "./replacement.js";
 import { revokedAt } from "./revocation.js";
-import { Venue, type WitnessedOp } from "./venue.js";
+import { venueIsDeclared, Venue, VenueError, type WitnessedOp } from "./venue.js";
 
 export type { ServedState };
 
@@ -82,30 +82,12 @@ export function quietFor(venue: Venue, operator: Uint8Array): bigint {
   return venue.witnessedIndex() - (venue.witnessedAtFor(operator) ?? 0n);
 }
 
-/**
- * Whether this venue is the one the backing declares (§C2b: a grade is effective
- * "at its witnessed index on that backing's declared venue").
- *
- * **A backing that declares no venue answers true**, and that is the setting
- * rather than a hole: E tags 0x01 and 0x02 name no venue, so their grade is read
- * against whichever record the reader holds, exactly as it was before a venue
- * could be declared at all. A backer who wants the grade pinned declares one.
- *
- * Every predicate here that reads the venue's record on a backing's behalf goes
- * through this, so there is one definition of "the right record" rather than one
- * per caller. quietFor deliberately does not: it takes an operator rather than a
- * backing, and has no terms to consult.
- */
 /** The operator in force at the venue's present index. */
 function operatorNow(venue: Venue, backing: Backing): Uint8Array {
   return operatorAt(backing, venue, venue.witnessedIndex());
 }
 
-export function venueIsDeclared(venue: Venue, backing: Backing): boolean {
-  const declared = backing.evidence.witnessing?.venue;
-  if (declared === undefined) return true;
-  return compareBytes(venue.id, declared) === 0;
-}
+export { venueIsDeclared };
 
 /**
  * §C2b's aggravated grade for this backing: its operator has published no
@@ -481,7 +463,10 @@ export function standingOutstanding(
       return undefined;
     }
     return committedOutstanding(backing, venue, boundary);
-  } catch {
+  } catch (cause) {
+    // A venue that declines to answer is not malformed input, and reporting it
+    // as "nothing to see" is how a guard gets swallowed by the layer above it.
+    if (cause instanceof VenueError) throw cause;
     return undefined;
   }
 }

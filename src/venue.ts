@@ -51,7 +51,7 @@
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { copyBytes } from "./bytes.js";
+import { compareBytes, copyBytes } from "./bytes.js";
 import {
   decodeCommitment,
   encodeCommitment,
@@ -59,6 +59,7 @@ import {
   type Commitment,
 } from "./commitment.js";
 import { utf8Encoder } from "./contexts.js";
+import type { Backing } from "./backing.js";
 import { decodePublishedOp, encodePublishedOp, type PublishedOp } from "./oplog.js";
 import {
   decodeReplacement,
@@ -75,6 +76,30 @@ import {
 } from "./revocation.js";
 
 export class VenueError extends Error {}
+
+/**
+ * Whether this venue is the one the backing declares (§C2b: a grade is effective
+ * "at its witnessed index on that backing's declared venue", and a revocation is
+ * "effective for each backing at its witnessed index on that backing's declared
+ * venue").
+ *
+ * **A backing that declares no venue answers true**, and that is the setting
+ * rather than a hole: E tags 0x01 and 0x02 name no venue, so their grade is read
+ * against whichever record the reader holds, exactly as it was before a venue
+ * could be declared at all. A backer who wants the grade pinned declares one.
+ *
+ * Every predicate that reads a venue's record on a backing's behalf goes through
+ * this, so there is one definition of "the right record" rather than one per
+ * caller. It lives here rather than beside the grades because the revocation
+ * reads it too, and a second copy over there would be one definition drifting
+ * from another. quietFor deliberately does not use it: it takes an operator
+ * rather than a backing, and has no terms to consult.
+ */
+export function venueIsDeclared(venue: Venue, backing: Backing): boolean {
+  const declared = backing.evidence.witnessing?.venue;
+  if (declared === undefined) return true;
+  return compareBytes(venue.id, declared) === 0;
+}
 
 /**
  * The identity of a venue nobody named. A backing that declares no venue (E
