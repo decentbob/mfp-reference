@@ -220,7 +220,10 @@ export function unservedRequests(
       committed.opLog.map((entry) => bytesToHex(opHashOfEntry(backing.name, entry))),
     );
     const now = venue.witnessedIndex();
-    const counted = new Set<string>();
+    // Applied to the sequence, which is not the same as counted toward the
+    // grade: a request outside the band still advances the fold. `standing` is
+    // the count.
+    const applied = new Set<string>();
     const standing: WitnessedOp[] = [];
     // In nonce order, then witnessed order: a signer's own requests must be
     // folded in the order they were signed, and the witnessed index is the only
@@ -244,13 +247,13 @@ export function unservedRequests(
       const hash = bytesToHex(opHashOfEntry(backing.name, witnessed.op));
       // Already in the committed log, so the state below already has it, and
       // applying it again would only meet its own spent nonce.
-      if (servedAlready.has(hash) || counted.has(hash)) continue;
+      if (servedAlready.has(hash) || applied.has(hash)) continue;
       try {
         applyEntry(working, backing, witnessed.op, undefined);
       } catch {
         continue;
       }
-      counted.add(hash);
+      applied.add(hash);
       // **Applied, then counted — not the other way round.** A request outside
       // the counting band is still one the operator was handed and did not
       // serve, so it advances the sequence even though it no longer stands: a

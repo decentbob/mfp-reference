@@ -257,3 +257,15 @@ describe("§C2b: the fold is a sequence, so a request behind another still count
     expect(unservedRequests(venue, backing, served)).toHaveLength(3);
   });
 });
+
+describe("§C2b: no calibration is policed", () => {
+  it("lets a backer concede the grade unconditionally with m = 0", () => {
+    // The numbers are the backer's to choose and the holder's to read. m = 0
+    // says the grade stands with nothing standing, which is odd and is what it
+    // says — the same latitude a zero silence duration has.
+    const { venue, sequencer, backing } = setup({ duration: 10n, count: 0, window: 100n });
+    const served = servedBy(sequencer);
+    expect(unservedRequests(venue, backing, served)).toEqual([]);
+    expect(isNonServing(venue, backing, served)).toBe(true);
+  });
+});
