@@ -452,3 +452,49 @@ describe("§C2: a successor that does not serve the state in full", () => {
     expect(isRewrittenHistory(backing, venue, theirs, served)).toBe(true);
   });
 });
+
+describe("§C2: a takeover is all or nothing", () => {
+  it("refuses a committed state that is not a history that could have happened", () => {
+    // committedLogFor checks the root and the signature and does not replay the
+    // law. Applied entry by entry, a well-rooted log that goes wrong part-way
+    // would leave a truncated state this operator then commits — which is the
+    // fault isRewrittenHistory watches a handover for, committed by the party
+    // that was handed the backing.
+    const { venue, backing } = setup();
+    const incumbent = new Sequencer(SECRETS.operator, venue);
+    incumbent.register(backing, signBacking(SECRETS.backer, backing));
+    incumbent.submitIssue(
+      { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n },
+      ed25519.sign(encodeIssuanceMessage(backing.name, KEYS.alice, 100n, 0n), SECRETS.backer),
+    );
+    const honest = incumbent.snapshot()[0]!;
+    // A second entry the law would refuse: Alice spending more than she holds.
+    const overspend = {
+      kind: "transfer" as const,
+      from: KEYS.alice,
+      to: KEYS.bob,
+      quantity: 500n,
+      nonce: 0n,
+      position: 1,
+      signature: ed25519.sign(
+        encodeTransferMessage(backing.name, KEYS.alice, KEYS.bob, 500n, 0n),
+        SECRETS.alice,
+      ),
+    };
+    const snapshots = [{ name: backing.name, opLog: [honest.opLog[0]!, overspend] }];
+    const rooted = {
+      snapshots,
+      commitment: signCommitment(SECRETS.operator, venue.nextSequenceFor(KEYS.operator), stateRoot(snapshots)),
+    };
+    venue.publish(rooted.commitment);
+
+    at(venue, 5n);
+    venue.publishReplacement(backing.name, replacementBy(backing, SECRETS.backer, SUCCESSOR, backing.name, 5n));
+    const successor = new Sequencer(SUCCESSOR_SECRET, venue);
+    successor.register(backing, signBacking(SECRETS.backer, backing));
+
+    expect(() => successor.takeOver(backing, rooted)).toThrow(SequencerError);
+    // And nothing of it stuck, so an honest state can still be taken over.
+    expect(successor.opLog(backing)).toHaveLength(0);
+  });
+});

@@ -78,6 +78,21 @@ Also found there: `takeOver` onto a non-empty log met its own spent nonces and
 refused in the ledger's voice, which names the wrong boundary for what is the
 sequencer's own precondition.
 
+**And two more from `/code-review high`, both in `takeOver`'s neighbourhood:**
+
+- **A takeover was not all-or-nothing.** `committedLogFor` checks the root and
+  the signature and deliberately does not replay the law, so a well-rooted log
+  that goes wrong part-way applied entry by entry until one was refused - leaving
+  a truncated state this operator would then commit, which is the very fault
+  `isRewrittenHistory` was just extended across handovers to catch, committed by
+  the party the chain had handed the backing to. The ledger is atomic per
+  operation by design; this is the one place that applies many, so it replays
+  first and refuses in its own voice.
+- **The chain was walked per adopted leg**, one call site away from where slice
+  13 removed exactly that. `adopt` asks once now: the answer is the same for
+  every leg, and asking verifies a signature per published replacement, with both
+  counts the adversary's to grow.
+
 **Consequences.** The venue is now a parameter of `committedLogFor`,
 `isOperatorReceipt`, `receiptStatus`, `stateIsAuthentic`, `isRewrittenHistory`,
 `isDoubleAcceptance` and `isDoublePosition`. That is a wide signature change and

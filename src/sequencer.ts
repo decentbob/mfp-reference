@@ -52,6 +52,7 @@ import { makeBacking, type Backing } from "./backing.js";
 import { compareBytes, copyBytes } from "./bytes.js";
 import { signCommitment, stateRoot, type Commitment } from "./commitment.js";
 import {
+  replayLog,
   TransparentLedger,
   type BackingSnapshot,
   type DemandRecord,
@@ -209,6 +210,15 @@ export class Sequencer {
     ) {
       throw new SequencerError("that is not the incumbent's latest committed state");
     }
+    // All or nothing. committedLogFor checks the root and the signature and
+    // deliberately does not replay the law, so a well-rooted log that is not a
+    // history that could have happened would otherwise apply until one entry
+    // was refused — leaving a truncated state this operator would then commit,
+    // which is the very fault isRewrittenHistory watches a handover for. The
+    // ledger is atomic per operation; this is the one place that applies many.
+    if (replayLog(held, committed.opLog) === undefined) {
+      throw new SequencerError("that committed state is not a history that could have happened");
+    }
     for (const entry of committed.opLog) this.ledger.apply(held, entry, undefined);
   }
 
@@ -227,6 +237,15 @@ export class Sequencer {
   adopt(backing: Backing): void {
     this.requireServed(backing);
     const served = this.backings.get(backing.nameHex) as Backing;
+    // "No new co-signatures issue" until this operator is in force. Adoption is
+    // co-signing, so a successor that has taken over but not yet committed
+    // leaves the gap legs for its own first serving moment rather than
+    // answering for them now.
+    //
+    // Asked once rather than per leg: the answer is the same for all of them,
+    // and asking walks the chain, which verifies a signature per published
+    // replacement — both counts being the adversary's to grow.
+    if (!this.isInForce(served)) return;
     for (const witnessed of gapLegsFor(this.venue, served)) {
       this.adoptOne(served, witnessed.op, witnessed.at);
     }
@@ -239,11 +258,6 @@ export class Sequencer {
    * operation, so it gets the receipt it would have got.
    */
   private adoptOne(backing: Backing, op: PublishedOp, at: bigint): void {
-    // "No new co-signatures issue" until this operator is in force. Adoption is
-    // co-signing, so a successor that has taken over but not yet committed
-    // leaves the gap legs for its own first serving moment rather than
-    // answering for them now.
-    if (!this.isInForce(backing)) return;
     const key = bytesToHex(opHashOfEntry(backing.name, op));
     if (this.receipts.has(key)) return;
     let entry: OpLogEntry;
