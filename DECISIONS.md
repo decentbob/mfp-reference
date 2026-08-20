@@ -16,6 +16,122 @@ Format:
 
 ---
 
+## 2026-08-20 - Slice 17: Ergo as a venue, decided from the node rather than asked
+
+**Question:** the layout was blocked on questions we were going to put to the
+Basis authors. Bob's call: build on our own, take what is good, decide where to
+differ, and ask nobody. So the questions were answered from the node's own source
+- `BlockchainApiRoute.scala` and `IndexedErgoBox.scala` on master - rather than by
+correspondence.
+
+**What the node actually offers, which settled the open question.** The indexed
+API has spent-inclusive routes, not only unspent ones:
+
+```
+/blockchain/box/byAddress          all boxes at an address, spent or not
+/blockchain/box/byTokenId          all boxes that ever held a token
+/blockchain/transaction/byAddress  transaction history
+/blockchain/indexedHeight
+```
+
+and every returned box carries `inclusionHeight`, `spendingHeightOpt` and
+`isSpent`. So a commitment's history survives the box being spent, and the choice
+between an evolving box and an immutable one per commitment is about cost rather
+than capability. Basis uses only the unspent route, because its emergency period
+reads the *current* tracker box; four of our nine venue reads ask about a past
+index, so we need what it does not.
+
+**Decisions (Bob):**
+
+- **The witnessed index is `inclusionHeight`, never the box's own
+  `creationHeight`.** The latter is written by whoever builds the transaction:
+  consensus stops it exceeding the including block's height, but it may be set
+  **lower**. Backdating a commitment would put it before a redemption leg it
+  actually followed, which is exactly the veto slice 8 closed - "a publication is
+  judged against the record as it stood strictly before its own index, and the
+  tie must not go to the party watching". `inclusionHeight` is the block that
+  included the creating transaction, which is the chain's word.
+
+  Worth recording rather than warning about: Basis reads `creationInfo._1` for
+  its emergency period, and there the settable direction is benign - backdating
+  brings the emergency sooner, which only removes the need for the tracker's own
+  signature, and consensus forbids the direction that would delay it. Safe for
+  them, unsafe for us, because both directions matter here.
+
+- **Reads are a materialised view, and this is structural.** `Venue` is a
+  synchronous interface and every caller through recovery, fault and the
+  sequencer is synchronous with it. Making it async to accommodate HTTP would
+  ripple through the whole codebase for no gain. So an Ergo venue **syncs**
+  asynchronously and is **read** synchronously: fetch the record, then reason
+  over it offline.
+
+  That is not a workaround, it is what verification is. §C0b: "Published means
+  retrievable by a stranger... Content-addressed storage gives integrity, not
+  availability." A holder obtains the trail and then checks it, and the check
+  never needs the network.
+
+- **Every read is taken at `height − depth`.** `inclusionHeight` is
+  reorg-sensitive, so a venue that answered from the tip would change its mind
+  about the past. That is §C2's finality rule doing its job.
+
+- **The venue's identity commits to its finality rule.** Slice 10 made the id an
+  opaque 32 bytes with the rule deferred. §C2 names a venue "together with its
+  finality rule... That is a floor under the interval, or two sequencers answer
+  §C3's release predicate differently" - so if each backing declared its own depth
+  for one chain, two backings would disagree about when a block counts as
+  witnessed, which is the divergence being warned about. The id is therefore a
+  hash over (chain, depth, publication script): naming the venue is agreeing the
+  depth. The encoding does not change - it is still 32 bytes in clause 0x02 - only
+  what those bytes denote.
+
+- **Verifying requires an indexed node.** The `/blockchain/*` routes exist only
+  with `extraIndex` enabled. That is a real floor under "published means
+  retrievable by a stranger" and is stated rather than discovered later.
+
+- **The box layout is fixed; the address policy is a parameter.** A commitment is
+  R4 operator, R5 root, R6 sequence, R7 signature; a publication is R4 backing
+  name as a scan key with the record in R5, the record staying authoritative. How
+  addresses are derived and who may spend a box is left injectable, because it
+  turns on Ergo economics - storage rent, min box value, whether the spend guard
+  needs a secp256k1 key we do not name - which wants a node and experiments
+  rather than a decision from reading. The venue's logic does not depend on it.
+
+**Found by `/code-review high`, and it is the shape again.** `sync` set one
+shared height but refreshed records for only the target it was called with, so a
+wallet holding two backings synced each in turn and the first one's punctual
+operator read as silent - its records stopping where the last sync left them
+while the clock ran on. Fifty-seven indices of silence against somebody who had
+committed seven blocks earlier, which opens snapshot redemption against an honest
+operator. Demonstrated in `review-stale-view.mjs`.
+
+A venue has **one** height, because `witnessedIndex` answers without being asked
+about a backing - so it must have one coherent set of records. `sync` now takes
+every backing the view answers for and rebuilds the whole thing.
+
+And reviewing that fix: rebuilding was not enough, because **absence of data
+still read as an accusation**. A backing the view was never synced for has no
+commitments, and no commitments is silence since genesis. The first guard went on
+the backing-keyed reads and did not fire, since a backing declaring no
+replacement rule never reaches `replacementsFor` at all - so the operator-keyed
+reads are guarded too, and a view refuses rather than answers. `sync` widens
+until the chain stops revealing operators, so every key `operatorAt` can produce
+was fetched and succession is untouched.
+
+A second, smaller one: `ergoVenueId` wrote its tag through `ByteWriter.context`,
+whose licence is narrow - contexts.ts asserts its tags are prefix-free and this
+one is not among them. Length-prefixed now. Same class as the slice-15 finding,
+one step further along: there the reason was misstated, here the mechanism was
+used outside the conditions that justify it.
+
+**Not built, and deliberately: writes.** Building and submitting a transaction
+needs an Ergo library, and CLAUDE.md limits dependencies to `@noble/hashes` and
+`@noble/curves`. A verifier never publishes - only an operator does - so the read
+surface is the whole of what a holder needs, and publication is injected. Whether
+to take on `ergo-lib-wasm` is a dependency decision to make on its own terms
+rather than smuggle in here.
+
+**Spec change:** none needed.
+
 ## 2026-08-20 - Slice 16: non-service, the grade measured on service
 
 **Question:** the Ergo layout was next, and without a node it means inventing a
@@ -624,7 +740,9 @@ and the silence clause. What does the omission cost, and what can be enforced?
   "together with its finality rule, the depth or gadget under which an index
   counts as witnessed there". This venue has immediate finality and says so, so
   the rule has nothing to declare, and a tag carries only what code here enforces
-  - tag 0x02's own rule. The same shape as the operator key in slice 1: E names
+  - tag 0x02's own rule. *[Landed in slice 17: the venue id is now derived
+  from (chain, depth, publication script), so naming the venue agrees the depth.
+  Still 32 bytes; only what they denote changed.]* The same shape as the operator key in slice 1: E names
   an identity, the code checks it matches, and what it MEANS is elsewhere.
 
 - **Four tags, not one.** The plan had a single tag 0x03 carrying venue,
