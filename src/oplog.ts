@@ -206,7 +206,14 @@ export function encodePublishedOp(backingName: Uint8Array, op: PublishedOp): Uin
   return w.finish();
 }
 
-/** The longest context is the one a prefix-free set lets us match unambiguously. */
+/**
+ * Every operation context, with the kind whose message opens with it.
+ *
+ * **At most one can ever match**, because contexts.ts asserts at load that no tag
+ * is a prefix of another. That is what makes reading the kind off the message
+ * sound, and it is why the order of this list carries no meaning and no tie-break
+ * is needed: there is never more than one candidate to break a tie between.
+ */
 const OP_CONTEXTS: readonly (readonly [Uint8Array, PublishedOp["kind"]])[] = [
   [ISSUANCE_CONTEXT, "issue"],
   [TRANSFER_CONTEXT, "transfer"],
