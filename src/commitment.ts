@@ -39,6 +39,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { ByteWriter, compareBytes, copyBytes, EncodingError } from "./bytes.js";
 import { COMMITMENT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
+import type { Backing } from "./backing.js";
 import type { BackingSnapshot } from "./ledger.js";
 import { opMessageOfEntry, type OpLogEntry } from "./oplog.js";
 
@@ -137,6 +138,41 @@ export function stateProvesCommitment(
     return false;
   }
   return compareBytes(root, commitment.root) === 0 && verifyCommitment(commitment);
+}
+
+/** A served state and the commitment it must prove against — what a holder is handed. */
+export interface ServedState {
+  readonly snapshots: readonly BackingSnapshot[];
+  readonly commitment: Commitment;
+}
+
+/**
+ * This backing's operation log out of a state its **own** operator really
+ * committed, or undefined where the state is not that.
+ *
+ * Three questions that always travel together: is this commitment signed by the
+ * key E names (anyone can sign a valid commitment over any state they like), is
+ * the served state the one it commits to, and does it carry this backing at all.
+ * They were asked in three places — the redemption walk, a receipt's standing,
+ * and a rewritten history — so they are asked here instead.
+ *
+ * Returns the sequence beside the log, because every caller that compares two
+ * committed states needs to know which came first, and taking that from the
+ * caller would let it choose.
+ */
+export function committedLogFor(
+  backing: Backing,
+  served: ServedState,
+): { readonly sequence: bigint; readonly opLog: readonly OpLogEntry[] } | undefined {
+  try {
+    if (compareBytes(served.commitment.operator, backing.evidence.operator) !== 0) return undefined;
+    if (!stateProvesCommitment(served.snapshots, served.commitment)) return undefined;
+    const snapshot = served.snapshots.find((s) => compareBytes(s.name, backing.name) === 0);
+    if (snapshot === undefined) return undefined;
+    return { sequence: served.commitment.sequence, opLog: snapshot.opLog };
+  } catch {
+    return undefined;
+  }
 }
 
 function commitmentMessage(sequence: bigint, root: Uint8Array): Uint8Array {

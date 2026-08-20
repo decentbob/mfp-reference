@@ -16,6 +16,100 @@ Format:
 
 ---
 
+## 2026-08-20 - Slice 11: what a receipt is worth, and what an operator cannot take back
+
+**Question:** CLAUDE.md now says a payment is final when witnessed rather than
+co-signed, and a payee could not ask that in code - they would hand-compose
+`receiptProvenBy`, `stateProvesCommitment` and a latest-commitment check, and get
+a boolean where the situation has more than two shapes. Separately, Bob's
+question about an operator restoring from continuously saved state left an
+artefact nobody could point at: an operator that comes back on stale data and
+carries on.
+
+**Decisions (Bob):**
+
+- **A receipt's fate has four answers, not two.** `receiptStatus` reads a
+  committed state and says `witnessed`, `pending`, `contradicted` or
+  `unrelated`. The first three are the payee's question; the fourth exists
+  because a proof that accuses must not accuse the wrong party, which is the
+  finding slice 9 made twice. Reading a stranger's receipt as contradicted would
+  name this backing's operator - the party that owes the money under §C2's
+  backer-run default - for something it did not do.
+
+- **`witnessed` does not need the latest commitment**, and that is the
+  difference from `provesHolding`, where "last" is load-bearing. Positions are
+  pinned and the log is append-only, so once witnessed, always witnessed: a
+  holding can be spent afterwards, and an accepted operation cannot un-happen.
+
+- **The log is not replayed.** Whether the operator committed a *lawful* history
+  is `stateIsAuthentic`'s question. What `receiptStatus` asks is only what the
+  operator put its own signature to, twice - which is the whole of what a
+  receipt can settle, and is why it belongs beside the receipt rather than in
+  recovery.
+
+- **`isRewrittenHistory`, because a receipt alone cannot see a shrink.** An
+  operator that restores stale data commits a SHORTER log, and a receipt for a
+  position that log never reaches reads `pending` forever - indistinguishable
+  from an operation still in flight. So the second half of the slice: an
+  append-only log may grow and may not shrink, and no committed entry may
+  change, so a later commitment must have the earlier one's log as a prefix.
+  That also catches the quiet rewrite, where the log grows but an earlier entry
+  is not what it was.
+
+  It is the fault ACROSS sequences where `isEquivocation` is the fault at one,
+  and two states at a single sequence answer false here deliberately - naming one
+  artefact twice would let it be reported as two faults.
+
+- **Which state came first is derived from the sequence, never from the argument
+  order.** A caller who could label them could choose which log is the rewrite.
+  The same rule `signerFromTerms` follows, applied to a different asserted fact.
+
+**One mechanism, and it removed two copies.** Three questions always travelled
+together - is this commitment signed by the key E names, is the served state the
+one it commits to, does it carry this backing at all - and were asked separately
+by the redemption walk and would have been asked twice more here.
+`committedLogFor` in commitment.ts is now the one place, and `replayServedState`
+is what is left over: that check, then the law. `ServedState` moved there with
+it, since it is the pair a verifier is handed rather than a §C2b object.
+
+`isTheOperator` moved out of fault.ts to `isOperatorReceipt` in receipt.ts for
+the same reason: `receiptStatus` needs exactly it, and a private copy beside a
+second caller is how one property becomes two that agree until they do not.
+
+**Found reviewing the implementation:** the malformed-log branch of
+`receiptStatus` answered `contradicted`. It is unreachable - `committedLogFor`
+recomputes the root, and the encoder pins each position to its index, so a log
+that reaches this point has them - but the answer was wrong in the accusing
+direction, which is the one direction that matters. It answers `unrelated`.
+
+**Found by `/code-review high` on the slice, recorded rather than patched:** an
+operator can escape both predicates by dropping the backing from its committed
+state entirely rather than shrinking its log. `committedLogFor` answers undefined
+for a state that carries no entry for the backing, so `isRewrittenHistory` is
+silent and every receipt reads `unrelated` - and `isSilent` measures whether the
+OPERATOR published rather than whether it published anything carrying this
+backing, so one still committing its other backings is graded perfectly live. The
+claims freeze and no grade fires against anyone, which is §C2's "a stall is
+deniable where a dishonour is recorded" one level down. Demonstrated in
+`review-dropped-backing.mjs`, with the operator committing on schedule
+throughout.
+
+It is not fixable from the venue alone, which is why it is not patched here: a
+commitment is a root, so whether it carries a backing cannot be read without the
+served state. The honest form is a predicate that takes one - and that is the
+same shape as everything else this round concluded, since availability is
+already assumed (§C2b: the trail "replicas serve because publication was the
+point"). An `OPEN:` test pins it.
+
+**Not built, and it is the next thing:** the remedy. A payee whose receipt reads
+`pending` against a dark operator, or whose operator restored stale data, can now
+name the fault and cannot get their units. That needs a successor sequencer
+adopting the tail it can verify, which needs §C2's replacement rule declared in E
+and published as a witnessed object. It is the slice after this one, and it is
+the branch this whole round has been converging on.
+
+**Spec change:** none needed.
+
 ## 2026-08-20 - Slice 10: E declares its venue and its witness interval
 
 **Question:** the previous round wrote two holder rules into CLAUDE.md, and one
