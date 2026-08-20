@@ -201,7 +201,18 @@ export function isOperatorReceipt(backing: Backing, venue: Venue, receipt: Recei
  *   - `pending`      the log is shorter than the position. Not yet.
  *   - `contradicted` the log is long enough and holds something else, so one of
  *                    the operator's two signatures is a lie about its own log.
+ *   - `dropped`      this IS the operator's committed state, and it carries no
+ *                    log for this backing at all, so it answers nothing.
  *   - `unrelated`    not this backing's operator's receipt, or not its state.
+ *
+ * **`dropped` is not an accusation, and is not `unrelated` either.** A commitment
+ * made before this backing was registered carries no log for it innocently, and a
+ * receipt records an operation and a position and never when it was signed
+ * (slice 13) — so the two cannot be ordered, and nothing here can say which
+ * happened. What it must not do is answer `unrelated`, which means "you asked the
+ * wrong party": a holder reads that as having asked the wrong question, when in
+ * fact their own operator's state has nothing in it for them. Ordering two states
+ * and naming the fault is isRewrittenHistory's job.
  *
  * **`witnessed` does not need the latest commitment.** Positions are pinned and
  * the log is append-only, so once witnessed, always witnessed — unlike
@@ -219,7 +230,12 @@ export function isOperatorReceipt(backing: Backing, venue: Venue, receipt: Recei
  *
  * A verifier: everything here comes from whoever exhibits it.
  */
-export type ReceiptStatus = "witnessed" | "pending" | "contradicted" | "unrelated";
+export type ReceiptStatus =
+  | "witnessed"
+  | "pending"
+  | "contradicted"
+  | "dropped"
+  | "unrelated";
 
 export function receiptStatus(
   backing: Backing,
@@ -231,6 +247,7 @@ export function receiptStatus(
     if (!isOperatorReceipt(backing, venue, receipt)) return "unrelated";
     const committed = committedLogFor(backing, venue, served);
     if (committed === undefined) return "unrelated";
+    if (committed.kind === "dropped") return "dropped";
     if (receipt.position < 0n || receipt.position >= BigInt(committed.opLog.length)) {
       return "pending";
     }

@@ -16,6 +16,130 @@ Format:
 
 ---
 
+## 2026-08-20 - Slice 18: the backing that vanished, and the remedy that could not be taken
+
+**Question:** where to continue. The loosest thread was the dropped-backing hole
+- slice 11 found it, slices 13 and 14 both re-flagged it and deferred, and slice
+16's test file asserts in prose that the non-service grade "is the answer to the
+hole slice 11 recorded". Nobody had ever run it.
+
+**What running it showed, and it is worse than recorded**
+(`review-dropped-backing-remedy.mjs`): an operator serving EUR and USD stops
+committing EUR and keeps committing USD punctually forever. `isSilent` false, the
+operator publishes. `isRewrittenHistory` false, the log did not shrink, it
+vanished. Every receipt `unrelated`, no holding proves. Slice 16's claim is **half
+true**: the grade fires, but only against the last state that carried the backing,
+and against the state a holder would naturally be handed - the operator's latest -
+`unservedRequests` silently answers zero, which is the exonerating direction.
+
+And the half nobody had checked: **the grade fires, names the remedy, and the
+remedy could not be taken.** §C2b's non-service grade "opens E's replacement
+rule"; `takeOver` refused the incumbent's latest (no log for the backing) and
+refused the last state carrying it (not the incumbent's latest). Two guards, each
+individually correct, and between them §C2b's own remedy was unexecutable.
+
+**The cause is one layer down, and it is CLAUDE.md's own rule.** `committedLogFor`
+asks three questions that always travel together and merged two answers into one
+`undefined`: "this is not your operator's state", and "this IS your operator's
+state, and it carries no log for your backing". The second is the accusation,
+reported as the first, and every caller inherited the blindness. "A fix that adds
+a layer is a signal the layer below is in the wrong place" - so the layer answers
+three things now, and no fourth predicate was written.
+
+**Decisions (Bob):**
+
+- **`isRewrittenHistory` reaches it with nothing added.** A backing that vanishes
+  is a log that shrank to nothing, so it is that fault rather than one beside it.
+  The other direction is growth: an operator that had not yet registered the
+  backing committed states without it.
+
+- **`receiptStatus` answers `dropped`, a fifth status.** `unrelated` means "you
+  asked the wrong party" and a holder reads it as having asked the wrong question,
+  when in fact their own operator's state has nothing in it for them. It is not an
+  accusation: a receipt records an operation and a position and never when it was
+  signed (slice 13), so a commitment made before the backing was registered drops
+  it innocently and the two cannot be ordered.
+
+- **`takeOver` takes an earlier state on evidence that the incumbent's latest
+  drops the backing.** This is the remedy working. The evidence must be the
+  incumbent's *latest* - a superseded dropping state says nothing about what it
+  serves now - and the state taken on must precede it.
+
+  **Bounded rather than checked**, the same limit slice 13 recorded: WHICH state
+  was last to carry the backing is unreadable from a root, so a successor could
+  take an earlier one. Not licensed, provable - by anyone holding the later state,
+  against the successor, which is exactly why slice 14 extended the predicate
+  across a handover.
+
+- **`provesHolding` and `isSilent` are deliberately unchanged**, and this reverses
+  the recommendation Bob approved. Relaxing `provesHolding`'s "latest" to "latest
+  carrying this backing" is not safe from one served state: the safety argument
+  holds for the LAST carrying state and not for an arbitrary earlier one, and
+  which is which is the same unreadable-from-a-root question. Working that out
+  showed the relaxation is also unnecessary - §C2b's remedy for the non-service
+  grade is the replacement rule, not snapshot redemption, and once the successor
+  commits, `provesHolding` works normally again against its latest state. The hole
+  closes itself through the remedy. Smaller and safer at once.
+
+- **The aggravated grade stays blind, and that is a question for the paper.**
+  §C2b: "No commitment past a second declared duration". §C2: a shared operator
+  publishes "one transaction over a root of its backings' commitments" - so a
+  commitment omitting a backing is not a commitment for it, but a stranger reads
+  a root and cannot tell. **The grade as written is not venue-checkable for a
+  shared operator, which is the topology §C5 recommends.** Flagged rather than
+  patched. §C2 already names the nearest hook - "Failure to serve the trail on
+  request is itself an aggravated-grade condition against the incumbent" - and it
+  is unimplemented here.
+
+**Found reviewing the implementation, and it is the recurring shape twice over.**
+
+The first: the new branch accused a **retired** operator. §C2 says "from the
+effective index the old attester's co-signatures stop counting", so a replaced
+operator goes on serving its other backings and its later commitments drop this
+one as obedience. Naming that a fault accuses a party for doing what the handover
+told it to - the shape slice 9 found twice and slice 14 once more. Demonstrated in
+`review-retired-operator-accused.mjs`.
+
+The second, found regression-reviewing that fix, and **worse than the bug it
+fixed**: reading "is this operator in force NOW" made the fault evaporate at the
+exact moment the holder used it. The remedy for a dropped backing IS replacement,
+so proving the fault, getting a successor appointed and asking again answered
+false - and an operator could launder its record by arranging its own succession,
+which §15 prices. A fault proof is checkable by a stranger forever or it is not
+one.
+
+So `droppedWhileInForce` reads the venue's own record, both halves fixed once
+witnessed. A commitment carries no venue index, but the venue refuses a sequence
+that does not extend, so **publication order is sequence order**, and the last
+commitment the operator got witnessed before its successor took force pins the
+boundary permanently. A state never published cannot manufacture an accusation
+either: its sequence is above that boundary, or it collides with a published one
+and the collision is `isEquivocation`'s to name.
+
+**One case it misses, recorded rather than built.** A key can appear in the chain
+twice - the rule-holder may re-appoint a former operator, and `successionOf`
+refuses only succeeding oneself - and the walk reads that key's first term only,
+so a drop during a second term answers false. It fails in the non-accusing
+direction. Closing it needs per-term sequence windows, which is a lot of
+arithmetic for a missed fault rather than a wrong one.
+
+**A fifth party rule, and the slice is what revealed it.** A holder must obtain
+and keep the last committed state that carries its backing. Every §C2b path
+against a dropping operator runs through that state - the grade is counted
+against it and the successor takes over from it - and the party who would
+otherwise serve it is the one with the motive not to. It is the same shape as
+"the payee obtains the receipt at payment time": get the evidence while the party
+holding it still has a reason to give it to you. Added to CLAUDE.md.
+
+**Still open:** a backing whose E names no replacement rule has no exit at all
+from a dropped backing - the non-service grade fires and opens a rule that does
+not exist, and the aggravated grade never fires. An `OPEN:` test pins it. It is
+arguably the setting the holder read (§C2b makes replaceability "answered in E"),
+but a holder reading "silence clause: yes" would reasonably expect an exit. The
+answer is the same paper question as above.
+
+**Spec change:** none needed yet, pending the aggravated-grade question.
+
 ## 2026-08-20 - Slice 17: Ergo as a venue, decided from the node rather than asked
 
 **Question:** the layout was blocked on questions we were going to put to the
@@ -621,6 +745,12 @@ a backing declaring a future clause is representable at all.
 to the implementation.
 
 ## 2026-08-20 - Slice 11: what a receipt is worth, and what an operator cannot take back
+
+*[Narrowed: slice 18 closed the dropped-backing hole recorded below. The
+non-service grade did reach it against the last state that carried the backing,
+and the remedy the paper names turned out to be unexecutable until takeOver was
+fixed. The aggravated grade is still blind, and that half is now a paper
+question.]*
 
 **Question:** CLAUDE.md now says a payment is final when witnessed rather than
 co-signed, and a payee could not ask that in code - they would hand-compose

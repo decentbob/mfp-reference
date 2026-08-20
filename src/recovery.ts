@@ -118,6 +118,15 @@ export function venueIsDeclared(venue: Venue, backing: Backing): boolean {
  * the operator has gone, because a grade is read on the declared venue and this
  * is not it. Ask venueIsDeclared first to tell the two apart — as provesHolding
  * already asks callers to read its false as "this state does not prove it".
+ *
+ * **And there is one operator it is known to miss.** §C2 has a shared operator
+ * publishing "one transaction over a root of its backings' commitments", so one
+ * that drops THIS backing and keeps committing the rest is still committing, and
+ * on §C2b's letter — "no commitment past a second declared duration" — it is not
+ * silent. Whether a commitment omitting a backing counts as a commitment for it
+ * is unreadable from a root, so this cannot answer it and does not pretend to:
+ * the grade that reaches that operator is non-service, and the fault is
+ * isRewrittenHistory. It is a question for the paper. See DECISIONS.md.
  */
 export function isSilent(venue: Venue, backing: Backing): boolean {
   const clause = backing.evidence.silence;
@@ -212,7 +221,13 @@ export function unservedRequests(
     if (terms === undefined) return [];
     if (!venueIsDeclared(venue, backing)) return [];
     const committed = committedLogFor(backing, venue, served);
-    if (committed === undefined) return [];
+    // A state that carries no log for this backing has nothing to fold the
+    // requests onto, so the count is zero and honestly so. **What a holder must
+    // know is which state to ask**: an operator that has dropped the backing is
+    // graded against the last state that DID carry it, and that is the state
+    // this grade — the only one that reaches a dropped backing at all — fires
+    // against. See DECISIONS.md.
+    if (committed === undefined || committed.kind === "dropped") return [];
     const state = replayLog(backing, committed.opLog);
     if (state === undefined) return [];
 
@@ -326,8 +341,10 @@ function replayServedState(
     // committedLogFor asks the three questions that always travel together: is
     // this signed by a key that served this backing, is this the state it
     // commits to, and does it carry this backing. What is left here is the law.
+    // A state that carries no log for the backing replays to nothing: there is
+    // no history of it here to be authentic or to hold a balance.
     const committed = committedLogFor(backing, venue, served);
-    if (committed === undefined) return undefined;
+    if (committed === undefined || committed.kind === "dropped") return undefined;
     return replayLog(backing, committed.opLog);
   } catch {
     return undefined;

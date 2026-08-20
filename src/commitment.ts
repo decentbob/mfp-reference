@@ -136,8 +136,43 @@ export interface ServedState {
 }
 
 /**
+ * What a served state turns out to be, read for **one** backing.
+ *
+ *   - `log`       this operator's committed operation log for the backing.
+ *   - `dropped`   genuinely this operator's committed state, well-rooted, and it
+ *                 carries no entry for this backing at all.
+ *   - `undefined` not a state one of this backing's own operators committed.
+ *
+ * **The middle answer is the slice.** It used to be merged into `undefined`, and
+ * the two are not the same fact: one says "you are asking the wrong party", the
+ * other says "your own operator's state has nothing in it for you". Merged, every
+ * caller reported the second as the first — which is the exonerating direction,
+ * and it left §C2's shared operator able to freeze one backing while looking
+ * punctual on the rest (§C2: "a shared operator publishes one transaction over a
+ * root of its backings' commitments", so a commitment omitting one is not a
+ * commitment for it, and a stranger reading a root cannot tell).
+ *
+ * `dropped` is a description of the state, never an accusation. A commitment made
+ * before the backing was ever registered drops it perfectly innocently, and a
+ * commitment carries no venue index to place it by. Naming the fault takes two
+ * states, ordered, which is isRewrittenHistory's job.
+ *
+ * Both answers carry the sequence, because every caller that compares two
+ * committed states needs to know which came first, and taking that from the
+ * caller would let it choose.
+ */
+export type CommittedLog =
+  | {
+      readonly kind: "log";
+      readonly sequence: bigint;
+      readonly opLog: readonly OpLogEntry[];
+    }
+  | { readonly kind: "dropped"; readonly sequence: bigint };
+
+/**
  * This backing's operation log out of a state one of its **own** operators
- * really committed, or undefined where the state is not that.
+ * really committed — or, where that state carries nothing for this backing, the
+ * fact that it does not.
  *
  * Three questions that always travel together: is this commitment signed by a
  * key that has served this backing (anyone can sign a valid commitment over any
@@ -153,22 +188,19 @@ export interface ServedState {
  * "was this key in force then" is not a question its bytes can answer. What
  * decides which committed state is current is the operator in force now
  * (replayLatestState), and that does read the chain by index.
- *
- * Returns the sequence beside the log, because every caller that compares two
- * committed states needs to know which came first, and taking that from the
- * caller would let it choose.
  */
 export function committedLogFor(
   backing: Backing,
   venue: Venue,
   served: ServedState,
-): { readonly sequence: bigint; readonly opLog: readonly OpLogEntry[] } | undefined {
+): CommittedLog | undefined {
   try {
     if (!isAnOperator(backing, venue, served.commitment.operator)) return undefined;
     if (!stateProvesCommitment(served.snapshots, served.commitment)) return undefined;
+    const sequence = served.commitment.sequence;
     const snapshot = served.snapshots.find((s) => compareBytes(s.name, backing.name) === 0);
-    if (snapshot === undefined) return undefined;
-    return { sequence: served.commitment.sequence, opLog: snapshot.opLog };
+    if (snapshot === undefined) return { kind: "dropped", sequence };
+    return { kind: "log", sequence, opLog: snapshot.opLog };
   } catch {
     return undefined;
   }
