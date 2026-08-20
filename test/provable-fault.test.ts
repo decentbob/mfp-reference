@@ -195,31 +195,32 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
           ed25519.sign(encodeTransferMessage(backing.name, KEYS.alice, alice2, 100n, 0n), SECRETS.alice),
         ),
       },
+      venue,
     };
   }
 
   it("proves the operator accepted both halves of the claimant's equivocation", () => {
-    const { a, b } = splitBrain();
-    expect(isDoubleAcceptance(backing, a, b)).toBe(true);
+    const { a, b, venue } = splitBrain();
+    expect(isDoubleAcceptance(backing, venue, a, b)).toBe(true);
   });
 
   it("proves it whichever order the two are exhibited in", () => {
-    const { a, b } = splitBrain();
-    expect(isDoubleAcceptance(backing, b, a)).toBe(true);
+    const { a, b, venue } = splitBrain();
+    expect(isDoubleAcceptance(backing, venue, b, a)).toBe(true);
   });
 
   it("proves the same servers put two operations at one log position", () => {
     // The narrower fault, and it needs no operations at all: one operator, one
     // backing, one position, two operation hashes.
-    const { a, b } = splitBrain();
+    const { a, b, venue } = splitBrain();
     expect(a.receipt.position).toBe(b.receipt.position);
-    expect(isDoublePosition(backing, a.receipt, b.receipt)).toBe(true);
+    expect(isDoublePosition(backing, venue, a.receipt, b.receipt)).toBe(true);
   });
 
   it("refuses a receipt paired with an operation it does not cover", () => {
     // Or anyone could pin any operator's signature to any operation.
-    const { a, b } = splitBrain();
-    expect(isDoubleAcceptance(backing, { op: b.op, receipt: a.receipt }, b)).toBe(false);
+    const { a, b, venue } = splitBrain();
+    expect(isDoubleAcceptance(backing, venue, { op: b.op, receipt: a.receipt }, b)).toBe(false);
   });
 
   it("refuses receipts the operator issued on another backing", () => {
@@ -253,7 +254,7 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
 
     expect(equivocatingSigner(backing, toBob, toAlice2)).toBeDefined();
     expect(
-      isDoubleAcceptance(backing, { op: toBob, receipt: here }, { op: toAlice2, receipt: elsewhere }),
+      isDoubleAcceptance(backing, venue, { op: toBob, receipt: here }, { op: toAlice2, receipt: elsewhere }),
     ).toBe(false);
   });
 
@@ -262,6 +263,7 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
     // has to be the one the backing declares. A stranger co-signing both halves
     // of a real equivocation has framed nobody but themselves, and must not
     // read as a fault against the operator of this backing.
+    const { venue } = splitBrain();
     const alice2 = pub(new Uint8Array(32).fill(0x09));
     const a = op("transfer", SECRETS.alice, backing, { to: KEYS.bob, nonce: 0n });
     const b = op("transfer", SECRETS.alice, backing, { to: alice2, nonce: 0n });
@@ -269,15 +271,15 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
     const rb = signReceipt(SECRETS.mallory, backing.name, opHashOfEntry(backing.name, b), 1n);
 
     expect(equivocatingSigner(backing, a, b)).toBeDefined();
-    expect(isDoubleAcceptance(backing, { op: a, receipt: ra }, { op: b, receipt: rb })).toBe(false);
-    expect(isDoublePosition(backing, ra, rb)).toBe(false);
+    expect(isDoubleAcceptance(backing, venue, { op: a, receipt: ra }, { op: b, receipt: rb })).toBe(false);
+    expect(isDoublePosition(backing, venue, ra, rb)).toBe(false);
   });
 
   it("refuses two receipts by different operators", () => {
-    const { a, b } = splitBrain();
+    const { a, b, venue } = splitBrain();
     const stranger = signReceipt(SECRETS.mallory, backing.name, b.receipt.opHash, b.receipt.position);
-    expect(isDoubleAcceptance(backing, a, { op: b.op, receipt: stranger })).toBe(false);
-    expect(isDoublePosition(backing, a.receipt, stranger)).toBe(false);
+    expect(isDoubleAcceptance(backing, venue, a, { op: b.op, receipt: stranger })).toBe(false);
+    expect(isDoublePosition(backing, venue, a.receipt, stranger)).toBe(false);
   });
 
   it("refuses operations that are not an equivocation", () => {
@@ -298,29 +300,29 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
     );
     const a = { op: issueOp(backing, KEYS.alice, 100n, 0n), receipt: first };
     const b = { op: op("transfer", SECRETS.alice, backing, { to: KEYS.bob, quantity: 30n, nonce: 0n }), receipt: second };
-    expect(isDoubleAcceptance(backing, a, b)).toBe(false);
-    expect(isDoublePosition(backing, a.receipt, b.receipt)).toBe(false);
+    expect(isDoubleAcceptance(backing, venue, a, b)).toBe(false);
+    expect(isDoublePosition(backing, venue, a.receipt, b.receipt)).toBe(false);
   });
 
   it("refuses a receipt whose signature does not verify", () => {
-    const { a, b } = splitBrain();
+    const { a, b, venue } = splitBrain();
     const torn: Receipt = { ...b.receipt, signature: new Uint8Array(64) };
-    expect(isDoubleAcceptance(backing, a, { op: b.op, receipt: torn })).toBe(false);
-    expect(isDoublePosition(backing, a.receipt, torn)).toBe(false);
+    expect(isDoubleAcceptance(backing, venue, a, { op: b.op, receipt: torn })).toBe(false);
+    expect(isDoublePosition(backing, venue, a.receipt, torn)).toBe(false);
   });
 
   it("refuses one receipt exhibited against itself", () => {
-    const { a } = splitBrain();
-    expect(isDoubleAcceptance(backing, a, { ...a })).toBe(false);
-    expect(isDoublePosition(backing, a.receipt, { ...a.receipt })).toBe(false);
+    const { a, venue } = splitBrain();
+    expect(isDoubleAcceptance(backing, venue, a, { ...a })).toBe(false);
+    expect(isDoublePosition(backing, venue, a.receipt, { ...a.receipt })).toBe(false);
   });
 
   it("never throws on malformed receipts", () => {
-    const { a, b } = splitBrain();
+    const { a, b, venue } = splitBrain();
     const broken: Receipt = { ...b.receipt, opHash: new Uint8Array(2) };
-    expect(() => isDoubleAcceptance(backing, a, { op: b.op, receipt: broken })).not.toThrow();
-    expect(() => isDoublePosition(backing, a.receipt, broken)).not.toThrow();
-    expect(isDoublePosition(backing, a.receipt, broken)).toBe(false);
+    expect(() => isDoubleAcceptance(backing, venue, a, { op: b.op, receipt: broken })).not.toThrow();
+    expect(() => isDoublePosition(backing, venue, a.receipt, broken)).not.toThrow();
+    expect(isDoublePosition(backing, venue, a.receipt, broken)).toBe(false);
   });
 });
 

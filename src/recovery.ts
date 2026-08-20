@@ -168,8 +168,8 @@ export function isOverdue(venue: Venue, backing: Backing): boolean {
  * A verifier: the state comes from an operator with a motive, so any malformed
  * field is a failed check rather than a crash.
  */
-export function stateIsAuthentic(backing: Backing, served: ServedState): boolean {
-  return replayServedState(backing, served) !== undefined;
+export function stateIsAuthentic(backing: Backing, venue: Venue, served: ServedState): boolean {
+  return replayServedState(backing, venue, served) !== undefined;
 }
 
 /**
@@ -178,12 +178,16 @@ export function stateIsAuthentic(backing: Backing, served: ServedState): boolean
  * shared body behind stateIsAuthentic and provesHolding, so a caller that needs
  * the numbers does not verify twice.
  */
-function replayServedState(backing: Backing, served: ServedState): LedgerState | undefined {
+function replayServedState(
+  backing: Backing,
+  venue: Venue,
+  served: ServedState,
+): LedgerState | undefined {
   try {
     // committedLogFor asks the three questions that always travel together: is
-    // this signed by the operator E names, is this the state it commits to, and
-    // does it carry this backing. What is left here is the law.
-    const committed = committedLogFor(backing, served);
+    // this signed by a key that served this backing, is this the state it
+    // commits to, and does it carry this backing. What is left here is the law.
+    const committed = committedLogFor(backing, venue, served);
     if (committed === undefined) return undefined;
     return replayLog(backing, committed.opLog);
   } catch {
@@ -236,7 +240,7 @@ function replayLatestState(
   if (latest === undefined) return undefined;
   if (latest.sequence !== served.commitment.sequence) return undefined;
   if (compareBytes(latest.root, served.commitment.root) !== 0) return undefined;
-  return replayServedState(backing, served);
+  return replayServedState(backing, venue, served);
 }
 
 /**
@@ -551,7 +555,7 @@ export function snapshotRedemptions(
     const clause = backing.evidence.silence;
     if (clause === undefined) return [];
     if (!venueIsDeclared(venue, backing)) return [];
-    const state = replayServedState(backing, served);
+    const state = replayServedState(backing, venue, served);
     if (state === undefined) return [];
 
     // The snapshot as it stood before any leg touched it: what a request has to

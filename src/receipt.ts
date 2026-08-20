@@ -17,6 +17,8 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import type { Backing } from "./backing.js";
 import { ByteWriter, compareBytes, copyBytes } from "./bytes.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
+import { isAnOperator } from "./replacement.js";
+import type { Venue } from "./venue.js";
 import { RECEIPT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
 import type { BackingSnapshot } from "./ledger.js";
@@ -159,8 +161,8 @@ function entryAt(
 }
 
 /**
- * Whether this receipt is a valid co-signature by the key **E names as this
- * backing's operator**, over this backing.
+ * Whether this receipt is a valid co-signature by a key that has **served this
+ * backing**, over this backing.
  *
  * Both halves matter and neither is enough. Without the backing name, a receipt
  * the operator issued perfectly correctly on another backing covers an operation
@@ -169,12 +171,20 @@ function entryAt(
  * fault by the operator of this backing — which is what a caller takes these
  * predicates to mean, and under §C2's backer-run default names the party that
  * owes the money.
+ *
+ * **Any key in the chain, not only the key E names.** A receipt records an
+ * operation and a position and never when it was signed, so "was this key in
+ * force then" is not a question it can answer — but a retired operator's
+ * co-signature over an operation its own log really held is still evidence of
+ * what it accepted while it served, and a successor's receipts have to count at
+ * all. What stops a retired key mattering is that the state of record is the
+ * operator in force now, and a receipt is read against that log.
  */
-export function isOperatorReceipt(backing: Backing, receipt: Receipt): boolean {
+export function isOperatorReceipt(backing: Backing, venue: Venue, receipt: Receipt): boolean {
   try {
     return (
       compareBytes(receipt.backingName, backing.name) === 0 &&
-      compareBytes(receipt.operator, backing.evidence.operator) === 0 &&
+      isAnOperator(backing, venue, receipt.operator) &&
       verifyReceipt(receipt)
     );
   } catch {
@@ -213,12 +223,13 @@ export type ReceiptStatus = "witnessed" | "pending" | "contradicted" | "unrelate
 
 export function receiptStatus(
   backing: Backing,
+  venue: Venue,
   receipt: Receipt,
   served: ServedState,
 ): ReceiptStatus {
   try {
-    if (!isOperatorReceipt(backing, receipt)) return "unrelated";
-    const committed = committedLogFor(backing, served);
+    if (!isOperatorReceipt(backing, venue, receipt)) return "unrelated";
+    const committed = committedLogFor(backing, venue, served);
     if (committed === undefined) return "unrelated";
     if (receipt.position < 0n || receipt.position >= BigInt(committed.opLog.length)) {
       return "pending";
