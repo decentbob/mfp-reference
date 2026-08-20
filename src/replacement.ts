@@ -124,6 +124,11 @@ export interface Succession {
   readonly operator: Uint8Array;
   /** The index from which this operator is in force. */
   readonly from: bigint;
+  /**
+   * What the next link must name as its predecessor: the backing itself at
+   * genesis, and otherwise the hash of the replacement that made this link.
+   */
+  readonly link: Uint8Array;
 }
 
 /**
@@ -153,7 +158,9 @@ export interface Succession {
  * operates something else.
  */
 export function successionOf(backing: Backing, venue: Venue): Succession[] {
-  const chain: Succession[] = [{ operator: copyBytes(backing.evidence.operator), from: 0n }];
+  const chain: Succession[] = [
+    { operator: copyBytes(backing.evidence.operator), from: 0n, link: copyBytes(backing.name) },
+  ];
   try {
     if (backing.evidence.replacementRule === undefined) return chain;
     const witnessed = venue
@@ -195,7 +202,7 @@ export function successionOf(backing: Backing, venue: Venue): Succession[] {
       // would have two operators in force at one index.
       if (from < incumbent.from) return chain;
 
-      chain.push({ operator: copyBytes(successor), from });
+      chain.push({ operator: copyBytes(successor), from, link: copyBytes(hash) });
       link = hash;
     }
   } catch {
@@ -238,6 +245,36 @@ export function operatorIn(chain: readonly Succession[], index: bigint): Uint8Ar
  */
 export function operatorsOf(backing: Backing, venue: Venue): Uint8Array[] {
   return successionOf(backing, venue).map((link) => copyBytes(link.operator));
+}
+
+/**
+ * Whether this key is the successor the chain's tip names, and not yet in force.
+ *
+ * §C2's two-stage handover has a gap between the two stages that somebody has to
+ * live in: "it takes effect only from the first index at which it has published
+ * its own commitment", and a successor cannot publish a commitment over a state
+ * it was never allowed to take on. So a named successor may serve — take over
+ * the predecessor's committed state and commit it — while "no new co-signatures
+ * issue" until it is in force.
+ */
+export function isNamedSuccessor(backing: Backing, venue: Venue, key: Uint8Array): boolean {
+  try {
+    if (backing.evidence.replacementRule === undefined) return false;
+    const chain = successionOf(backing, venue);
+    const tip = chain[chain.length - 1] as Succession;
+    if (compareBytes(tip.operator, key) === 0) return false;
+    return venue
+      .replacementsFor(backing.name)
+      .some(
+        (w) =>
+          isSignedReplacement(backing, w.replacement) &&
+          w.replacement.effective >= w.at &&
+          compareBytes(w.replacement.predecessor, tip.link) === 0 &&
+          compareBytes(w.replacement.successor, key) === 0,
+      );
+  } catch {
+    return false;
+  }
 }
 
 /** Whether this key is one of the operators this backing has had. */

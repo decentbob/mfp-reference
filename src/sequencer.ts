@@ -76,6 +76,8 @@ import {
   type WithdrawalOp,
 } from "./presentation.js";
 import { copyReceipt, signReceipt, type Receipt } from "./receipt.js";
+import { committedLogFor, type ServedState } from "./commitment.js";
+import { isNamedSuccessor, operatorAt } from "./replacement.js";
 import { gapLegsFor, venueIsDeclared } from "./recovery.js";
 import { Venue } from "./venue.js";
 
@@ -124,7 +126,15 @@ export class Sequencer {
   register(backing: Backing, backingSignature: Uint8Array): void {
     // makeBacking has already established that the operator key is a valid
     // non-small-order point; the only question left here is whether it is mine.
-    if (compareBytes(backing.evidence.operator, this.operatorKey) !== 0) {
+    // In force, or named to take over. §C2 gives a successor force only from
+    // its own first commitment, and it cannot commit a state it was never
+    // allowed to take on — so being named is what lets it serve, and being in
+    // force is what lets it co-sign (submit, below).
+    if (
+      compareBytes(operatorAt(backing, this.venue, this.venue.witnessedIndex()), this.operatorKey) !==
+        0 &&
+      !isNamedSuccessor(backing, this.venue, this.operatorKey)
+    ) {
       throw new SequencerError("this sequencer does not serve that backing");
     }
     // The second half of the same routing question. A backing declaring a venue
@@ -136,6 +146,70 @@ export class Sequencer {
     }
     this.ledger.register(backing, backingSignature);
     this.backings.set(backing.nameHex, makeBacking(backing));
+  }
+
+  /**
+   * Whether this operator is the one in force for this backing right now — the
+   * question §C2 answers with "until then the predecessor's last commitment
+   * governs, no new co-signatures issue".
+   */
+  private isInForce(backing: Backing): boolean {
+    return (
+      compareBytes(
+        operatorAt(backing, this.venue, this.venue.witnessedIndex()),
+        this.operatorKey,
+      ) === 0
+    );
+  }
+
+  /**
+   * Take on the state a predecessor committed, so that this operator can commit
+   * it as its own and thereby take force (§C2: a replacement "takes effect only
+   * from the first index at which it has published its own commitment over a
+   * spent set it serves in full").
+   *
+   * **The whole committed log, replayed through the same law.** Every entry goes
+   * through the one door `apply`, so a state that could not have happened is
+   * refused here rather than adopted, and the positions come out identical
+   * because they are the log's own append indices.
+   *
+   * The clock is undefined, which is the boundary a replay always has: a served
+   * log does not record the index each operation was accepted at. It is the same
+   * weakness `replayLog` has and for the same reason.
+   *
+   * What is NOT taken on is the predecessor's uncommitted tail. That is not a
+   * transparent problem and is not rescued: a payment is final when witnessed
+   * rather than co-signed, and an operation the predecessor accepted and never
+   * committed died with it in every construction (CLAUDE.md).
+   */
+  takeOver(backing: Backing, served: ServedState): void {
+    this.requireServed(backing);
+    const held = this.backings.get(backing.nameHex) as Backing;
+    if (this.isInForce(held)) {
+      throw new SequencerError("this sequencer is already in force for that backing");
+    }
+    // Onto an empty log, or it is not a takeover. Applying a second time would
+    // meet its own spent nonces and refuse in the ledger's voice, which names
+    // the wrong boundary for what is a sequencer's own precondition.
+    if (this.ledger.opLog(held).length > 0) {
+      throw new SequencerError("this sequencer has already taken over that backing");
+    }
+    const committed = committedLogFor(held, this.venue, served);
+    if (committed === undefined) {
+      throw new SequencerError("that is not a state this backing's operator committed");
+    }
+    // The predecessor's LAST commitment, and the predecessor is whoever is in
+    // force. Taking on an older one would drop everything committed since.
+    const incumbent = operatorAt(held, this.venue, this.venue.witnessedIndex());
+    const latest = this.venue.latestFor(incumbent);
+    if (
+      latest === undefined ||
+      compareBytes(served.commitment.operator, incumbent) !== 0 ||
+      compareBytes(served.commitment.root, latest.root) !== 0
+    ) {
+      throw new SequencerError("that is not the incumbent's latest committed state");
+    }
+    for (const entry of committed.opLog) this.ledger.apply(held, entry, undefined);
   }
 
   /**
@@ -165,6 +239,11 @@ export class Sequencer {
    * operation, so it gets the receipt it would have got.
    */
   private adoptOne(backing: Backing, op: PublishedOp, at: bigint): void {
+    // "No new co-signatures issue" until this operator is in force. Adoption is
+    // co-signing, so a successor that has taken over but not yet committed
+    // leaves the gap legs for its own first serving moment rather than
+    // answering for them now.
+    if (!this.isInForce(backing)) return;
     const key = bytesToHex(opHashOfEntry(backing.name, op));
     if (this.receipts.has(key)) return;
     let entry: OpLogEntry;
@@ -315,6 +394,13 @@ export class Sequencer {
    * nonce still succeeds.
    */
   private submit(backing: Backing, opMessage: Uint8Array, apply: () => OpLogEntry): Receipt {
+    // §C2: "Until then the predecessor's last commitment governs, no new
+    // co-signatures issue." A successor that has taken over the state but not
+    // yet committed it is not the operator yet, and a receipt from it would be
+    // a co-signature nobody's chain accounts for.
+    if (!this.isInForce(backing)) {
+      throw new SequencerError("this sequencer is not yet in force for that backing");
+    }
     // Before anything is co-signed, and before an idempotent replay is answered:
     // what the venue witnessed during a gap comes first, or this operator would
     // be serving a history the record has already moved past.

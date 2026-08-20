@@ -1,6 +1,6 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
-import { makeBacking, type Backing } from "../src/backing.js";
+import { makeBacking, signBacking, type Backing } from "../src/backing.js";
 import { signCommitment, stateRoot } from "../src/commitment.js";
 import {
   isAnOperator,
@@ -11,7 +11,11 @@ import {
   ROLE_OPERATOR,
   type Replacement,
 } from "../src/replacement.js";
-import { isOverdue, isSilent } from "../src/recovery.js";
+import { isRewrittenHistory } from "../src/fault.js";
+import { encodeIssuanceMessage, encodeTransferMessage } from "../src/messages.js";
+import { receiptStatus } from "../src/receipt.js";
+import { isOverdue, isSilent, stateIsAuthentic } from "../src/recovery.js";
+import { Sequencer, SequencerError } from "../src/sequencer.js";
 import { Venue, VenueError } from "../src/venue.js";
 import { KEYS, pub, SECRETS } from "./support.js";
 
@@ -287,5 +291,164 @@ describe("§C2: the venue records a replacement and judges nothing", () => {
     expect(venue.replacementsFor(backing.name)).toHaveLength(1);
     expect(operatorAt(backing, venue, 0n)).toEqual(KEYS.operator);
     expect(isAnOperator(backing, venue, SUCCESSOR)).toBe(false);
+  });
+});
+
+describe("§C2: a successor serves, and only once it is in force", () => {
+  /** The incumbent, holding Alice's 100 with 40 already moved to Bob. */
+  function incumbentServing(venue: Venue, backing: Backing) {
+    const server = new Sequencer(SECRETS.operator, venue);
+    server.register(backing, signBacking(SECRETS.backer, backing));
+    const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
+    const issued = server.submitIssue(
+      issue,
+      ed25519.sign(encodeIssuanceMessage(backing.name, KEYS.alice, 100n, 0n), SECRETS.backer),
+    );
+    server.submitTransfer(
+      { backing, from: KEYS.alice, to: KEYS.bob, quantity: 40n, nonce: 0n },
+      ed25519.sign(encodeTransferMessage(backing.name, KEYS.alice, KEYS.bob, 40n, 0n), SECRETS.alice),
+    );
+    return { server, issued, served: { snapshots: server.snapshot(), commitment: server.commit() } };
+  }
+
+  function handedOver() {
+    const { venue, backing } = setup();
+    const incumbent = incumbentServing(venue, backing);
+    at(venue, 5n);
+    venue.publishReplacement(backing.name, replacementBy(backing, SECRETS.backer, SUCCESSOR, backing.name, 5n));
+    const successor = new Sequencer(SUCCESSOR_SECRET, venue);
+    successor.register(backing, signBacking(SECRETS.backer, backing));
+    return { venue, backing, incumbent, successor };
+  }
+
+  it("lets a named successor serve before it is in force, and refuses its receipts", () => {
+    // §C2's two stages have a gap somebody has to live in: force comes from the
+    // successor's own first commitment, and it cannot commit a state it was
+    // never allowed to take on. So it may serve, and "no new co-signatures
+    // issue" until it is in force.
+    const { venue, backing, incumbent, successor } = handedOver();
+    expect(operatorAt(backing, venue, venue.witnessedIndex())).toEqual(KEYS.operator);
+    successor.takeOver(backing, incumbent.served);
+    expect(() =>
+      successor.submitTransfer(
+        { backing, from: KEYS.alice, to: KEYS.carol, quantity: 10n, nonce: 1n },
+        ed25519.sign(encodeTransferMessage(backing.name, KEYS.alice, KEYS.carol, 10n, 1n), SECRETS.alice),
+      ),
+    ).toThrow(SequencerError);
+  });
+
+  it("takes force on its own first commitment, carrying the state it took over", () => {
+    const { venue, backing, incumbent, successor } = handedOver();
+    successor.takeOver(backing, incumbent.served);
+    successor.commit();
+
+    expect(operatorAt(backing, venue, venue.witnessedIndex())).toEqual(SUCCESSOR);
+    expect(successor.balance(backing, KEYS.alice)).toBe(60n);
+    expect(successor.balance(backing, KEYS.bob)).toBe(40n);
+    expect(successor.outstanding(backing)).toBe(100n);
+    // And it serves: the next operation is the claimant's next nonce, on the
+    // state the predecessor left.
+    const receipt = successor.submitTransfer(
+      { backing, from: KEYS.alice, to: KEYS.carol, quantity: 10n, nonce: 1n },
+      ed25519.sign(encodeTransferMessage(backing.name, KEYS.alice, KEYS.carol, 10n, 1n), SECRETS.alice),
+    );
+    expect(receipt.position).toBe(2n);
+  });
+
+  it("stops the predecessor co-signing once the handover has happened", () => {
+    // "From the effective index the old attester's co-signatures stop counting."
+    // Refused at the source as well as discounted by a reader.
+    const { venue, backing, incumbent, successor } = handedOver();
+    successor.takeOver(backing, incumbent.served);
+    successor.commit();
+    expect(operatorAt(backing, venue, venue.witnessedIndex())).toEqual(SUCCESSOR);
+    expect(() =>
+      incumbent.server.submitTransfer(
+        { backing, from: KEYS.alice, to: KEYS.carol, quantity: 10n, nonce: 1n },
+        ed25519.sign(encodeTransferMessage(backing.name, KEYS.alice, KEYS.carol, 10n, 1n), SECRETS.alice),
+      ),
+    ).toThrow(SequencerError);
+  });
+
+  it("keeps the predecessor's receipts good against both committed states", () => {
+    // A receipt records an operation and a position and never when it was
+    // signed, so a retired operator's co-signature over an operation its own log
+    // really held stays evidence of what it accepted. And the successor's log
+    // holds the same entries at the same positions, because it took them on.
+    const { venue, backing, incumbent, successor } = handedOver();
+    successor.takeOver(backing, incumbent.served);
+    successor.commit();
+    const theirs = { snapshots: successor.snapshot(), commitment: venue.latestFor(SUCCESSOR)! };
+
+    expect(receiptStatus(backing, venue, incumbent.issued, incumbent.served)).toBe("witnessed");
+    expect(receiptStatus(backing, venue, incumbent.issued, theirs)).toBe("witnessed");
+    expect(stateIsAuthentic(backing, venue, theirs)).toBe(true);
+  });
+
+  it("reads an honest handover as no rewritten history", () => {
+    // The successor's log starts where the predecessor's committed state left
+    // off, so comparing across a handover must not report a takeover as a
+    // rewrite — which is why the predicate is about one operator's own history.
+    const { venue, backing, incumbent, successor } = handedOver();
+    successor.takeOver(backing, incumbent.served);
+    successor.commit();
+    const theirs = { snapshots: successor.snapshot(), commitment: venue.latestFor(SUCCESSOR)! };
+    expect(isRewrittenHistory(backing, venue, incumbent.served, theirs)).toBe(false);
+  });
+
+  it("refuses a takeover of anything but the incumbent's latest committed state", () => {
+    const { venue, backing, incumbent, successor } = handedOver();
+    // A state nobody committed.
+    expect(() =>
+      successor.takeOver(backing, {
+        snapshots: incumbent.served.snapshots,
+        commitment: signCommitment(SECRETS.mallory, 0n, stateRoot(incumbent.served.snapshots)),
+      }),
+    ).toThrow(SequencerError);
+    // And once in force, there is nothing left to take over.
+    successor.takeOver(backing, incumbent.served);
+    successor.commit();
+    expect(() => successor.takeOver(backing, incumbent.served)).toThrow(SequencerError);
+  });
+
+  it("refuses a sequencer that is neither in force nor named", () => {
+    const { venue, backing } = setup();
+    const stranger = new Sequencer(THIRD_SECRET, venue);
+    expect(() => stranger.register(backing, signBacking(SECRETS.backer, backing))).toThrow(
+      SequencerError,
+    );
+  });
+});
+
+describe("§C2: a successor that does not serve the state in full", () => {
+  it("is a rewritten history, even though the log is not its own", () => {
+    // §C2 gives a successor force only over a state "it serves in full". A
+    // successor committing a shorter log than the predecessor's is the same
+    // fault by the party the chain just handed the backing to — so the
+    // predicate has to reach across a handover, and the chain is what orders
+    // the two states, since a sequence is an operator's own count.
+    const { venue, backing } = setup();
+    const incumbent = new Sequencer(SECRETS.operator, venue);
+    incumbent.register(backing, signBacking(SECRETS.backer, backing));
+    incumbent.submitIssue(
+      { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n },
+      ed25519.sign(encodeIssuanceMessage(backing.name, KEYS.alice, 100n, 0n), SECRETS.backer),
+    );
+    const served = { snapshots: incumbent.snapshot(), commitment: incumbent.commit() };
+
+    at(venue, 5n);
+    venue.publishReplacement(backing.name, replacementBy(backing, SECRETS.backer, SUCCESSOR, backing.name, 5n));
+    // The successor commits an EMPTY log for this backing rather than the one
+    // it was handed, and takes force on it.
+    const dropped = [{ name: backing.name, opLog: [] }];
+    const theirs = {
+      snapshots: dropped,
+      commitment: signCommitment(SUCCESSOR_SECRET, 0n, stateRoot(dropped)),
+    };
+    venue.publish(theirs.commitment);
+
+    expect(operatorAt(backing, venue, venue.witnessedIndex())).toEqual(SUCCESSOR);
+    expect(isRewrittenHistory(backing, venue, served, theirs)).toBe(true);
+    expect(isRewrittenHistory(backing, venue, theirs, served)).toBe(true);
   });
 });

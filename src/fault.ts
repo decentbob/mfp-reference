@@ -60,6 +60,8 @@ import { signerFromTerms } from "./ledger.js";
 import { opMessageOfEntry, type PublishedOp } from "./oplog.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
 import { receiptCovers, isOperatorReceipt, type Receipt } from "./receipt.js";
+import { successionOf } from "./replacement.js";
+import type { Venue } from "./venue.js";
 
 /** An operation and the operator co-signature that accepted it. */
 export interface AcceptedOp {
@@ -121,11 +123,21 @@ export function equivocatingSigner(
  * already in the receipts the caller passed in, so there is nothing to hand back
  * that it does not have.
  */
-export function isDoubleAcceptance(backing: Backing, a: AcceptedOp, b: AcceptedOp): boolean {
+export function isDoubleAcceptance(
+  backing: Backing,
+  venue: Venue,
+  a: AcceptedOp,
+  b: AcceptedOp,
+): boolean {
   try {
     if (equivocatingSigner(backing, a.op, b.op) === undefined) return false;
-    if (!isOperatorReceipt(backing, a.receipt)) return false;
-    if (!isOperatorReceipt(backing, b.receipt)) return false;
+    // Both halves by ONE operator, and one that served this backing. Two
+    // different operators of the chain accepting one nonce each is the handover
+    // going wrong rather than either of them equivocating, and naming one of
+    // them for it would be naming the wrong party.
+    if (compareBytes(a.receipt.operator, b.receipt.operator) !== 0) return false;
+    if (!isOperatorReceipt(backing, venue, a.receipt)) return false;
+    if (!isOperatorReceipt(backing, venue, b.receipt)) return false;
     // Each receipt has to cover the operation it is exhibited with, ON THIS
     // BACKING, or an accuser pins any operator's signature to any operation it
     // likes — including a receipt the operator issued perfectly correctly
@@ -152,11 +164,17 @@ export function isDoubleAcceptance(backing: Backing, a: AcceptedOp, b: AcceptedO
  * so that the claim is about THIS backing's declared operator rather than about
  * whichever key the receipts happen to name.
  */
-export function isDoublePosition(backing: Backing, a: Receipt, b: Receipt): boolean {
+export function isDoublePosition(
+  backing: Backing,
+  venue: Venue,
+  a: Receipt,
+  b: Receipt,
+): boolean {
   try {
     return (
-      isOperatorReceipt(backing, a) &&
-      isOperatorReceipt(backing, b) &&
+      compareBytes(a.operator, b.operator) === 0 &&
+      isOperatorReceipt(backing, venue, a) &&
+      isOperatorReceipt(backing, venue, b) &&
       a.position === b.position &&
       compareBytes(a.opHash, b.opHash) !== 0
     );
@@ -177,23 +195,50 @@ export function isDoublePosition(backing: Backing, a: Receipt, b: Receipt): bool
  * earlier entry is not what it was. Neither is reachable by isEquivocation,
  * which is two roots at ONE sequence; this is the fault across sequences.
  *
- * **Which state came first is derived from the sequence, never from the argument
- * order.** A caller who could label them could choose which log is the rewrite,
- * so the two arguments are symmetric. Two states at one sequence answer false:
- * that is isEquivocation's fault, and naming it twice would let one artefact be
- * reported as two.
+ * **Which state came first is derived, never taken from the argument order.** A
+ * caller who could label them could choose which log is the rewrite, so the two
+ * arguments are symmetric. Within one operator that order is its own commitment
+ * sequence; across a handover it is the chain, because a sequence is an
+ * operator's own count and says nothing about anyone else's. Two states at one
+ * sequence of one operator answer false: that is isEquivocation's fault, and
+ * naming it twice would let one artefact be reported as two.
+ *
+ * **It reaches across a handover, and has to.** §C2 gives a successor force only
+ * over a state "it serves in full", so a successor committing a shorter log than
+ * the predecessor's is the same fault by the party the chain just handed the
+ * backing to. Restricting this to one operator's own history would have made
+ * exactly the handover unwatched.
  *
  * Compared by canonical message rather than by object, because the message is
  * what the commitment commits to — the signature beside an entry is served, not
  * committed (oplog.ts).
  */
-export function isRewrittenHistory(backing: Backing, a: ServedState, b: ServedState): boolean {
+export function isRewrittenHistory(
+  backing: Backing,
+  venue: Venue,
+  a: ServedState,
+  b: ServedState,
+): boolean {
   try {
-    const first = committedLogFor(backing, a);
-    const second = committedLogFor(backing, b);
+    const first = committedLogFor(backing, venue, a);
+    const second = committedLogFor(backing, venue, b);
     if (first === undefined || second === undefined) return false;
-    if (first.sequence === second.sequence) return false;
-    const [earlier, later] = first.sequence < second.sequence ? [first, second] : [second, first];
+
+    const chain = successionOf(backing, venue);
+    const rank = (operator: Uint8Array) =>
+      chain.findIndex((link) => compareBytes(link.operator, operator) === 0);
+    const rankA = rank(a.commitment.operator);
+    const rankB = rank(b.commitment.operator);
+    if (rankA < 0 || rankB < 0) return false;
+
+    let earlier = first;
+    let later = second;
+    if (rankA !== rankB) {
+      [earlier, later] = rankA < rankB ? [first, second] : [second, first];
+    } else {
+      if (first.sequence === second.sequence) return false;
+      [earlier, later] = first.sequence < second.sequence ? [first, second] : [second, first];
+    }
     if (later.opLog.length < earlier.opLog.length) return true;
     for (let i = 0; i < earlier.opLog.length; i++) {
       const before = opMessageOfEntry(backing.name, earlier.opLog[i] as PublishedOp);

@@ -16,6 +16,84 @@ Format:
 
 ---
 
+## 2026-08-20 - Slice 14: the successor serves
+
+**Question:** slice 13 made the chain walkable and left the successor unable to
+do anything with it. `Sequencer` served only the key E names, and every check on
+a served state or a receipt read that key too - so after a handover the successor
+could not serve, and nothing it committed would verify.
+
+**Decisions (Bob):**
+
+- **Chain membership, not time, for the identity of a past act.** A receipt
+  records an operation and a position and never when it was signed; a commitment
+  carries a sequence of its operator's own counting and not a venue index. So
+  "was this key in force then" is not a question their bytes can answer.
+  `committedLogFor` and `isOperatorReceipt` now ask whether the signer is a key
+  that has served this backing. What decides which committed state is *current*
+  is still the operator in force now, and that does read the chain by index
+  (`replayLatestState`).
+
+  A retired operator's co-signature over an operation its own log really held
+  stays evidence of what it accepted while it served. That is not a loophole:
+  the state of record is the successor's log, and a receipt is read against it.
+
+- **Serving and co-signing are two permissions, because §C2's two stages have a
+  gap somebody has to live in.** Force comes from the successor's own first
+  commitment, and it cannot commit a state it was never allowed to take on. So
+  `register` accepts the operator in force *or* the successor the chain's tip
+  names, and `submit` refuses until in force - "until then the predecessor's last
+  commitment governs, no new co-signatures issue". Adoption is co-signing too, so
+  it waits with them.
+
+- **`takeOver` replays the incumbent's last committed log through the same
+  door.** Every entry goes through `apply`, so a state that could not have
+  happened is refused rather than adopted, and the positions come out identical
+  because they are the log's own append indices. Anything but the incumbent's
+  latest is refused: an older one would silently drop everything committed since.
+
+- **The uncommitted tail is not taken on, and that is the standing answer rather
+  than a deferral.** A payment is final when witnessed rather than co-signed, and
+  an operation the predecessor accepted and never committed died with it in every
+  construction. This is the branch the whole round has been walking toward, and
+  the honest end of it is that the successor inherits what was witnessed.
+
+- **A fault predicate that names one operator must name only one.**
+  `isDoubleAcceptance` and `isDoublePosition` now require both receipts to be by
+  the same operator. Two different operators of the chain accepting one nonce
+  each is the handover going wrong rather than either of them equivocating, and
+  naming one for it would be naming the wrong party - the shape slice 9 found
+  twice.
+
+**Found reviewing the implementation, and it is the same shape one more time.**
+Requiring one operator was right for the two receipt predicates and wrong for
+`isRewrittenHistory`: §C2 gives a successor force only over a state "it serves in
+full", so a successor committing a shorter log than the predecessor's is the same
+fault by the party the chain just handed the backing to - and restricting the
+predicate to one operator's own history made exactly the handover unwatched. It
+reaches across a handover now, ordered by the chain, because a sequence is an
+operator's own count and says nothing about anyone else's.
+
+Also found there: `takeOver` onto a non-empty log met its own spent nonces and
+refused in the ledger's voice, which names the wrong boundary for what is the
+sequencer's own precondition.
+
+**Consequences.** The venue is now a parameter of `committedLogFor`,
+`isOperatorReceipt`, `receiptStatus`, `stateIsAuthentic`, `isRewrittenHistory`,
+`isDoubleAcceptance` and `isDoublePosition`. That is a wide signature change and
+it is the honest one: the property is "who may have signed this for this
+backing", and the answer is a walk, so the walk's input has to reach every
+caller. An optional parameter would have let a caller silently get the
+pre-succession answer.
+
+**Still open, unchanged:** the "serves in full" check that a *verifier* would
+want - whether a given commitment carries this backing - remains unreadable from
+a root, which is the dropped-backing hole recorded in slice 11 and the reason
+slice 13's second stage is bounded rather than checked. The sequencer proves it
+by construction, because it serves what it took over; a stranger still cannot.
+
+**Spec change:** none needed.
+
 ## 2026-08-20 - Slice 13: the chain from the original terms is walkable
 
 **Question:** §C2's replacement rule, which everything since the challenge-window

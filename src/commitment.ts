@@ -41,6 +41,8 @@ import { COMMITMENT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
 import type { Backing } from "./backing.js";
 import type { BackingSnapshot } from "./ledger.js";
+import { isAnOperator } from "./replacement.js";
+import type { Venue } from "./venue.js";
 import { opMessageOfEntry, type OpLogEntry } from "./oplog.js";
 
 export type { BackingSnapshot } from "./ledger.js";
@@ -147,14 +149,23 @@ export interface ServedState {
 }
 
 /**
- * This backing's operation log out of a state its **own** operator really
- * committed, or undefined where the state is not that.
+ * This backing's operation log out of a state one of its **own** operators
+ * really committed, or undefined where the state is not that.
  *
- * Three questions that always travel together: is this commitment signed by the
- * key E names (anyone can sign a valid commitment over any state they like), is
- * the served state the one it commits to, and does it carry this backing at all.
- * They were asked in three places — the redemption walk, a receipt's standing,
- * and a rewritten history — so they are asked here instead.
+ * Three questions that always travel together: is this commitment signed by a
+ * key that has served this backing (anyone can sign a valid commitment over any
+ * state they like), is the served state the one it commits to, and does it carry
+ * this backing at all. They were asked in three places — the redemption walk, a
+ * receipt's standing, and a rewritten history — so they are asked here instead.
+ *
+ * **A key that has served, not the key E names.** After a handover the state of
+ * record is the successor's, and a predecessor's committed state is still the
+ * history it really committed — §C2's "a wallet verifies the chain rather than
+ * the key it remembers". Membership rather than time, because a commitment
+ * carries a sequence of its operator's own counting and not a venue index, so
+ * "was this key in force then" is not a question its bytes can answer. What
+ * decides which committed state is current is the operator in force now
+ * (replayLatestState), and that does read the chain by index.
  *
  * Returns the sequence beside the log, because every caller that compares two
  * committed states needs to know which came first, and taking that from the
@@ -162,10 +173,11 @@ export interface ServedState {
  */
 export function committedLogFor(
   backing: Backing,
+  venue: Venue,
   served: ServedState,
 ): { readonly sequence: bigint; readonly opLog: readonly OpLogEntry[] } | undefined {
   try {
-    if (compareBytes(served.commitment.operator, backing.evidence.operator) !== 0) return undefined;
+    if (!isAnOperator(backing, venue, served.commitment.operator)) return undefined;
     if (!stateProvesCommitment(served.snapshots, served.commitment)) return undefined;
     const snapshot = served.snapshots.find((s) => compareBytes(s.name, backing.name) === 0);
     if (snapshot === undefined) return undefined;

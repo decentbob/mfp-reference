@@ -68,7 +68,7 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
   it("an honest served state is authentic", () => {
     const { venue, sequencer, backing } = setup();
     const served = publish(venue, sequencer.snapshot());
-    expect(stateIsAuthentic(backing, served)).toBe(true);
+    expect(stateIsAuthentic(backing, venue, served)).toBe(true);
     expect(provesHolding(venue, backing, served, KEYS.alice, 100n)).toBe(true);
   });
 
@@ -89,7 +89,7 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
 
     expect(stateProvesCommitment(swept, served.commitment)).toBe(true);
     expect(receiptProvenBy(receipts[0]!, swept[0]!)).toBe(false);
-    expect(stateIsAuthentic(backing, served)).toBe(false);
+    expect(stateIsAuthentic(backing, venue, served)).toBe(false);
     expect(provesHolding(venue, backing, served, KEYS.backer, 160n)).toBe(false);
   });
 
@@ -128,7 +128,7 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
     // signatures give it away, and the replay refuses before it ever adds up.
     expect(replayLog(backing, forged[0]!.opLog)).toBeUndefined();
     expect(stateProvesCommitment(forged, served.commitment)).toBe(true);
-    expect(stateIsAuthentic(backing, served)).toBe(false);
+    expect(stateIsAuthentic(backing, venue, served)).toBe(false);
     expect(provesHolding(venue, backing, served, KEYS.backer, 160n)).toBe(false);
   });
 
@@ -151,7 +151,7 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
         opLog: log,
       },
     ];
-    expect(stateIsAuthentic(backing, publish(venue, forged))).toBe(false);
+    expect(stateIsAuthentic(backing, venue, publish(venue, forged))).toBe(false);
   });
 
   it("refuses a log with a gap in a signer's nonce sequence", () => {
@@ -173,7 +173,7 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
         opLog: log,
       },
     ];
-    expect(stateIsAuthentic(backing, publish(venue, forged))).toBe(false);
+    expect(stateIsAuthentic(backing, venue, publish(venue, forged))).toBe(false);
   });
 
   it("accepts a signer whose operations interleave with another's", () => {
@@ -204,7 +204,7 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
       nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
     };
     f.sequencer.submitRelease(settle, ed25519.sign(encodeRelease(settle), SECRETS.alice));
-    expect(stateIsAuthentic(f.backing, publish(f.venue, f.sequencer.snapshot()))).toBe(true);
+    expect(stateIsAuthentic(f.backing, f.venue, publish(f.venue, f.sequencer.snapshot()))).toBe(true);
   });
 
   it("refuses a tampered signature on an otherwise honest state", () => {
@@ -218,7 +218,7 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
         ),
       },
     ];
-    expect(stateIsAuthentic(backing, publish(venue, tampered))).toBe(false);
+    expect(stateIsAuthentic(backing, venue, publish(venue, tampered))).toBe(false);
   });
 
   it("refuses an issuance signed by anyone but the obligor", () => {
@@ -244,7 +244,7 @@ describe("invariant 8: a served state cannot move claims nobody signed away", ()
         ),
       },
     ];
-    expect(stateIsAuthentic(backing, publish(venue, impostor))).toBe(false);
+    expect(stateIsAuthentic(backing, venue, publish(venue, impostor))).toBe(false);
   });
 });
 
@@ -282,7 +282,7 @@ describe("the signer of a presentation entry comes from the log, not the operato
     };
     f.sequencer.submitRelease(settle, ed25519.sign(encodeRelease(settle), SECRETS.alice));
     const served = publish(f.venue, f.sequencer.snapshot());
-    expect(stateIsAuthentic(f.backing, served)).toBe(true);
+    expect(stateIsAuthentic(f.backing, f.venue, served)).toBe(true);
     // Settlement moved the units to the obligor, and the fold knows that from
     // the terms rather than from anything the operator wrote in the entry.
     expect(provesHolding(f.venue, f.backing, served, KEYS.backer, 40n)).toBe(true);
@@ -308,7 +308,7 @@ describe("the signer of a presentation entry comes from the log, not the operato
       nonce: f.sequencer.nextNonce(KEYS.alice, f.backing),
     };
     f.sequencer.submitWithdrawal(walk, ed25519.sign(encodeWithdrawal(walk), SECRETS.alice));
-    expect(stateIsAuthentic(f.backing, publish(f.venue, f.sequencer.snapshot()))).toBe(true);
+    expect(stateIsAuthentic(f.backing, f.venue, publish(f.venue, f.sequencer.snapshot()))).toBe(true);
   });
 
   it("refuses a release naming a demand the log does not contain", () => {
@@ -324,7 +324,7 @@ describe("the signer of a presentation entry comes from the log, not the operato
         ),
       },
     ];
-    expect(stateIsAuthentic(f.backing, publish(f.venue, orphaned))).toBe(false);
+    expect(stateIsAuthentic(f.backing, f.venue, publish(f.venue, orphaned))).toBe(false);
   });
 });
 
@@ -383,7 +383,7 @@ describe("a served log must be a history the law could have produced", () => {
         ],
       },
     ];
-    expect(stateIsAuthentic(f.backing, publish(f.venue, forged))).toBe(false);
+    expect(stateIsAuthentic(f.backing, f.venue, publish(f.venue, forged))).toBe(false);
   });
 
   it("refuses a withdrawal of a demand that is no longer standing", () => {
@@ -393,7 +393,7 @@ describe("a served log must be a history the law could have produced", () => {
     const forged = [
       { ...snapshot, opLog: [...snapshot.opLog, { ...replayed, position: snapshot.opLog.length }] },
     ];
-    expect(stateIsAuthentic(f.backing, publish(f.venue, forged))).toBe(false);
+    expect(stateIsAuthentic(f.backing, f.venue, publish(f.venue, forged))).toBe(false);
   });
 
   it("refuses a spend of units an open demand has committed", () => {
@@ -567,7 +567,7 @@ describe("a served log must be a history the law could have produced", () => {
         ],
       },
     ];
-    expect(stateIsAuthentic(f.backing, publish(f.venue, forged))).toBe(false);
+    expect(stateIsAuthentic(f.backing, f.venue, publish(f.venue, forged))).toBe(false);
   });
 
   it("requires the committed demand record to be what the log leaves standing", () => {
@@ -583,7 +583,7 @@ describe("a served log must be a history the law could have produced", () => {
     };
     f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice));
     const snapshot = f.sequencer.snapshot()[0]!;
-    expect(stateIsAuthentic(f.backing, publish(f.venue, [snapshot]))).toBe(true);
+    expect(stateIsAuthentic(f.backing, f.venue, publish(f.venue, [snapshot]))).toBe(true);
 
     // The standing record is not asserted beside the log any more, so there is
     // nothing to disagree with it: it IS what the log leaves standing.
@@ -623,20 +623,20 @@ describe("a served log must be a history the law could have produced", () => {
     const replay = replayLog(f.backing, snapshot.opLog)!;
     expect([...replay.demands.values()]).toHaveLength(0);
     expect(replay.balances.get(Buffer.from(KEYS.backer).toString("hex"))).toBe(40n);
-    expect(stateIsAuthentic(f.backing, publish(f.venue, [snapshot]))).toBe(true);
+    expect(stateIsAuthentic(f.backing, f.venue, publish(f.venue, [snapshot]))).toBe(true);
   });
 });
 
 describe("authenticity verifiers return false on hostile input, never throw", () => {
   it("survives malformed entries and a junk commitment", () => {
-    const { backing } = setup();
+    const { backing, venue } = setup();
     const junk = [
       { position: 0, kind: "burn" as const, holder: new Uint8Array(3), quantity: 1n, nonce: 0n, signature: new Uint8Array(0) },
       { position: 1, kind: "release" as const, demandHash: new Uint8Array(1), nonce: -1n, signature: new Uint8Array(64) },
     ];
     expect(replayLog(backing, junk)).toBeUndefined();
     expect(
-      stateIsAuthentic(backing, {
+      stateIsAuthentic(backing, venue, {
         snapshots: [
           { name: new Uint8Array(31), opLog: junk },
         ],
@@ -652,7 +652,7 @@ describe("authenticity verifiers return false on hostile input, never throw", ()
 
   it("refuses a state carrying no snapshot for this backing", () => {
     const { venue, backing } = setup();
-    expect(stateIsAuthentic(backing, publish(venue, []))).toBe(false);
+    expect(stateIsAuthentic(backing, venue, publish(venue, []))).toBe(false);
   });
 });
 
@@ -662,7 +662,7 @@ describe("a transfer still needs the holder's own signature in served state", ()
     const move = { backing, from: KEYS.alice, to: KEYS.carol, quantity: 30n, nonce: 0n };
     sequencer.submitTransfer(move, ed25519.sign(encodeTransfer(move), SECRETS.alice));
     const served = publish(venue, sequencer.snapshot());
-    expect(stateIsAuthentic(backing, served)).toBe(true);
+    expect(stateIsAuthentic(backing, venue, served)).toBe(true);
     expect(provesHolding(venue, backing, served, KEYS.carol, 30n)).toBe(true);
     expect(provesHolding(venue, backing, served, KEYS.alice, 71n)).toBe(false);
     expect(provesHolding(venue, backing, served, KEYS.alice, 70n)).toBe(true);
