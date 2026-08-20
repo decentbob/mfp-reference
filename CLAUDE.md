@@ -116,11 +116,11 @@ construction.md before touching anything they govern.
 
 ## What the parties must do, that no code here enforces
 
-Four rules the protocol cannot check but the reference implementation must not
+Five rules the protocol cannot check but the reference implementation must not
 leave unsaid. Each was reached by asking what a failing sequencer costs
 somebody, and each is recorded in [[DECISIONS.md]] with the reasoning.
 
-The two holder rules are load-bearing. §C2b's recovery path does not protect a
+The three holder rules are load-bearing. §C2b's recovery path does not protect a
 holder who ignores them, and every mechanism that would reach further either
 fails to close its own hole or does not survive the move to a blinded
 construction — which is why they are rules here rather than code.
@@ -148,6 +148,18 @@ construction — which is why they are rules here rather than code.
   c2b-redemption-legs). What the payee does get is a fault proof — two of the
   payer's signatures at one nonce, checkable by any stranger forever, needing no
   operator and no commitment (`fault.ts`).
+- **Keep the last committed state that carries your backing.** An operator that
+  drops one backing from its commitments and keeps publishing the rest looks
+  perfectly live: §C2b's aggravated grade reads "no commitment past a second
+  declared duration", and a stranger reading a root cannot tell which backings it
+  covers. Every path against that operator runs through the last state that *did*
+  carry the backing — the non-service grade is counted against it (`isNonServing`),
+  the fault is proved against it (`isRewrittenHistory`), and the successor takes
+  over from it (`takeOver`). The party who would otherwise serve it on request is
+  the one with the motive not to, which is the same shape as the receipt rule
+  above: obtain the evidence while the party holding it still has a reason to give
+  it to you. §C2 makes failing to serve the trail its own aggravated-grade
+  condition, and that grade is not built here.
 - **A payment is final when witnessed, not when co-signed.** §C2: "Finality
   means witnessed rather than co-signed", and §C3 applies it to the release: "a
   release nobody witnessed did not happen." An operation accepted after the

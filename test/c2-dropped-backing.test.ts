@@ -236,6 +236,91 @@ describe("§C2: the log that vanished is the log that shrank", () => {
     expect(isRewrittenHistory(eur, venue, first, second)).toBe(false);
   });
 
+  it("does not accuse a RETIRED operator, which is supposed to stop carrying it", () => {
+    // Found reviewing the implementation, and it is the recurring shape: the fix
+    // bounded one direction and left the adjacent one open. §C2: "From the
+    // effective index the old attester's co-signatures stop counting" — a
+    // replaced operator goes on serving its OTHER backings, so its later
+    // commitments drop this one as a matter of obedience. Naming that a fault
+    // accuses a retired party for doing what the handover told it to.
+    const { venue, sequencer, eur, usd } = setup();
+    const beforeHandover = commitAll(sequencer);
+    venue.advance(1n);
+    const effective = venue.witnessedIndex() + 1n;
+    venue.publishReplacement(eur.name, replacementBy(eur, SECRETS.backer, KEYS.carol, effective));
+    venue.advance(2n);
+    const heir = new Sequencer(SECRETS.carol, venue);
+    heir.register(eur, signBacking(SECRETS.backer, eur));
+    heir.takeOver(eur, beforeHandover);
+    heir.commit();
+
+    // The retired predecessor carries on with USD alone, exactly as it should.
+    venue.advance(5n);
+    const usdOnly = sequencer.snapshot().filter((s) => compareBytes(s.name, usd.name) === 0);
+    const afterHandover = {
+      snapshots: usdOnly,
+      commitment: signCommitment(
+        SECRETS.operator,
+        venue.nextSequenceFor(KEYS.operator),
+        stateRoot(usdOnly),
+      ),
+    };
+    venue.publish(afterHandover.commitment);
+
+    expect(isRewrittenHistory(eur, venue, beforeHandover, afterHandover)).toBe(false);
+  });
+
+  it("still accuses the operator in force, replacement rule or not", () => {
+    // The other side of the same guard: a successor that takes the backing on
+    // and then drops it is the fault, because it IS in force.
+    const { venue, sequencer, eur } = setup();
+    const beforeHandover = commitAll(sequencer);
+    venue.advance(1n);
+    const effective = venue.witnessedIndex() + 1n;
+    venue.publishReplacement(eur.name, replacementBy(eur, SECRETS.backer, KEYS.carol, effective));
+    venue.advance(2n);
+    const heir = new Sequencer(SECRETS.carol, venue);
+    heir.register(eur, signBacking(SECRETS.backer, eur));
+    heir.takeOver(eur, beforeHandover);
+    const inForce = { snapshots: heir.snapshot(), commitment: heir.commit() };
+
+    const dropped = {
+      snapshots: [],
+      commitment: signCommitment(
+        SECRETS.carol,
+        venue.nextSequenceFor(KEYS.carol),
+        stateRoot([]),
+      ),
+    };
+    venue.publish(dropped.commitment);
+    expect(isRewrittenHistory(eur, venue, inForce, dropped)).toBe(true);
+  });
+
+  it("and the proof survives the remedy, which is the point of a proof", () => {
+    // Found regression-reviewing the fix above, and it was worse than the bug it
+    // fixed. Reading "is this operator in force NOW" made the fault evaporate at
+    // the exact moment the holder used it: the remedy for a dropped backing IS
+    // replacement, so proving it, getting a successor appointed, and then asking
+    // again answered false — and an operator could launder its record by
+    // arranging its own succession. A fault proof is checkable by a stranger
+    // forever or it is not one.
+    const { venue, sequencer, eur } = setup();
+    const carried = commitAll(sequencer);
+    const dropped = keepCommittingWithout(venue, sequencer, eur, 3);
+    expect(isRewrittenHistory(eur, venue, carried, dropped)).toBe(true);
+
+    // Now the remedy runs: a successor is appointed and takes force.
+    const effective = venue.witnessedIndex() + 1n;
+    venue.publishReplacement(eur.name, replacementBy(eur, SECRETS.backer, KEYS.carol, effective));
+    venue.advance(2n);
+    const heir = new Sequencer(SECRETS.carol, venue);
+    heir.register(eur, signBacking(SECRETS.backer, eur));
+    heir.takeOver(eur, carried, dropped);
+    heir.commit();
+
+    expect(isRewrittenHistory(eur, venue, carried, dropped)).toBe(true);
+  });
+
   it("does not accuse this operator on a stranger's state", () => {
     const { venue, sequencer, eur } = setup();
     const carried = commitAll(sequencer);

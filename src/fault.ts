@@ -30,11 +30,12 @@
 //     carrying on produces, and it is the fault ACROSS sequences where
 //     isEquivocation is the fault at one.
 //
-// A fourth reading lives beside the receipt rather than here, because three of
-// its four answers are ordinary rather than faults: `receiptStatus`
-// (receipt.ts) tells a payee whether a committed log holds their operation, has
-// not reached it yet, or holds something else. The last of those is this file's
-// business; naming it again here would be a second name for one thing.
+// A fourth reading lives beside the receipt rather than here, because most of
+// its answers are ordinary rather than faults: `receiptStatus` (receipt.ts)
+// tells a payee whether a committed log holds their operation, has not reached
+// it yet, holds something else, or carries nothing for the backing at all. Only
+// "holds something else" is this file's business; naming it again there would be
+// a second name for one thing.
 //
 // The two operator faults also catch a **botched failover**: two live servers
 // holding one operator key, with no leader election between them, produce
@@ -60,7 +61,7 @@ import { signerFromTerms } from "./ledger.js";
 import { opMessageOfEntry, type PublishedOp } from "./oplog.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
 import { receiptCovers, isOperatorReceipt, type Receipt } from "./receipt.js";
-import { successionOf } from "./replacement.js";
+import { successionOf, type Succession } from "./replacement.js";
 import type { Venue } from "./venue.js";
 
 /** An operation and the operator co-signature that accepted it. */
@@ -213,6 +214,52 @@ export function isDoublePosition(
  * what the commitment commits to — the signature beside an entry is served, not
  * committed (oplog.ts).
  */
+/**
+ * Whether this operator was still in force for the backing when it committed the
+ * state at `sequence` — the question that decides whether dropping the backing
+ * was a fault or obedience.
+ *
+ * **It must be stable forever, and asking who is in force NOW is not.** A fault
+ * a stranger can check today and not tomorrow is no fault proof at all: the
+ * remedy for a dropped backing IS replacement, so reading the current operator
+ * would erase the proof at the exact moment the holder used it, and let an
+ * operator launder its record by arranging its own succession (§15 prices a
+ * key's history, so that is worth something).
+ *
+ * So it is answered from the venue's own record, both halves of which are fixed
+ * once witnessed. A commitment carries no venue index — a sequence is the
+ * operator's own count (slice 13) — but the venue refuses a sequence that does
+ * not extend, so **publication order is sequence order**, and the last
+ * commitment this operator got witnessed before its successor took force pins
+ * the boundary. At or below that sequence is before the handover.
+ *
+ * A state never published at all cannot manufacture an accusation either: its
+ * sequence is above that boundary, or it collides with a published one, and a
+ * collision is isEquivocation's to name.
+ *
+ * **One case it deliberately misses, and it misses it safely.** A key can appear
+ * in the chain twice — the rule-holder may re-appoint a former operator, and only
+ * succeeding ITSELF is refused — and this reads that key's first term only. A
+ * drop during a second term therefore answers false. That is the direction this
+ * file always takes when it cannot tell: say nothing rather than accuse. Closing
+ * it means per-term sequence windows, which is a lot of arithmetic for a case
+ * that costs a missed fault rather than a wrong one. See DECISIONS.md.
+ */
+function droppedWhileInForce(
+  chain: readonly Succession[],
+  venue: Venue,
+  operator: Uint8Array,
+  sequence: bigint,
+): boolean {
+  const link = chain.findIndex((step) => compareBytes(step.operator, operator) === 0);
+  if (link < 0) return false;
+  const successor = chain[link + 1];
+  // Nobody after it in the chain, so it is in force and has no excuse.
+  if (successor === undefined) return true;
+  const before = venue.latestFor(operator, successor.from - 1n);
+  return before !== undefined && sequence <= before.sequence;
+}
+
 export function isRewrittenHistory(
   backing: Backing,
   venue: Venue,
@@ -231,20 +278,31 @@ export function isRewrittenHistory(
     const rankB = rank(b.commitment.operator);
     if (rankA < 0 || rankB < 0) return false;
 
-    let earlier = first;
-    let later = second;
-    if (rankA !== rankB) {
-      [earlier, later] = rankA < rankB ? [first, second] : [second, first];
-    } else {
-      if (first.sequence === second.sequence) return false;
-      [earlier, later] = first.sequence < second.sequence ? [first, second] : [second, first];
-    }
+    if (rankA === rankB && first.sequence === second.sequence) return false;
+    const secondIsEarlier =
+      rankA !== rankB ? rankB < rankA : second.sequence < first.sequence;
+    const earlier = secondIsEarlier ? second : first;
+    const later = secondIsEarlier ? first : second;
+    // Kept in step with the swap, because whether a DROP is a fault turns on who
+    // signed it. A log comparison does not care.
+    const laterOperator = secondIsEarlier ? a.commitment.operator : b.commitment.operator;
+
     // **A backing that vanishes is a log that shrank to nothing**, so it is this
     // fault rather than a second one beside it. The other direction is not: an
     // operator that had not yet registered the backing committed states without
     // it, and growing from nothing is growth. Both states dropping it says only
     // that neither ever carried it here.
-    if (later.kind === "dropped") return earlier.kind === "log";
+    if (later.kind === "dropped") {
+      if (earlier.kind !== "log") return false;
+      // **But only an operator still in force has no excuse for dropping it.**
+      // §C2: "From the effective index the old attester's co-signatures stop
+      // counting" — a replaced operator is SUPPOSED to stop carrying the
+      // backing, and it goes on serving its other ones, so its later commitments
+      // drop this one as a matter of obedience. Naming that a fault accuses a
+      // retired party for doing what the handover told it to, which is the shape
+      // slice 9 found twice and slice 14 once more.
+      return droppedWhileInForce(chain, venue, laterOperator, later.sequence);
+    }
     if (earlier.kind === "dropped") return false;
     if (later.opLog.length < earlier.opLog.length) return true;
     for (let i = 0; i < earlier.opLog.length; i++) {
