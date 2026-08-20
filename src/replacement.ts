@@ -181,9 +181,10 @@ export interface Succession {
  *
  * What is not checked, and cannot be from the venue alone: that the successor's
  * commitment is "over a spent set it serves in full". A commitment is a root, so
- * whether it carries this backing at all is unreadable without the served state
- * — the same limit as the dropped-backing hole recorded in slice 11, and it
- * wants the same answer, a predicate that takes a served state. What IS checked
+ * whether it carries this backing at all is unreadable without the served state.
+ * committedLogFor now answers exactly that question — but only of a state it is
+ * handed, and this walk has none, so the bound below stays the bound. What IS
+ * checked
  * is that the commitment came at or after the handover was witnessed, so it is
  * at least one the successor could have made for this backing; without that
  * bound the second stage means nothing at all for a successor that already

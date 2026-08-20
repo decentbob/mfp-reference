@@ -182,8 +182,24 @@ export class Sequencer {
    * transparent problem and is not rescued: a payment is final when witnessed
    * rather than co-signed, and an operation the predecessor accepted and never
    * committed died with it in every construction (CLAUDE.md).
+   *
+   * **`incumbentLatest` is evidence, and it is needed in exactly one case.**
+   * Normally the state taken on must be the incumbent's latest, or an older one
+   * would silently drop everything committed since. But an incumbent that has
+   * dropped this backing from its commitments has no latest state carrying it,
+   * and refusing on that ground made §C2b's own remedy unexecutable: the
+   * non-service grade fires, opens E's replacement rule, and the successor
+   * could take nothing. So an earlier state is licensed by exhibiting the
+   * incumbent's latest and showing it carries no log for this backing.
+   *
+   * **Bounded rather than checked**, which is the same limit slice 13 recorded.
+   * WHICH state was the last to carry the backing is not readable from a root,
+   * so a successor could take an earlier one than it should. That is not
+   * licensed here, it is provable: any holder of the later state shows it with
+   * isRewrittenHistory, against the successor, which is exactly why slice 14
+   * extended that predicate across a handover.
    */
-  takeOver(backing: Backing, served: ServedState): void {
+  takeOver(backing: Backing, served: ServedState, incumbentLatest?: ServedState): void {
     this.requireServed(backing);
     const held = this.backings.get(backing.nameHex) as Backing;
     if (this.isInForce(held)) {
@@ -196,19 +212,25 @@ export class Sequencer {
       throw new SequencerError("this sequencer has already taken over that backing");
     }
     const committed = committedLogFor(held, this.venue, served);
-    if (committed === undefined) {
+    if (committed === undefined || committed.kind === "dropped") {
       throw new SequencerError("that is not a state this backing's operator committed");
     }
     // The predecessor's LAST commitment, and the predecessor is whoever is in
     // force. Taking on an older one would drop everything committed since.
     const incumbent = operatorAt(held, this.venue, this.venue.witnessedIndex());
     const latest = this.venue.latestFor(incumbent);
-    if (
-      latest === undefined ||
-      compareBytes(served.commitment.operator, incumbent) !== 0 ||
-      compareBytes(served.commitment.root, latest.root) !== 0
-    ) {
+    if (latest === undefined || compareBytes(served.commitment.operator, incumbent) !== 0) {
       throw new SequencerError("that is not the incumbent's latest committed state");
+    }
+    if (compareBytes(served.commitment.root, latest.root) !== 0) {
+      this.requireDroppedBy(held, incumbentLatest, latest);
+      // And it must really precede that latest. A state at or past it is not an
+      // earlier one this evidence excuses; it is a state the incumbent never
+      // published, and one signed at a sequence it did publish is equivocation
+      // that isEquivocation names on its own.
+      if (committed.sequence >= latest.sequence) {
+        throw new SequencerError("that state does not precede the incumbent's latest");
+      }
     }
     // All or nothing. committedLogFor checks the root and the signature and
     // deliberately does not replay the law, so a well-rooted log that is not a
@@ -220,6 +242,38 @@ export class Sequencer {
       throw new SequencerError("that committed state is not a history that could have happened");
     }
     for (const entry of committed.opLog) this.ledger.apply(held, entry, undefined);
+  }
+
+  /**
+   * The evidence that licenses taking on an earlier state: the incumbent's
+   * latest committed state, carrying no log for this backing.
+   *
+   * It has to be the **latest**, not merely one the incumbent once signed. A
+   * superseded state that dropped the backing says nothing about what the
+   * incumbent serves now — it may have picked it up again in the next
+   * commitment — so pinning the evidence to the venue's own latest record is
+   * what keeps the exception as narrow as the case that forced it.
+   */
+  private requireDroppedBy(
+    backing: Backing,
+    evidence: ServedState | undefined,
+    latest: Commitment,
+  ): void {
+    if (evidence === undefined) {
+      throw new SequencerError("that is not the incumbent's latest committed state");
+    }
+    if (
+      evidence.commitment.sequence !== latest.sequence ||
+      compareBytes(evidence.commitment.root, latest.root) !== 0 ||
+      compareBytes(evidence.commitment.operator, latest.operator) !== 0
+    ) {
+      throw new SequencerError("that evidence is not the incumbent's latest committed state");
+    }
+    // committedLogFor re-roots the evidence against its own commitment, so a
+    // state that merely claims the latest root does not pass.
+    if (committedLogFor(backing, this.venue, evidence)?.kind !== "dropped") {
+      throw new SequencerError("the incumbent's latest commitment still carries this backing");
+    }
   }
 
   /**

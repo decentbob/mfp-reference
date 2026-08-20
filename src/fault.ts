@@ -239,6 +239,13 @@ export function isRewrittenHistory(
       if (first.sequence === second.sequence) return false;
       [earlier, later] = first.sequence < second.sequence ? [first, second] : [second, first];
     }
+    // **A backing that vanishes is a log that shrank to nothing**, so it is this
+    // fault rather than a second one beside it. The other direction is not: an
+    // operator that had not yet registered the backing committed states without
+    // it, and growing from nothing is growth. Both states dropping it says only
+    // that neither ever carried it here.
+    if (later.kind === "dropped") return earlier.kind === "log";
+    if (earlier.kind === "dropped") return false;
     if (later.opLog.length < earlier.opLog.length) return true;
     for (let i = 0; i < earlier.opLog.length; i++) {
       const before = opMessageOfEntry(backing.name, earlier.opLog[i] as PublishedOp);

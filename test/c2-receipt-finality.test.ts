@@ -279,25 +279,19 @@ describe("invariant 22: a later commitment must extend the earlier one", () => {
   });
 });
 
-describe("§C2: what neither of them reaches", () => {
-  it("OPEN: an operator that drops a backing from its commitments evades both", () => {
-    // Pinning a hole, not a property. isRewrittenHistory compares THIS backing's
-    // log in two committed states, and committedLogFor answers undefined where a
-    // state carries no entry for the backing at all. So an operator that
-    // restored stale data need not shrink one log to escape: it can stop
-    // committing that backing entirely.
+describe("§C2: the operator that dropped the backing instead of shrinking the log", () => {
+  it("is the same fault, and the receipt says so rather than saying unrelated", () => {
+    // This was an OPEN test, pinning the hole slice 11 found: an operator that
+    // restored stale data need not shrink one log to escape, it can stop
+    // committing that backing entirely, and committedLogFor answered `undefined`
+    // for a state carrying no entry for the backing — the same answer it gives a
+    // stranger's state. Every caller inherited that, so every receipt read
+    // "unrelated" and no fault was named.
     //
-    // Every holder then reads "unrelated" for every receipt and proves no
-    // holding, while isSilent measures whether the OPERATOR published rather
-    // than whether it published anything carrying this backing — so an operator
-    // still committing its other backings is graded perfectly live. The claims
-    // freeze and no grade fires against anyone, which is §C2's "a stall is
-    // deniable where a dishonour is recorded" one level down.
-    //
-    // Not patched here, because it is not fixable from the venue alone: a
-    // commitment is a root, so whether it carries a backing cannot be read
-    // without the served state. The honest form is a predicate that takes one,
-    // which is a decision rather than a review fix. See DECISIONS.md.
+    // It closes here because the layer below stopped merging the two answers,
+    // not because a fourth predicate was added: a backing that vanishes is a log
+    // that shrank to nothing. The whole case, including the grade that fires and
+    // the successor that can now take over, is c2-dropped-backing.
     const { venue, sequencer, backing } = setup();
     const other = makeTransparentBacking(SECRETS.backer2, "USD");
     sequencer.register(other, signBacking(SECRETS.backer2, other));
@@ -310,7 +304,7 @@ describe("§C2: what neither of them reaches", () => {
       commitment: signCommitment(SECRETS.operator, honest.commitment.sequence + 1n, stateRoot(withoutIt)),
     };
 
-    expect(isRewrittenHistory(backing, venue, honest, dropped)).toBe(false);
-    expect(receiptStatus(backing, venue, moveReceipt, dropped)).toBe("unrelated");
+    expect(isRewrittenHistory(backing, venue, honest, dropped)).toBe(true);
+    expect(receiptStatus(backing, venue, moveReceipt, dropped)).toBe("dropped");
   });
 });
