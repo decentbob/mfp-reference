@@ -25,6 +25,17 @@ const TARGET_B = new Uint8Array(32).fill(0x44);
 const VENUE_ID = new Uint8Array(32).fill(0x55); // a venue identity, any 32 bytes
 const OTHER_VENUE_ID = new Uint8Array(32).fill(0x66);
 
+// The two clauses that exist, as the bytes they are written as.
+const SILENCE_CLAUSE_HEX = "01" + "0000000000000032" + "0000000000000005";
+const WITNESSING_CLAUSE_HEX = "02" + bytesToHex(VENUE_ID) + "000000000000000a";
+
+/** A well-formed backing with its whole E field replaced by hand-built bytes. */
+function withEvidence(evidenceHex: string): Uint8Array {
+  const base = encodeBacking(makeBacking(baseFields()));
+  // Tag 0x01 is one tag byte and a 32-byte operator key, at the very end.
+  return hexToBytes(bytesToHex(base.slice(0, base.length - 33)) + evidenceHex);
+}
+
 function baseFields(): BackingFields {
   return {
     obligor: OBLIGOR,
@@ -237,44 +248,43 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
     expect(() => decodeBacking(tampered)).toThrow(EncodingError);
   });
 
-  it("evidence tag 0x02 carries the silence clause and round-trips", () => {
-    // §C2b's durations are declared in E, so they are inside the name and no
-    // backer can edit the standard its own silence is measured against
-    // (invariant 1). A new tag rather than a new version: tag 0x01 stays exactly
-    // what it was, and the golden vector below proves it.
-    const declared = makeBacking({
-      ...baseFields(),
-      evidence: {
-        setting: "transparent",
-        operator: OPERATOR,
-        silence: { noCommitmentDuration: 10n, challengeWindow: 5n },
-      },
-    });
-    const bytes = encodeBacking(declared);
-    // ...0x02 || operator (32) || u64 10 || u64 5
-    expect(bytesToHex(bytes)).toContain(
-      "02" + bytesToHex(OPERATOR) + "000000000000000a0000000000000005",
-    );
-    const decoded = decodeBacking(bytes);
-    expect(decoded.nameHex).toBe(declared.nameHex);
-    expect(decoded.evidence.silence).toEqual({ noCommitmentDuration: 10n, challengeWindow: 5n });
-  });
-
-  it("a tag-0x01 backing decodes with no silence clause", () => {
+  it("a tag-0x01 backing declares no clauses, and is byte-identical to before", () => {
     const bare = makeBacking(baseFields());
-    const decoded = decodeBacking(encodeBacking(bare));
+    const bytes = encodeBacking(bare);
+    expect(bytesToHex(bytes)).toContain("01" + bytesToHex(OPERATOR));
+    const decoded = decodeBacking(bytes);
     expect(decoded.evidence.silence).toBeUndefined();
     expect(decoded.evidence.witnessing).toBeUndefined();
     expect(decoded.nameHex).toBe(bare.nameHex);
   });
 
-  it("evidence tag 0x03 carries the witnessing terms and round-trips", () => {
-    // §C2 names the venue and the interval in E, so both are inside the name:
-    // a backer cannot move the venue its own silence is measured on, and cannot
-    // quietly lengthen the schedule a payee waits against (invariant 1).
-    // Independent of the silence clause, which is why it is its own tag rather
-    // than more fields on 0x02 — a backer may promise a schedule without ever
-    // conceding a grade.
+  it("evidence tag 0x05 carries the silence clause as a clause, and round-trips", () => {
+    // §C2b's durations are declared in E, so they are inside the name and no
+    // backer can edit the standard its own silence is measured against
+    // (invariant 1). What changed is only how a declaration is spelled: one
+    // extensible list, rather than a tag per combination of blocks. E has
+    // several more blocks to come — the replacement rule, the non-service and
+    // refusal aggregates — and enumerating combinations doubles with each.
+    const declared = makeBacking({
+      ...baseFields(),
+      evidence: {
+        setting: "transparent",
+        operator: OPERATOR,
+        silence: { noCommitmentDuration: 50n, challengeWindow: 5n },
+      },
+    });
+    const bytes = encodeBacking(declared);
+    // ...0x05 || operator || u32 1 || clause 0x01 || u64 50 || u64 5
+    expect(bytesToHex(bytes)).toContain(
+      "05" + bytesToHex(OPERATOR) + "00000001" + SILENCE_CLAUSE_HEX,
+    );
+    const decoded = decodeBacking(bytes);
+    expect(decoded.nameHex).toBe(declared.nameHex);
+    expect(decoded.evidence.silence).toEqual({ noCommitmentDuration: 50n, challengeWindow: 5n });
+    expect(decoded.evidence.witnessing).toBeUndefined();
+  });
+
+  it("evidence tag 0x05 carries the witnessing terms, and round-trips", () => {
     const declared = makeBacking({
       ...baseFields(),
       evidence: {
@@ -284,9 +294,8 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
       },
     });
     const bytes = encodeBacking(declared);
-    // ...0x03 || operator (32) || venue (32) || u64 10
     expect(bytesToHex(bytes)).toContain(
-      "03" + bytesToHex(OPERATOR) + bytesToHex(VENUE_ID) + "000000000000000a",
+      "05" + bytesToHex(OPERATOR) + "00000001" + WITNESSING_CLAUSE_HEX,
     );
     const decoded = decodeBacking(bytes);
     expect(decoded.nameHex).toBe(declared.nameHex);
@@ -295,30 +304,26 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
     expect(decoded.evidence.silence).toBeUndefined();
   });
 
-  it("evidence tag 0x04 carries witnessing and the silence clause together", () => {
+  it("writes several clauses in ascending tag order, whatever order they arrived in", () => {
+    // Sorted and duplicate-free, exactly as the reliance list is, and for the
+    // same reason: one set of terms must have one spelling.
     const declared = makeBacking({
       ...baseFields(),
       evidence: {
         setting: "transparent",
         operator: OPERATOR,
-        silence: { noCommitmentDuration: 50n, challengeWindow: 5n },
         witnessing: { venue: VENUE_ID, interval: 10n },
+        silence: { noCommitmentDuration: 50n, challengeWindow: 5n },
       },
     });
     const bytes = encodeBacking(declared);
-    // ...0x04 || operator || venue || u64 10 || u64 50 || u64 5
     expect(bytesToHex(bytes)).toContain(
-      "04" +
-        bytesToHex(OPERATOR) +
-        bytesToHex(VENUE_ID) +
-        "000000000000000a" +
-        "0000000000000032" +
-        "0000000000000005",
+      "05" + bytesToHex(OPERATOR) + "00000002" + SILENCE_CLAUSE_HEX + WITNESSING_CLAUSE_HEX,
     );
     const decoded = decodeBacking(bytes);
     expect(decoded.nameHex).toBe(declared.nameHex);
-    expect(decoded.evidence.witnessing?.interval).toBe(10n);
     expect(decoded.evidence.silence).toEqual({ noCommitmentDuration: 50n, challengeWindow: 5n });
+    expect(decoded.evidence.witnessing?.interval).toBe(10n);
   });
 
   it("the venue and the interval are both inside the name", () => {
@@ -345,15 +350,37 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
     expect(() => witnessed(VENUE_ID, 1n << 64n)).toThrow(EncodingError);
   });
 
-  it("rejects an unknown evidence tag rather than guessing", () => {
-    const bytes = encodeBacking(makeBacking(baseFields()));
-    // The evidence tag is the byte before the trailing 32-byte operator key.
-    // 0x05 rather than 0x03: tags through 0x04 are assigned now, and "tags not
-    // listed are future slices" only means anything if the test uses one.
-    const tampered = bytes.slice();
-    tampered[tampered.length - 33] = 0x05;
-    expect(() => decodeBacking(tampered)).toThrow(EncodingError);
+  it("rejects an empty clause list, which tag 0x01 already spells", () => {
+    // The canonicality rule the extensible form needs: two spellings of one
+    // backing would make the name stop being a function of the terms, so the
+    // clause list is refused where a shorter tag says the same thing.
+    expect(() => decodeBacking(withEvidence("05" + bytesToHex(OPERATOR) + "00000000"))).toThrow(
+      EncodingError,
+    );
   });
+
+  it("rejects clauses out of canonical order, or repeated", () => {
+    const two = (a: string, b: string) =>
+      withEvidence("05" + bytesToHex(OPERATOR) + "00000002" + a + b);
+    expect(() => decodeBacking(two(WITNESSING_CLAUSE_HEX, SILENCE_CLAUSE_HEX))).toThrow(
+      EncodingError,
+    );
+    expect(() => decodeBacking(two(SILENCE_CLAUSE_HEX, SILENCE_CLAUSE_HEX))).toThrow(EncodingError);
+  });
+
+  it("rejects an unknown clause tag rather than skipping it", () => {
+    // A clause payload is NOT length-prefixed, deliberately: a reader that
+    // could skip a clause it does not understand would report terms it cannot
+    // check, which is worse than declaring nothing (the tag-0x02 rule).
+    expect(() =>
+      decodeBacking(withEvidence("05" + bytesToHex(OPERATOR) + "00000001" + "07" + "00")),
+    ).toThrow(EncodingError);
+  });
+
+  it("rejects an unknown evidence tag rather than guessing", () => {
+    expect(() => decodeBacking(withEvidence("09" + bytesToHex(OPERATOR)))).toThrow(EncodingError);
+  });
+
 
   it("rejects a silence duration outside the u64 range", () => {
     const withClause = (silence: { noCommitmentDuration: bigint; challengeWindow: bigint }) =>

@@ -25,22 +25,30 @@
 //            target bytes (so duplicates are unrepresentable):
 //              u8 tag 0x01 (backing) || 32-byte target name
 //              || u32 length || count (unsigned big-endian, minimal)
-//   E        u8 tag 0x01 (transparent) || 32-byte operator key
-//            u8 tag 0x02 (transparent, silence clause declared)
+//   E        u8 tag 0x01 (transparent, no clauses) || 32-byte operator key
+//            u8 tag 0x05 (transparent, clauses declared)
 //              || 32-byte operator key
-//              || u64 no-commitment duration || u64 challenge window
-//            u8 tag 0x03 (transparent, witnessing terms declared)
-//              || 32-byte operator key
-//              || 32-byte venue id || u64 witness interval
-//            u8 tag 0x04 (transparent, both)
-//              || 32-byte operator key
-//              || 32-byte venue id || u64 witness interval
-//              || u64 no-commitment duration || u64 challenge window
+//              || u32 clause count (at least one)
+//              || per clause, sorted strictly ascending by clause tag:
+//                   u8 0x01 silence
+//                     || u64 no-commitment duration || u64 challenge window
+//                   u8 0x02 witnessing
+//                     || 32-byte venue id || u64 witness interval
 //
-// The two blocks are independent, which is why they are four tags rather than
-// more fields on one: E declares the venue and the interval whether or not it
-// declares a silence clause, and a backer may promise a schedule without ever
-// conceding a grade.
+// **A list, not a tag per combination.** E's clauses are independent — a backer
+// may promise a schedule without conceding a grade, and §C2 has several more to
+// come: the replacement rule, the non-service aggregate (m, W), the refusal
+// aggregate (m', W'). Enumerating combinations doubles with each one, so the
+// blocks are a canonical list instead: sorted, duplicate-free, and refused where
+// a shorter tag says the same thing. Tags 0x02-0x04 were that enumeration for
+// two blocks and are gone; recycling their numbers is how an old decoder reads
+// new bytes as something else, so the list is 0x05. Tag 0x01 is untouched, and
+// the slice-1 golden vector with it.
+//
+// A clause payload is deliberately NOT length-prefixed. A reader that could skip
+// a clause it does not understand would report terms it cannot check, which is
+// worse than declaring nothing — so an unknown clause tag is refused, exactly as
+// an unknown evidence tag is.
 //
 // Tags not listed (threshold obligors, the payout expression language,
 // chain-asset reliance targets, shielded evidence settings) are future slices;
@@ -69,9 +77,11 @@ const TAG_OBLIGOR_ED25519 = 0x01;
 const TAG_PAYOUT_CONSTANT = 0x01;
 const TAG_TARGET_BACKING = 0x01;
 const TAG_EVIDENCE_TRANSPARENT = 0x01;
-const TAG_EVIDENCE_SILENCE = 0x02;
-const TAG_EVIDENCE_WITNESSING = 0x03;
-const TAG_EVIDENCE_WITNESSING_SILENCE = 0x04;
+const TAG_EVIDENCE_CLAUSES = 0x05;
+const CLAUSE_SILENCE = 0x01;
+const CLAUSE_WITNESSING = 0x02;
+/** E has a handful of blocks in the paper, not a stream of them. */
+const MAX_EVIDENCE_CLAUSES = 16;
 
 const NAME_LENGTH = 32;
 const MAX_THING_BYTES = 1024;
@@ -185,17 +195,6 @@ export type Backing = BackingFields & {
   readonly [validated]: true;
 };
 
-/** Which of the four evidence shapes these two independent blocks make. */
-function evidenceTag(
-  silence: SilenceClause | undefined,
-  witnessing: WitnessingTerms | undefined,
-): number {
-  if (witnessing === undefined) {
-    return silence === undefined ? TAG_EVIDENCE_TRANSPARENT : TAG_EVIDENCE_SILENCE;
-  }
-  return silence === undefined ? TAG_EVIDENCE_WITNESSING : TAG_EVIDENCE_WITNESSING_SILENCE;
-}
-
 /** Serialize validated fields. Fixed-width fields are asserted by key32. */
 function encodeFields(b: BackingFields): Uint8Array {
   const w = new ByteWriter();
@@ -217,16 +216,54 @@ function encodeFields(b: BackingFields): Uint8Array {
     w.lengthPrefixed(bigintToMinimalBytes(entry.count));
   }
 
+  // The clauses, collected and then SORTED by tag rather than written in an
+  // order chosen to match today's tag numbers. The decoder enforces strictly
+  // ascending; writing them in a hardcoded sequence makes the two agree by
+  // convention, so a clause added later with a tag that sorts between these
+  // would emit a list this decoder refuses — and only a test covering that
+  // exact combination would say so. Sorting here makes it structural on both
+  // sides.
   const { silence, witnessing } = b.evidence;
-  w.u8(evidenceTag(silence, witnessing));
-  w.key32(b.evidence.operator, "operator key");
-  if (witnessing !== undefined) {
-    w.key32(witnessing.venue, "venue id");
-    w.u64(witnessing.interval);
-  }
+  const clauses: { readonly tag: number; readonly write: () => void }[] = [];
   if (silence !== undefined) {
-    w.u64(silence.noCommitmentDuration);
-    w.u64(silence.challengeWindow);
+    clauses.push({
+      tag: CLAUSE_SILENCE,
+      write: () => {
+        w.u64(silence.noCommitmentDuration);
+        w.u64(silence.challengeWindow);
+      },
+    });
+  }
+  if (witnessing !== undefined) {
+    clauses.push({
+      tag: CLAUSE_WITNESSING,
+      write: () => {
+        w.key32(witnessing.venue, "venue id");
+        w.u64(witnessing.interval);
+      },
+    });
+  }
+  clauses.sort((x, y) => x.tag - y.tag);
+  // Asserted where they are written, not only where they are read back. Sorting
+  // does not deduplicate, and a clause added later under a tag another already
+  // uses would emit a list this file's own decoder refuses — surfacing as a
+  // decode failure in whatever test happens to declare both together, which
+  // points at the reader rather than at the mistake. Same reason ByteWriter
+  // asserts a fixed width at the point that writes it.
+  for (let i = 1; i < clauses.length; i++) {
+    if ((clauses[i] as { tag: number }).tag <= (clauses[i - 1] as { tag: number }).tag) {
+      throw new EncodingError("two evidence clauses share a tag");
+    }
+  }
+
+  w.u8(clauses.length === 0 ? TAG_EVIDENCE_TRANSPARENT : TAG_EVIDENCE_CLAUSES);
+  w.key32(b.evidence.operator, "operator key");
+  if (clauses.length > 0) {
+    w.u32(clauses.length);
+    for (const clause of clauses) {
+      w.u8(clause.tag);
+      clause.write();
+    }
   }
 
   return w.finish();
@@ -398,20 +435,37 @@ export function decodeBacking(bytes: Uint8Array): Backing {
   }
 
   const tag = r.u8();
-  const declaresWitnessing =
-    tag === TAG_EVIDENCE_WITNESSING || tag === TAG_EVIDENCE_WITNESSING_SILENCE;
-  const declaresSilence = tag === TAG_EVIDENCE_SILENCE || tag === TAG_EVIDENCE_WITNESSING_SILENCE;
-  if (tag !== TAG_EVIDENCE_TRANSPARENT && !declaresWitnessing && !declaresSilence) {
+  if (tag !== TAG_EVIDENCE_TRANSPARENT && tag !== TAG_EVIDENCE_CLAUSES) {
     throw new EncodingError(`unsupported evidence tag ${tag}`);
   }
   const operator = r.raw(KEY_LENGTH);
-  // Read in the order written: the witnessing block, then the silence block.
-  const witnessing = declaresWitnessing
-    ? { venue: r.raw(NAME_LENGTH), interval: r.u64() }
-    : undefined;
-  const silence = declaresSilence
-    ? { noCommitmentDuration: r.u64(), challengeWindow: r.u64() }
-    : undefined;
+
+  let silence: SilenceClause | undefined;
+  let witnessing: WitnessingTerms | undefined;
+  if (tag === TAG_EVIDENCE_CLAUSES) {
+    const count = r.u32();
+    // An empty list is tag 0x01's spelling, and two spellings of one backing
+    // would stop the name being a function of the terms.
+    if (count === 0) throw new EncodingError("empty clause list must use evidence tag 0x01");
+    if (count > MAX_EVIDENCE_CLAUSES) throw new EncodingError("too many evidence clauses");
+    let previous = 0;
+    for (let i = 0; i < count; i++) {
+      const clause = r.u8();
+      // Strictly ascending, so duplicates are unrepresentable rather than
+      // detected — the rule the reliance list already follows.
+      if (clause <= previous) throw new EncodingError("evidence clauses not in canonical order");
+      previous = clause;
+      if (clause === CLAUSE_SILENCE) {
+        silence = { noCommitmentDuration: r.u64(), challengeWindow: r.u64() };
+      } else if (clause === CLAUSE_WITNESSING) {
+        witnessing = { venue: r.raw(NAME_LENGTH), interval: r.u64() };
+      } else {
+        // Not skipped: a reader reporting terms it cannot check is worse than
+        // one reporting none.
+        throw new EncodingError(`unsupported evidence clause tag ${clause}`);
+      }
+    }
+  }
 
   r.expectEnd();
   return makeBacking({
