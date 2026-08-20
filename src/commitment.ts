@@ -29,8 +29,10 @@
 //
 // The root is over the whole served state, which a verifier must be given to
 // check (the spec's availability point: "somebody has to serve" the trail).
-// Per-element membership / non-membership proofs are deferred with the
-// recovery path.
+// That is also why invariant 23's per-element non-membership proofs are not
+// here: under transparent the whole state is served and rehashed, so serving
+// everything IS the proof. The Merkle machinery is what a construction needs
+// when it cannot serve everything, which is the shielded ones. See DECISIONS.md.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -165,13 +167,12 @@ export function signCommitment(
 
 /** A commitment is valid iff the operator signed exactly (sequence, root). */
 export function verifyCommitment(commitment: Commitment): boolean {
-  let message: Uint8Array;
   try {
-    message = commitmentMessage(commitment.sequence, commitment.root);
+    const message = commitmentMessage(commitment.sequence, commitment.root);
+    return verifySignatureStrict(commitment.signature, message, commitment.operator);
   } catch {
     return false;
   }
-  return verifySignatureStrict(commitment.signature, message, commitment.operator);
 }
 
 /**
@@ -182,11 +183,20 @@ export function verifyCommitment(commitment: Commitment): boolean {
  * while signing two roots as its Nth commitment is the fault.
  */
 export function isEquivocation(a: Commitment, b: Commitment): boolean {
-  return (
-    compareBytes(a.operator, b.operator) === 0 &&
-    a.sequence === b.sequence &&
-    compareBytes(a.root, b.root) !== 0 &&
-    verifyCommitment(a) &&
-    verifyCommitment(b)
-  );
+  // A verifier, and it was the one that did not say so: anyone may exhibit two
+  // commitments they found at a venue, and these fields are read before
+  // anything verifies them, so a malformed one crashed the proof instead of
+  // failing it. The try is the mechanism the other fault predicates already use
+  // (receiptCovers, isDoublePosition, equivocatingSigner), not a new layer.
+  try {
+    return (
+      compareBytes(a.operator, b.operator) === 0 &&
+      a.sequence === b.sequence &&
+      compareBytes(a.root, b.root) !== 0 &&
+      verifyCommitment(a) &&
+      verifyCommitment(b)
+    );
+  } catch {
+    return false;
+  }
 }

@@ -35,9 +35,11 @@
 // stamped a publication with for one adopted out of a §C2b gap.
 //
 // NOTE (later slices, see DECISIONS.md): op-log positions are the ledger's own
-// per-backing append indices, a stand-in for witnessed interval time (§C2);
-// balances are primary state rather than a fold over the log; and there are no
-// commitments over ledger state here — the sequencer adds those.
+// per-backing append indices, which are the log's own bookkeeping and not a
+// clock — the venue's witnessed index is that (venue.ts). The state below is
+// the fold of the log and nothing else, kept incrementally here and replayed
+// from scratch by a verifier through the same applyEntry. There are no
+// commitments over it in this file; the sequencer adds those.
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -48,6 +50,7 @@ import {
   copyOp,
   copyOpEntry,
   opMessageOfEntry,
+  unknownOpKind,
   type OpLogEntry,
   type PublishedOp,
 } from "./oplog.js";
@@ -123,14 +126,6 @@ export function acceptanceIsLive(record: DemandRecord, atWitnessedIndex: bigint)
  */
 export function isDishonoured(record: DemandRecord, atWitnessedIndex: bigint): boolean {
   return !acceptanceIsLive(record, atWitnessedIndex) && atWitnessedIndex > record.deadline;
-}
-
-/** The issuance-only projection of the op log (§C1 names the first holder). */
-export interface IssuanceLogEntry {
-  readonly position: number;
-  readonly quantity: bigint;
-  readonly recipient: Uint8Array;
-  readonly nonce: bigint;
 }
 
 /**
@@ -236,10 +231,11 @@ export function signerFromTerms(backing: Backing, entry: PublishedOp): Uint8Arra
   }
   // Exhaustive, and asserted rather than assumed: the return type admits
   // undefined, so a kind added to PublishedOp and forgotten here would compile
-  // and then be refused at runtime for no visible reason. This line makes it a
-  // compile error at the place that has to decide.
-  const unreachable: never = entry;
-  return unreachable;
+  // and then be refused at runtime for no visible reason. unknownOpKind makes
+  // that a compile error at the place that has to decide — and refuses at
+  // runtime rather than handing back the entry itself, which is what assigning
+  // to a never-typed local and returning it did.
+  return unknownOpKind(entry);
 }
 
 /**

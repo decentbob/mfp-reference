@@ -77,13 +77,12 @@ export function signReceipt(
 
 /** Valid iff the operator signed exactly (backing name, op hash, position). */
 export function verifyReceipt(receipt: Receipt): boolean {
-  let message: Uint8Array;
   try {
-    message = receiptMessage(receipt.backingName, receipt.opHash, receipt.position);
+    const message = receiptMessage(receipt.backingName, receipt.opHash, receipt.position);
+    return verifySignatureStrict(receipt.signature, message, receipt.operator);
   } catch {
     return false;
   }
-  return verifySignatureStrict(receipt.signature, message, receipt.operator);
 }
 
 /**

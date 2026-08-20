@@ -8,6 +8,7 @@ import {
   type BackingFields,
 } from "../src/backing.js";
 import { EncodingError } from "../src/bytes.js";
+import { isValidPublicKey, verifySignatureStrict } from "../src/keys.js";
 
 // Invariant 2: a backing exists only with a valid signature by K over its
 // own name — or anyone can publish well-formed terms naming somebody else's
@@ -27,6 +28,50 @@ function fields(overrides?: Partial<BackingFields>): BackingFields {
     ...overrides,
   };
 }
+
+describe("verifiers never throw, at the function they all funnel through", () => {
+  // CLAUDE.md states it without exception: anything answering a question about
+  // adversary-supplied data returns false on ANY malformed input. The length
+  // checks here were written for exactly that and left the adjacent case open —
+  // an absent field reaches this typed as bytes, and reading .length off it
+  // threw. Every verifier in the system is above this call, so verifyCommitment
+  // on a commitment with no signature crashed rather than answering, and
+  // Venue.publish with it raised a TypeError naming no boundary.
+  const message = new Uint8Array(32).fill(0x11);
+  const key = ed25519.getPublicKey(OBLIGOR_SECRET);
+  const signature = ed25519.sign(message, OBLIGOR_SECRET);
+
+  it("answers false for a signature that is absent or not bytes", () => {
+    for (const bad of [undefined, null, "not bytes", 0, {}, [1, 2, 3]]) {
+      expect(verifySignatureStrict(bad as unknown as Uint8Array, message, key)).toBe(false);
+    }
+  });
+
+  it("answers false for a key that is absent or not bytes", () => {
+    for (const bad of [undefined, null, "not bytes", 0, {}]) {
+      expect(verifySignatureStrict(signature, message, bad as unknown as Uint8Array)).toBe(false);
+    }
+  });
+
+  it("answers false for a message that is absent or not bytes", () => {
+    // noble raises its own Error for these, outside the length checks that were
+    // meant to make this total.
+    for (const bad of [undefined, null, "not bytes", 0]) {
+      expect(verifySignatureStrict(signature, bad as unknown as Uint8Array, key)).toBe(false);
+    }
+  });
+
+  it("answers false, rather than throwing, for a key that is not bytes", () => {
+    for (const bad of [undefined, null, "not bytes", 0, {}]) {
+      expect(isValidPublicKey(bad as unknown as Uint8Array)).toBe(false);
+    }
+    expect(isValidPublicKey(key)).toBe(true);
+  });
+
+  it("still answers true for the real thing", () => {
+    expect(verifySignatureStrict(signature, message, key)).toBe(true);
+  });
+});
 
 describe("invariant 2: a backing exists only with K's signature over its name", () => {
   it("the obligor's signature over the name verifies", () => {

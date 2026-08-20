@@ -18,6 +18,7 @@ export const KEY_LENGTH = 32;
 export const SIGNATURE_LENGTH = 64;
 
 export function isValidPublicKey(key: Uint8Array): boolean {
+  if (!(key instanceof Uint8Array)) return false;
   if (key.length !== KEY_LENGTH) return false;
   try {
     return !ed25519.Point.fromHex(key).isSmallOrder();
@@ -28,15 +29,35 @@ export function isValidPublicKey(key: Uint8Array): boolean {
 
 /**
  * Strict Ed25519 verification, and the only verification path in the system.
- * Returns false — never throws — for a wrong-length signature OR a malformed
- * key: noble length-checks the public key outside its own try/catch, so an
- * unchecked key turns every verifier into a crash on hostile input.
+ * Returns false — never throws — for any of the three arguments being absent, of
+ * some other type, or the wrong length. noble checks the public key's length and
+ * the message's type outside its own try/catch, so an unchecked argument turns
+ * every verifier above this into a crash on hostile input.
+ *
+ * The line stops here, deliberately. This and isValidPublicKey are the
+ * predicates that answer questions about adversary-supplied data and are
+ * documented to answer rather than throw, so they are total. makeBacking is not
+ * one: it is a constructor whose contract is EncodingError, its wire path is
+ * decodeBacking (which produces real bytes), and runtime-typing every field of
+ * every input shape is TypeScript's job, not a guard at each use.
  */
 export function verifySignatureStrict(
   signature: Uint8Array,
   message: Uint8Array,
   key: Uint8Array,
 ): boolean {
+  // Bytes first, then length. `readonly Uint8Array` is erased at runtime, so a
+  // field that arrives from outside absent or as some other type reaches here
+  // typed as bytes, and reading .length off it throws — turning every verifier
+  // above into a crash on hostile input, which is the hole the length checks
+  // themselves exist to close. This is the one function they all funnel through.
+  if (
+    !(signature instanceof Uint8Array) ||
+    !(key instanceof Uint8Array) ||
+    !(message instanceof Uint8Array)
+  ) {
+    return false;
+  }
   if (signature.length !== SIGNATURE_LENGTH) return false;
   // Length only: noble length-checks the key OUTSIDE its own try/catch, so an
   // unchecked key turns every verifier into a crash. The small-order rejection

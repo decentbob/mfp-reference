@@ -75,7 +75,12 @@ the rule still stands.
   a conjunction over a fixed list with constant counts — no disjunction, no
   computed membership. Reliance names backings and chain assets only.
 - **`closure(S)` expands deterministically before hashing**; counts sum where
-  paths meet; the stored object is flat; cap closure size (inv 16).
+  paths meet; the stored object is flat; cap closure size (inv 16). *Only the
+  last two are built:* `makeBacking` stores R flat, sorted and deduplicated, and
+  caps its size, but nothing expands a closure or sums counts where paths meet —
+  R is taken as already closed. Harmless while reliance is inert (a demand on a
+  backing with reliance is refused), and it must land before any presentation
+  moves a leg.
 - **An unaccompanied claim is inert, never invalid, and still transferable**
   (inv 17).
 - **Time is a witnessed index, never a clock** (inv 21, 24). Every instant a
@@ -109,11 +114,16 @@ Invariants not listed here (3–4, 6, 11–12, 19–20, 25) still bind; several 
 become implementable with the shielded constructions. Read §C0 of
 construction.md before touching anything they govern.
 
-## What an operator must do, that no code here enforces
+## What the parties must do, that no code here enforces
 
-Two rules the protocol cannot check but the reference implementation must not
-leave unsaid. Both were reached by asking what a failing sequencer costs
-somebody, and both are recorded in [[DECISIONS.md]] with the reasoning.
+Four rules the protocol cannot check but the reference implementation must not
+leave unsaid. Each was reached by asking what a failing sequencer costs
+somebody, and each is recorded in [[DECISIONS.md]] with the reasoning.
+
+The two holder rules are load-bearing. §C2b's recovery path does not protect a
+holder who ignores them, and every mechanism that would reach further either
+fails to close its own hole or does not survive the move to a blinded
+construction — which is why they are rules here rather than code.
 
 - **One writer at a time**, or a threshold key. Two live servers holding one
   operator key co-sign conflicting operations, and `fault.ts` proves that
@@ -127,10 +137,36 @@ somebody, and both are recorded in [[DECISIONS.md]] with the reasoning.
   that an operation was accepted at all. A payee without one has the payer's
   signature and nothing that says the operator ever saw it. `submitTransfer`
   returns the receipt to whoever submitted, which is normally the payer.
+- **Claims go illiquid while the operator is dark. Do not accept one.** §C2b:
+  claims "go illiquid rather than dead. Value discounts until they return." A
+  transfer published at the venue is evidence, never an operation, so nothing
+  moves until the operator returns or a successor takes over. A payee who
+  accepts anyway is relying on §C2b's challenge window, and that window reaches
+  a careless double-spender and never a deliberate one: the spend's nonce is
+  fixed, the claim's nonce is the claimant's to choose, and she moves the claim
+  off the contested position for two signatures (the OPEN tests in
+  c2b-redemption-legs). What the payee does get is a fault proof — two of the
+  payer's signatures at one nonce, checkable by any stranger forever, needing no
+  operator and no commitment (`fault.ts`).
+- **A payment is final when witnessed, not when co-signed.** §C2: "Finality
+  means witnessed rather than co-signed", and §C3 applies it to the release: "a
+  release nobody witnessed did not happen." An operation accepted after the
+  operator's last commitment lives only in its unpublished log and in the
+  receipt, and dies with it — in **every** construction, since a Chaumian token
+  signed but never committed is exactly as unprovable. So the exposure is the
+  interval since the last commitment, which is why §C2 makes the interval "a
+  signed field rather than operational discretion". **E does not carry it yet**:
+  a payee can measure how stale the last commitment is (`Venue.witnessedAtFor`)
+  but cannot tell a fast operator running late from a slow one running on time.
 
 A receipt proves **acceptance, not a holding**: a payee who was paid and paid
 onward still holds the receipt for what they received. Reading it as a holding
-is how a redemption pays a party that has already spent.
+is how a redemption pays a party that has already spent. The durable form of
+that line, and the one that decides what may be built on a receipt: **it
+attributes an act to the operator, and never proves a value to a holder.** A
+chain of receipts back to committed state would prove the value — and it is
+provenance, which is precisely what blinding exists to destroy, so it is ruled
+out here rather than deferred. See [[DECISIONS.md]].
 
 ## Design rules
 
