@@ -82,6 +82,25 @@ recomputes the root, and the encoder pins each position to its index, so a log
 that reaches this point has them - but the answer was wrong in the accusing
 direction, which is the one direction that matters. It answers `unrelated`.
 
+**Found by `/code-review high` on the slice, recorded rather than patched:** an
+operator can escape both predicates by dropping the backing from its committed
+state entirely rather than shrinking its log. `committedLogFor` answers undefined
+for a state that carries no entry for the backing, so `isRewrittenHistory` is
+silent and every receipt reads `unrelated` - and `isSilent` measures whether the
+OPERATOR published rather than whether it published anything carrying this
+backing, so one still committing its other backings is graded perfectly live. The
+claims freeze and no grade fires against anyone, which is §C2's "a stall is
+deniable where a dishonour is recorded" one level down. Demonstrated in
+`review-dropped-backing.mjs`, with the operator committing on schedule
+throughout.
+
+It is not fixable from the venue alone, which is why it is not patched here: a
+commitment is a root, so whether it carries a backing cannot be read without the
+served state. The honest form is a predicate that takes one - and that is the
+same shape as everything else this round concluded, since availability is
+already assumed (§C2b: the trail "replicas serve because publication was the
+point"). An `OPEN:` test pins it.
+
 **Not built, and it is the next thing:** the remedy. A payee whose receipt reads
 `pending` against a dark operator, or whose operator restored stale data, can now
 name the fault and cannot get their units. That needs a successor sequencer

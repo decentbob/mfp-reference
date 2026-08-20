@@ -1,6 +1,7 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
 import { signBacking, type Backing } from "../src/backing.js";
+import { compareBytes } from "../src/bytes.js";
 import { signCommitment, stateRoot, type ServedState } from "../src/commitment.js";
 import { isRewrittenHistory } from "../src/fault.js";
 import { encodeIssuanceMessage, encodeTransferMessage } from "../src/messages.js";
@@ -275,5 +276,41 @@ describe("invariant 22: a later commitment must extend the earlier one", () => {
     };
     expect(isRewrittenHistory(backing, full, stranger)).toBe(false);
     expect(isRewrittenHistory(backing, full, undefined as unknown as ServedState)).toBe(false);
+  });
+});
+
+describe("§C2: what neither of them reaches", () => {
+  it("OPEN: an operator that drops a backing from its commitments evades both", () => {
+    // Pinning a hole, not a property. isRewrittenHistory compares THIS backing's
+    // log in two committed states, and committedLogFor answers undefined where a
+    // state carries no entry for the backing at all. So an operator that
+    // restored stale data need not shrink one log to escape: it can stop
+    // committing that backing entirely.
+    //
+    // Every holder then reads "unrelated" for every receipt and proves no
+    // holding, while isSilent measures whether the OPERATOR published rather
+    // than whether it published anything carrying this backing — so an operator
+    // still committing its other backings is graded perfectly live. The claims
+    // freeze and no grade fires against anyone, which is §C2's "a stall is
+    // deniable where a dishonour is recorded" one level down.
+    //
+    // Not patched here, because it is not fixable from the venue alone: a
+    // commitment is a root, so whether it carries a backing cannot be read
+    // without the served state. The honest form is a predicate that takes one,
+    // which is a decision rather than a review fix. See DECISIONS.md.
+    const { sequencer, backing } = setup();
+    const other = makeTransparentBacking(SECRETS.backer2, "USD");
+    sequencer.register(other, signBacking(SECRETS.backer2, other));
+    const { moveReceipt } = twoOperations(sequencer, backing);
+    const honest = { snapshots: sequencer.snapshot(), commitment: sequencer.commit() };
+
+    const withoutIt = sequencer.snapshot().filter((s) => compareBytes(s.name, backing.name) !== 0);
+    const dropped = {
+      snapshots: withoutIt,
+      commitment: signCommitment(SECRETS.operator, honest.commitment.sequence + 1n, stateRoot(withoutIt)),
+    };
+
+    expect(isRewrittenHistory(backing, honest, dropped)).toBe(false);
+    expect(receiptStatus(backing, moveReceipt, dropped)).toBe("unrelated");
   });
 });
