@@ -16,6 +16,118 @@ Format:
 
 ---
 
+## 2026-08-20 - Basis read in full: what we take, what we do not, and the curve
+
+**Question:** §21 names Basis (BetterMoneyLabs/basis-tracker) and says its tracker,
+its chain commitments and its silence-redemption "is the sequencer, the witness
+venue, and the snapshot path... The gap is the claim layer rather than the
+plumbing, which makes it the natural place to build this." Bob is in contact with
+them and expects Ergo to be our first venue. So: read it properly, take what is
+good, and settle whether the venue's cryptography forces ours.
+
+Read: `contract/basis.es` (429 lines), the AVL+ commitment module, the core note
+and tracker-state types, and the tracker box updater. Not read in depth: the
+~50k lines of Rust around them. The repository is **CC0**, so nothing here is
+encumbered.
+
+**The convergence is not coincidence, and is not only lineage.** Bob's paper
+simplified and generalised ChainCash, of which Basis is the offchain sibling. But
+the parts that were not inherited converged anyway, which is the evidence worth
+having:
+
+- `NoteConfirmationStatus` is `receiptStatus`. Their own words: "A note is only
+  redeemable when its totalDebt is committed in the confirmed on-chain tracker
+  box R5. Notes that are only in the local tracker tree (LocalOnly) or in a
+  submitted-but-unconfirmed update transaction (Pending) cannot be redeemed yet."
+  That is CLAUDE.md's rule that a payment is final when witnessed rather than
+  co-signed, reached from the same pressure.
+- Redemption requires the reserve owner's signature **and** the tracker's. That
+  is invariant 27's "settlement takes two signatures", arrived at independently.
+- Emergency redemption when `HEIGHT - tracker.creationInfo._1 > 3*720` is the
+  silence clause, measured from the last commitment, on block height.
+- The reserve's own AVL tree of cumulative redeemed amounts is the spent set.
+
+**Decisions (Bob):**
+
+- **Two levels of integration, and only the first is free.**
+
+  **Level 1, Ergo as the venue only.** Publish a 32-byte commitment root to a
+  box. A witnessing venue verifies nothing, so this needs no contract, no AVL
+  proofs and no change of curve; equivocation stays an off-chain proof
+  (`isEquivocation`). What it buys is that every §C2b grade stops being simulated:
+  block height is a real witnessed index that no operator controls. This is the
+  next slice, and it goes against the seam `Venue` already documents.
+
+  **Level 2, the reserve.** That is a different thing and is taken deliberately
+  or not at all.
+
+- **The reserve is not a foreign concept to import. It is our own deferred
+  chain-asset leg.** Bob's reduction, which settles it: a **hard** reserve, one
+  only claim holders can unlock, is not credit at all - it is an escrowed
+  transfer, so the claim adds nothing over moving the ERG. A **soft** reserve,
+  one the owner can withdraw from, is credit, and the collateral is then only as
+  good as the owner's restraint, so trust returns. ChainCash tried to avoid the
+  choice and its tricks are not sybil-resistant. Basis's reserve is soft: actions
+  #2 and #3 give the owner a two-phase exit on two months' notice.
+
+  So the reserve buys **convenience - atomic redemption of an on-chain asset -
+  rather than the removal of the dominant risk**, which §C2 already says no
+  interval covers. That is a payout-side feature, and the grammar already has a
+  place for it: invariant 18 lets R name chain assets, and §C3 locks a
+  chain-asset leg in escrow on a decision venue. Both were deferred here with the
+  reason "needs a real venue". Ergo is that venue, and Basis has a working
+  instance of the leg.
+
+- **No curve switch.** Three reasons, and a recorded trigger.
+
+  Level 1 needs none: the venue records a root and checks nothing. The extension
+  point already exists, because K is written as `u8 tag 0x01 (single Ed25519) ||
+  32-byte key`, so tag 0x02 for secp256k1 leaves every existing name untouched -
+  the move slice 12 proved for E's clauses. And the question is per key rather
+  than global: the obligor needs to be contract-verifiable only if the payout
+  settles on-chain, while the operator needs it only if a contract adjudicates.
+  Different keys, different needs, which is what tags are for. One curve
+  everywhere would be simpler only if we knew we would never leave Ergo.
+
+  **The trigger, recorded so it is not rediscovered: switch a key to secp256k1
+  when a contract must verify a signature by that key.** The cost when it comes
+  is known - Ergo's Schnorr is not BIP-340 but a strong-Fiat-Shamir construction,
+  `e = blake2b256(a || message || pubkey)` with `(a, z)` verified as
+  `g^z == a * x^e`, so it is our own verification code rather than a library
+  call. Basis carries Schnorr and Scala test vectors under CC0, which is what
+  makes that tolerable.
+
+- **Converge where useful, and not further.** Two places where we are stricter
+  than Basis, both worth raising with them because they are cheap now and
+  expensive later:
+
+  - **Their witness interval is operational discretion** (`update_interval_seconds:
+    600` in config). §C2 says "the interval is a signed field rather than
+    operational discretion", and slice 10 put it inside the name. A backing whose
+    declared interval differs from its tracker's cadence has its grade measured
+    against a promise nobody made, so something has to bind them.
+  - **Their silence duration is tracker-wide and hardcoded** at 3*720 blocks from
+    the tracker box's creation, so every debt becomes emergency-redeemable at
+    once. Ours is per backing in E, deliberately: "two backings can grade one
+    silent operator differently, which is the arrangement §C2b describes."
+    Reading the duration from a register would let both models coexist.
+
+**Reopened: "invariant 23's non-membership requirement is satisfied by serving
+everything" (slice 6).** The reasoning was that under transparent the whole state
+is served and rehashed, so serving everything IS the proof, and the Merkle
+machinery is what a construction needs when it cannot serve everything. That
+holds - with a hidden assumption it never stated: **the verifier is a person who
+can be served 35 KB.** Basis needs an AVL+ tree with membership proofs because
+its verifier is a contract, and a contract cannot be served a log.
+
+It does not bite at Level 1, where the venue witnesses and adjudicates nothing.
+It bites the moment a contract decides anything, which is Level 2. The entry
+stands with that condition attached rather than being reversed.
+
+**Spec change:** none needed. §21's "the natural place to build this" now has a
+worked reading behind it, and the reserve's place in the grammar - a chain-asset
+leg under invariant 18 and §C3 - is already written.
+
 ## 2026-08-20 - Slice 14: the successor serves
 
 **Question:** slice 13 made the chain walkable and left the successor unable to
@@ -1222,6 +1334,12 @@ and where do the terms live?
   directly: "a signed spend record published at the venue, checked against the
   last committed balance state, stands in for the nullifier."
 
+  *[Qualified 2026-08-20 after reading Basis: the reasoning holds, with a
+  condition it never stated - the verifier is a PERSON who can be served the
+  whole state. A contract cannot be, which is why Basis carries an AVL+ tree
+  with membership proofs. Harmless while the venue only witnesses; it bites the
+  moment a contract adjudicates. See "Basis read in full".]*
+
 **Found by the review of this slice, and fixed here:** invariant 10 binds "at
 every published moment", and a committed state is a published moment - but
 `encodeSnapshot` never checked it. Demonstrated: a backer-run operator issues 100
@@ -1329,7 +1447,9 @@ a bare Merkle root cannot do" - but under transparent the whole state is served
 and rehashed, which is already how receipts prove, so serving everything *is* the
 non-membership proof. The machinery is what you need when you cannot serve
 everything, which is the shielded constructions. To be confirmed when the
-recovery path lands. **Confirmed in slice 6; see the entry above.**
+recovery path lands. **Confirmed in slice 6; see the entry above.** *[And
+qualified 2026-08-20: confirmed for a reader who can be served the whole state,
+which a contract cannot be. See "Basis read in full".]*
 
 **Next slice, agreed:** §C2b silence and snapshot redemption. E declares the
 no-commitment duration and the challenge window under a **new evidence tag
