@@ -16,6 +16,77 @@ Format:
 
 ---
 
+## 2026-08-20 - Slice 13: the chain from the original terms is walkable
+
+**Question:** §C2's replacement rule, which everything since the challenge-window
+round has been converging on. A payee can name every fault and still not get
+their units; the remedy is a successor, and E has to say who may appoint one.
+
+**Decisions (Bob):**
+
+- **E's operator is the genesis value, not a mutable field.** It sits inside the
+  name and invariant 1 forbids an edit, so a replacement does not change it - it
+  **supersedes** it, on a witnessed record anyone can walk. That is how §C2's
+  "venue and attester are named in E and move only under its replacement rule"
+  and invariant 1 hold at once, and it is why the paper says a wallet "verifies
+  the chain rather than the key it remembers" rather than reading a field. Slice
+  10 recorded that declaring a venue meant no venue change until this landed; the
+  answer turns out to be that nothing in the name ever changes.
+
+- **Hash-linked, agreed with Bob before building.** Each replacement names its
+  predecessor by that predecessor's own canonical hash, and the first link names
+  the backing. "Walkable from the original terms" then means it literally: a fork
+  cannot be spliced in unseen, and a link that attaches to nothing is not a link.
+
+- **Two replacements at one predecessor: earliest witnessed wins.** That is the
+  rule two requests at one nonce already follow (§C2, witnessing pins order), and
+  it is the right one here for a different reason: the rule-holder is *entitled*
+  to choose a successor, so signing two is sloppiness rather than an attack, and
+  the one it published first is the one it chose first. Refusing to resolve
+  instead would let the rule-holder freeze its own backing.
+
+- **The role is written even though one role exists.** Only the operator can be
+  replaced here - moving the venue is a second clock, which is the conflation
+  slice 5 removed - and writing the role is what stops this replacement being
+  read later as a replacement of something else.
+
+- **The second stage is bounded, which the plain reading is not.** §C2 gives a
+  successor force only "from the first index at which it has published its own
+  commitment over a spent set it serves in full". Whether a commitment carries
+  this backing is unreadable from a root, so that half cannot be checked from the
+  venue - the same limit as the dropped-backing hole recorded in slice 11, and it
+  wants the same answer, a predicate that takes a served state.
+
+  **Found reviewing the implementation:** asked from genesis, the check was worse
+  than approximate, it was vacuous. A successor that already operates some other
+  backing answers with a commitment made long before anyone named it, so it
+  arrives already in force and the second stage means nothing. The commitment
+  must now come at or after the handover was witnessed, so it is at least one the
+  successor could have made for this backing.
+
+**What this slice deliberately does not do: let the successor serve.** The chain
+is declared, walkable, and read by the verifiers that ask who is in force -
+`isSilent`, `isOverdue`, and the redemption walk's "whose commitment was latest".
+`Sequencer` still serves only the key E names, and `isOperatorReceipt` and
+`committedLogFor` still read that key too.
+
+The split is not arbitrary. Reading the chain needs an index and every one of
+those callers has one. The identity of a *past act* does not: a receipt names an
+operation and a position and never when it was signed, so "was this key in force
+then" cannot be asked of it. That question belongs with the slice that makes a
+successor serve, because it is the same question as which log is the state of
+record - and that slice needs the predecessor's tail, which is the other half of
+the same problem. Splitting it here keeps a signature change out of fault.ts and
+its tests for the sake of a half-answer.
+
+**Consequences.** `replacement.ts` holds the object, its canonical message and
+the walk; the venue records a third kind of thing beside commitments and
+operations, and judges it exactly as much - which is to say it refuses bytes that
+do not encode and nothing else. E gains clause 0x03, which is the first clause
+written since the list landed, and it cost one entry rather than four tags.
+
+**Spec change:** none needed.
+
 ## 2026-08-20 - Slice 12: E's clauses are a list, not a tag per combination
 
 **Question:** the replacement rule is E's third optional block. Slice 10 spent

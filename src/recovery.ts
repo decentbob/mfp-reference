@@ -66,6 +66,7 @@ import { compareBytes, copyBytes, isValidQuantity } from "./bytes.js";
 import { type PublishedOp } from "./oplog.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { operatorAt } from "./replacement.js";
 import { Venue, type WitnessedOp } from "./venue.js";
 
 export type { ServedState };
@@ -93,6 +94,11 @@ export function quietFor(venue: Venue, operator: Uint8Array): bigint {
  * per caller. quietFor deliberately does not: it takes an operator rather than a
  * backing, and has no terms to consult.
  */
+/** The operator in force at the venue's present index. */
+function operatorNow(venue: Venue, backing: Backing): Uint8Array {
+  return operatorAt(backing, venue, venue.witnessedIndex());
+}
+
 export function venueIsDeclared(venue: Venue, backing: Backing): boolean {
   const declared = backing.evidence.witnessing?.venue;
   if (declared === undefined) return true;
@@ -116,7 +122,11 @@ export function isSilent(venue: Venue, backing: Backing): boolean {
   const clause = backing.evidence.silence;
   if (clause === undefined) return false;
   if (!venueIsDeclared(venue, backing)) return false;
-  return quietFor(venue, backing.evidence.operator) > clause.noCommitmentDuration;
+  // The operator in force now, not the key E names: §C2's "a wallet verifies the
+  // chain rather than the key it remembers". Accrual against a replaced
+  // incumbent stops at the handover, because the successor's own first
+  // commitment is what gave it force — so its quiet time starts there.
+  return quietFor(venue, operatorNow(venue, backing)) > clause.noCommitmentDuration;
 }
 
 /**
@@ -142,7 +152,7 @@ export function isOverdue(venue: Venue, backing: Backing): boolean {
   const terms = backing.evidence.witnessing;
   if (terms === undefined) return false;
   if (!venueIsDeclared(venue, backing)) return false;
-  return quietFor(venue, backing.evidence.operator) > terms.interval;
+  return quietFor(venue, operatorNow(venue, backing)) > terms.interval;
 }
 
 /**
@@ -222,7 +232,7 @@ function replayLatestState(
   served: ServedState,
 ): LedgerState | undefined {
   if (!venueIsDeclared(venue, backing)) return undefined;
-  const latest = venue.latestFor(backing.evidence.operator);
+  const latest = venue.latestFor(operatorNow(venue, backing));
   if (latest === undefined) return undefined;
   if (latest.sequence !== served.commitment.sequence) return undefined;
   if (compareBytes(latest.root, served.commitment.root) !== 0) return undefined;
@@ -292,7 +302,9 @@ function before(at: bigint): bigint {
 function publishedInGap(venue: Venue, backing: Backing, at: bigint): boolean {
   const clause = backing.evidence.silence;
   if (clause === undefined) return false;
-  const last = venue.witnessedAtFor(backing.evidence.operator, before(at)) ?? 0n;
+  // Judged against whoever was in force at the index the publication landed at,
+  // which is the same rule the publication itself is judged by.
+  const last = venue.witnessedAtFor(operatorAt(backing, venue, at), before(at)) ?? 0n;
   return at - last > clause.noCommitmentDuration;
 }
 
@@ -493,7 +505,7 @@ function inSequenceOrder(requests: readonly WitnessedOp[], holder: Uint8Array): 
 
 /** Whether the served state was this operator's latest commitment before `at`. */
 function isLatestAt(venue: Venue, backing: Backing, served: ServedState, at: bigint): boolean {
-  const latest = venue.latestFor(backing.evidence.operator, before(at));
+  const latest = venue.latestFor(operatorAt(backing, venue, at), before(at));
   if (latest === undefined) return false;
   if (latest.sequence !== served.commitment.sequence) return false;
   return compareBytes(latest.root, served.commitment.root) === 0;

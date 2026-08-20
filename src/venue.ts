@@ -55,6 +55,12 @@ import { copyBytes } from "./bytes.js";
 import { copyCommitment, verifyCommitment, type Commitment } from "./commitment.js";
 import { utf8Encoder } from "./contexts.js";
 import { copyOp, opMessageOfEntry, type PublishedOp } from "./oplog.js";
+import {
+  copyReplacement,
+  replacementMessage,
+  type Replacement,
+  type WitnessedReplacement,
+} from "./replacement.js";
 
 export class VenueError extends Error {}
 
@@ -91,6 +97,8 @@ export class Venue {
   private readonly byOperator = new Map<string, Witnessed[]>();
   /** Backing name hex -> operations published against it, in published order. */
   private readonly opsByBacking = new Map<string, WitnessedOp[]>();
+  /** Backing name hex -> replacements published against it, in published order. */
+  private readonly replacementsByBacking = new Map<string, WitnessedReplacement[]>();
 
   /**
    * A venue carries an identity, because §C2b reads a grade "at its witnessed
@@ -197,6 +205,54 @@ export class Venue {
   publishedOpsFor(backingName: Uint8Array): WitnessedOp[] {
     const log = this.opsByBacking.get(bytesToHex(backingName)) ?? [];
     return log.map((witnessed) => ({ op: copyOp(witnessed.op), at: witnessed.at }));
+  }
+
+  /**
+   * Record a replacement published against a backing (§C2: "a replacement is
+   * itself a witnessed object"). Anyone may publish, and the venue takes no
+   * view: whether it is signed by the key E's rule names, and whether it has
+   * taken force, is replacement.ts's question, answered from this record.
+   *
+   * The one refusal is bytes that do not encode, for the reason an operation
+   * with no canonical message is a record of nothing.
+   */
+  publishReplacement(backingName: Uint8Array, replacement: Replacement): void {
+    let copy: Replacement;
+    try {
+      replacementMessage(backingName, replacement);
+      copy = copyReplacement(replacement);
+    } catch (cause) {
+      throw new VenueError(`published replacement does not encode: ${String(cause)}`);
+    }
+    const key = bytesToHex(backingName);
+    const witnessed: WitnessedReplacement = { replacement: copy, at: this.height };
+    const log = this.replacementsByBacking.get(key);
+    if (log === undefined) this.replacementsByBacking.set(key, [witnessed]);
+    else log.push(witnessed);
+  }
+
+  /** Every replacement published against this backing, as copies, in order. */
+  replacementsFor(backingName: Uint8Array): WitnessedReplacement[] {
+    const log = this.replacementsByBacking.get(bytesToHex(backingName)) ?? [];
+    return log.map((w) => ({ replacement: copyReplacement(w.replacement), at: w.at }));
+  }
+
+  /**
+   * The index at which this key first published a commitment here at or after
+   * `notBefore`, or undefined if it never has. §C2 gives a successor force only
+   * "from the first index at which it has published its own commitment", so this
+   * is the second half of the two-stage handover.
+   *
+   * The bound matters: asked from genesis, a successor that already operates
+   * some other backing answers with a commitment it made long before anyone
+   * named it, and the second stage means nothing. Asked from the index the
+   * handover was witnessed at, the commitment is at least one it could have made
+   * for this handover.
+   */
+  firstCommitmentFor(operator: Uint8Array, notBefore = 0n): bigint | undefined {
+    const log = this.byOperator.get(bytesToHex(operator)) ?? [];
+    for (const witnessed of log) if (witnessed.at >= notBefore) return witnessed.at;
+    return undefined;
   }
 
   /**

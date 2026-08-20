@@ -34,6 +34,8 @@
 //                     || u64 no-commitment duration || u64 challenge window
 //                   u8 0x02 witnessing
 //                     || 32-byte venue id || u64 witness interval
+//                   u8 0x03 replacement rule
+//                     || 32-byte key that may sign a successor
 //
 // **A list, not a tag per combination.** E's clauses are independent — a backer
 // may promise a schedule without conceding a grade, and §C2 has several more to
@@ -80,6 +82,7 @@ const TAG_EVIDENCE_TRANSPARENT = 0x01;
 const TAG_EVIDENCE_CLAUSES = 0x05;
 const CLAUSE_SILENCE = 0x01;
 const CLAUSE_WITNESSING = 0x02;
+const CLAUSE_REPLACEMENT = 0x03;
 /** E has a handful of blocks in the paper, not a stream of them. */
 const MAX_EVIDENCE_CLAUSES = 16;
 
@@ -159,6 +162,15 @@ export interface TransparentEvidence {
    * chose and the holder read, not an oversight.
    */
   readonly witnessing?: WitnessingTerms;
+  /**
+   * §C2's replacement rule: the key that may sign a successor operator, "the
+   * backer by default". Absent means this backing's sequencer cannot be replaced
+   * at all, which §C2b makes E's own answer — and which leaves the silence
+   * clause as the only exit, a setting the holder reads before accepting.
+   *
+   * A key rather than a flag, because "the backer" is just that key named.
+   */
+  readonly replacementRule?: Uint8Array;
   /**
    * Absent (tag 0x01) means the backer declared no silence clause, so snapshot
    * redemption never opens and claims can go illiquid forever. That is a
@@ -243,6 +255,10 @@ function encodeFields(b: BackingFields): Uint8Array {
       },
     });
   }
+  if (b.evidence.replacementRule !== undefined) {
+    const rule = b.evidence.replacementRule;
+    clauses.push({ tag: CLAUSE_REPLACEMENT, write: () => w.key32(rule, "replacement rule key") });
+  }
   clauses.sort((x, y) => x.tag - y.tag);
   // Asserted where they are written, not only where they are read back. Sorting
   // does not deduplicate, and a clause added later under a tag another already
@@ -271,7 +287,7 @@ function encodeFields(b: BackingFields): Uint8Array {
 
 /** Field by field, so nothing rides along on a spread of caller input. */
 function canonicalEvidence(evidence: TransparentEvidence): TransparentEvidence {
-  const { silence, witnessing } = evidence;
+  const { silence, witnessing, replacementRule } = evidence;
   // Spread rather than branch: two independent optional blocks are four arms as
   // an if/else, and exactOptionalPropertyTypes forbids an explicit undefined.
   return {
@@ -293,6 +309,7 @@ function canonicalEvidence(evidence: TransparentEvidence): TransparentEvidence {
             challengeWindow: silence.challengeWindow,
           }),
         }),
+    ...(replacementRule === undefined ? {} : { replacementRule: copyBytes(replacementRule) }),
   };
 }
 
@@ -442,6 +459,7 @@ export function decodeBacking(bytes: Uint8Array): Backing {
 
   let silence: SilenceClause | undefined;
   let witnessing: WitnessingTerms | undefined;
+  let replacementRule: Uint8Array | undefined;
   if (tag === TAG_EVIDENCE_CLAUSES) {
     const count = r.u32();
     // An empty list is tag 0x01's spelling, and two spellings of one backing
@@ -459,6 +477,8 @@ export function decodeBacking(bytes: Uint8Array): Backing {
         silence = { noCommitmentDuration: r.u64(), challengeWindow: r.u64() };
       } else if (clause === CLAUSE_WITNESSING) {
         witnessing = { venue: r.raw(NAME_LENGTH), interval: r.u64() };
+      } else if (clause === CLAUSE_REPLACEMENT) {
+        replacementRule = r.raw(KEY_LENGTH);
       } else {
         // Not skipped: a reader reporting terms it cannot check is worse than
         // one reporting none.
@@ -477,6 +497,7 @@ export function decodeBacking(bytes: Uint8Array): Backing {
       operator,
       ...(witnessing === undefined ? {} : { witnessing }),
       ...(silence === undefined ? {} : { silence }),
+      ...(replacementRule === undefined ? {} : { replacementRule }),
     },
   });
 }
