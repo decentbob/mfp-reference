@@ -16,6 +16,145 @@ Format:
 
 ---
 
+## 2026-08-20 - The challenge window's reach, and why no patch fits it
+
+**Question:** Bob asked for the merged implementation to be reviewed for
+inaccuracies and divergences from the paper before continuing. Two things came
+out of it. One was a bug and is fixed. The other turned into a design question
+that reaches further than the code: is §C2b's challenge window worth repairing
+at all, and what may be built on a receipt.
+
+**Fixed first: a publication of no known kind bricked the operator.** The venue's
+one refusal is bytes that do not encode, and it did not fire for an operation
+whose `kind` is not one of the seven - every switch over the kinds ran off its
+end and returned `undefined` typed as bytes, so nothing threw. `Sequencer.adopt`
+walks the venue's record before it applies or co-signs anything and `commit()`
+adopts for every backing it serves, so one publication by a stranger holding no
+keys stopped an honest operator committing at all - which is §C2b's aggravated
+grade, opening snapshot redemption against every backing that operator served.
+Demonstrated with a second backing that had nothing published against it, graded
+silent. `unknownOpKind` is now the one place that says an unknown kind is not an
+operation, and its `never` parameter keeps the compile-time exhaustiveness while
+its `never` return gives the runtime the same answer.
+
+**Then the window, and the finding that reframed it.** A challenge is folded onto
+a copy of the pre-gap snapshot, and the gate is "the chain starts where the claim
+leg stands, or not at all". Two demonstrated failures, and the second is what
+matters:
+
+- **The state cannot reach the claim.** The fold starts at the claimant's
+  snapshot nonce, so a claim filed after any leg of her own during the gap is
+  beyond every challenge. One claim, one challenge, no second claimant: she
+  files a demand and withdraws it, then claims one step along, and her payee's
+  evidence is refused on the nonce.
+- **And she chooses where to stand.** The spend's nonce is fixed - it is
+  whatever she signed when she paid. The claim's nonce is hers, because she
+  chooses what else to publish first. So the obvious repair, judging each
+  challenge against the state as it stood when its claim was filed, closes the
+  first case and not the second. The window reaches a careless double-spender
+  and never a deliberate one.
+
+**Decision (Bob): the window is not patched, and nothing is added to reach
+further.** Three reasons, and the third is the one that generalises.
+
+- **Illiquidity is the rule, and it is the design rather than a workaround.**
+  §C2b: claims "go illiquid rather than dead. Value discounts until they
+  return." A transfer published at the venue is evidence, never an operation, so
+  a payee who accepts during darkness is relying on the window, and the price
+  was on the table. Bob's framing: liquidity resumes when the operator returns
+  or a successor takes over, and not spending while illiquid already makes the
+  system work.
+- **A patch that does not close its own hole is not worth its permanence.** The
+  state-before repair is ten lines in the most delicate function in the
+  codebase, and it buys a narrower hole rather than none.
+- **The repairs that would reach further do not survive blinding.** The one that
+  works is a receipt chain: provenance back to committed state, handed over at
+  payment time, because the middle of a chain has spent and has no stake -
+  demonstrated, and without the missing link the honest payee is not merely
+  unrefuted against but *unpayable*, since her own receipt debits a balance the
+  last commitment never saw. Bob's objection killed it: this slice is the
+  barebones of a design that must later blind, and a chain naming every past
+  holder is exactly what blinding exists to destroy. Worse with age, since the
+  history grows per hop - the failure invariant 20 names for accrual per
+  vintage.
+
+**So the line is: a receipt attributes an act to the operator, and never proves a
+value to a holder.** That is slice 9's own conclusion when it refused
+`holdingProvenByReceipt`, restated as the rule that decides what may be built.
+Attribution translates as far as each construction allows - §C4 grades it
+"unbounded" under Chaumian, "since the commitment buys attribution rather than
+proof". Value proofs do not translate at all.
+
+**What does translate, and is already built.** Recovery is not "show me where
+this came from" but "prove the claim unspent as of the last commitment" -
+invariant 23's non-membership proof over the spent set, §C2b's published
+nullifier. A negative statement about committed state, with no chain and no past
+holders. `provesHolding` is the transparent form of it, and the Merkle machinery
+is the same predicate proved differently where the whole state cannot be served.
+
+**The uncommitted tail is not a transparent problem and is not rescued.** An
+operation accepted after the last commitment lives only in the operator's
+unpublished log and in its receipt, and a Chaumian token signed but never
+committed is exactly as unprovable. It is a finality question, and the spec
+answers it: "Finality means witnessed rather than co-signed" (§C2), "a release
+nobody witnessed did not happen" (§C3). The exposure is the interval since the
+last commitment, which is why §C2 makes the interval "a signed field rather than
+operational discretion".
+
+**Two rules into CLAUDE.md, beside the two operator ones**, because they are the
+actual defence and no code here enforces either: claims go illiquid while the
+operator is dark, so do not accept one; and a payment is final when witnessed,
+not when co-signed.
+
+**Recorded as open, in tests rather than in prose.** Two `OPEN:` tests in
+c2b-redemption-legs pin what the window does not reach - the nonce dodge, and
+the second of two claims in one gap - so an assumption that it works fails
+loudly. They sit beside the slice-8 one that pins the pre-emption hole.
+
+**Noted, not built, in the order they look worth doing:**
+
+- **The witness interval belongs in E.** The glossary's own field list has E
+  declaring "who currently attests a claim unspent, the venue it commits to,
+  **the witness interval**, the replacement rule..." and ours declares the
+  operator key and the silence clause. A payee told to wait for finality cannot
+  tell a fast operator running late from a slow one running on time. A tag 0x03
+  on tag 0x02's own reasoning: a new tag rather than a version bump, declaring
+  only what code enforces. Construction-independent, which is now the test a
+  candidate has to pass.
+- **`contradictsOwnReceipt`.** An operator that restores a stale state and keeps
+  serving will commit a log whose entry at position P is not the operation it
+  receipted at P. Today `receiptProvenBy` answers `false`, which also means "not
+  committed yet"; the undeniable form is that the log is long enough to have
+  contained it and does not. `isDoublePosition`'s missing sibling, and on the
+  right side of the line above - it attributes an act to the operator.
+- **Successor sequencers and the uncommitted tail**, unchanged from slice 9, and
+  now with a reason to prefer succession over recovery: a successor adopting
+  what it can verify is where the honest payee gets units rather than a share of
+  somebody's redemption.
+
+**Also in this round, five inaccuracies with no behaviour behind them**, each a
+place a reader was told something the code had stopped doing: `IssuanceLogEntry`
+outliving `issuanceLog`; ledger.ts still calling balances primary state after
+the alignment made them the fold; commitment.ts still deferring non-membership
+proofs "with the recovery path" that landed in slice 6; presentability.ts
+looking wired up when invariant 13 is enforced by refusing reliance-bearing
+demands instead; and CLAUDE.md's invariant 16 bullet claiming a closure
+expansion `makeBacking` does not do.
+
+**Spec change: one to raise.** §C3: "the demand names specific claims, and
+spending them voids it, checkable under transparent, accumulator and pooled,
+since nullifiers are public where amounts are not." Under transparent there are
+no specific claims to name - §C1 makes it "a per-token public ledger of
+key-controlled balances", and a balance is fungible. The implementation
+substitutes the claimant's nonce as the proxy for "which claims", and the nonce
+dodge above is exactly what that proxy costs: a nullifier is the claim's own
+identity and cannot be moved, while a nonce is a position its signer chooses. So
+the sentence lists transparent alongside constructions whose mechanism it then
+gives, and the transparent case has no equivalent. Proposed: either scope the
+clause to accumulator and pooled, or say what the transparent check actually
+keys on and that it is weaker for it. The "pays the request's presenter" wording
+from slice 8 remains filed as money-from-first-principles#1.
+
 ## 2026-08-19 - Slice 9: the holder can be at fault too
 
 **Question:** slice 8 left §C2b's challenge window defeatable by the claimant.
@@ -309,6 +448,10 @@ judges neither beyond refusing bytes that do not encode.
   position in a log that was never committed, so what it proves has to be settled
   on the signature alone; the payee has to actually hold it, which is a wallet
   protocol; and the case where neither party has one needs an answer.
+  *[Closed 2026-08-20, and not by building it: the window reaches a careless
+  double-spender and never a deliberate one, because the claimant chooses which
+  nonce her claim stands at. See "The challenge window's reach, and why no patch
+  fits it" for what a receipt may and may not be made to prove.]*
 - **`snapshotRedemptions` stops resolving once the operator has adopted and
   committed the legs**, because they are then in the log and the ordinary
   presentation record covers them. The redemption is still a fact; it is the

@@ -576,9 +576,13 @@ describe("§C2b: the challenge window substitutes the payee, and voids nothing",
     //
     // It is the reach of §C2b's rule rather than a defect in implementing it:
     // where a double-signature is resolved by publication order, the party who
-    // signed both knows first. Closing it needs evidence of which signature the
-    // operator actually served, which is its receipt. **When that lands, this
-    // test should fail and be rewritten to expect bob.** See DECISIONS.md.
+    // signed both knows first.
+    //
+    // This was to be closed by ranking a receipt-backed challenge above a bare
+    // one. It will not be: see the two OPEN tests below, and DECISIONS.md. The
+    // window's defence is that claims go illiquid while the operator is dark,
+    // and a payee who accepts anyway comes away with a fault proof rather than
+    // the money.
     const { venue, sequencer, backing } = setup();
     const served = goDark(venue, sequencer);
     const alice2 = pub(new Uint8Array(32).fill(0x09));
@@ -589,6 +593,70 @@ describe("§C2b: the challenge window substitutes the payee, and voids nothing",
     const redemption = snapshotRedemptions(venue, backing, served)[0]!;
     expect(compareBytes(redemption.payments[0]!.payee, alice2)).toBe(0);
     expect(compareBytes(redemption.payments[0]!.payee, KEYS.bob)).not.toBe(0);
+  });
+
+  it("OPEN: a claimant who moves the claim off the contested nonce escapes entirely", () => {
+    // Pinning a hole, not a property, and the one that decided not to patch
+    // this fold at all. The gate below asks for a request AT the claim leg's
+    // own nonce:
+    //
+    //     if (payments.length === 0 && request.nonce !== record.nonce) continue;
+    //
+    // The spend's nonce is fixed — it is whatever she signed when she paid. The
+    // CLAIM's nonce is hers, because she chooses what else to publish first. So
+    // she burns the contested position on a demand she withdraws, two signatures
+    // and no money, and files the real claim one step along. Bob's evidence is
+    // her signature at the very nonce she spent, and it is never heard.
+    //
+    // The window therefore reaches a careless double-spender and never a
+    // deliberate one. It is not patched, because the defence is the rule §C2b
+    // states outright — claims go illiquid while the operator is dark, so a
+    // payee who accepts then took a price that was on the table — and because
+    // the repairs that reach further do not survive blinding. See DECISIONS.md.
+    const { venue, sequencer, backing } = setup();
+    const served = goDark(venue, sequencer);
+    const junk = demand(backing, SECRETS.alice, KEYS.alice, 100n, 11n, 40n, 0n);
+    publishAt(venue, 11n, backing, junk.op);
+    publishAt(venue, 12n, backing, withdrawal(backing, SECRETS.alice, junk.hash, 1n));
+    const claim = demand(backing, SECRETS.alice, KEYS.alice, 100n, 13n, 40n, 2n);
+    publishAt(venue, 13n, backing, claim.op);
+    publishAt(venue, 14n, backing, acceptance(backing, SECRETS.backer, claim.hash, 13n, 40n, 1n));
+    publishAt(venue, 15n, backing, release(backing, SECRETS.alice, claim.hash, 3n));
+    publishAt(venue, 16n, backing, challengeOf(backing, 100n));
+
+    const redemption = snapshotRedemptions(venue, backing, served)[0]!;
+    expect(compareBytes(redemption.payments[0]!.payee, KEYS.alice)).toBe(0);
+    expect(compareBytes(redemption.payments[0]!.payee, KEYS.bob)).not.toBe(0);
+  });
+
+  it("OPEN: only the first of two claims in one gap can be challenged", () => {
+    // The same hole reached without any malice. Alice equivocates at nonce 0
+    // and at nonce 1; Bob and Carol each hold a transfer she signed, and each
+    // publishes it. The fold runs against the PRE-GAP snapshot, where her
+    // sequence is still at 0, so Carol's request at nonce 1 can never apply and
+    // Alice is paid for units she signed away.
+    //
+    // Judging each challenge against the state as it stood when its claim was
+    // filed would fix this case. It is deliberately not done: it leaves the
+    // test above untouched, so it would buy a narrower hole rather than close
+    // one. See DECISIONS.md.
+    const { venue, sequencer, backing } = setup(200n);
+    const served = goDark(venue, sequencer);
+    const first = demand(backing, SECRETS.alice, KEYS.alice, 100n, 11n, 40n, 0n);
+    const second = demand(backing, SECRETS.alice, KEYS.alice, 100n, 11n, 40n, 1n);
+    publishAt(venue, 11n, backing, first.op);
+    publishAt(venue, 11n, backing, second.op);
+    publishAt(venue, 12n, backing, acceptance(backing, SECRETS.backer, first.hash, 11n, 40n, 1n));
+    publishAt(venue, 12n, backing, acceptance(backing, SECRETS.backer, second.hash, 11n, 40n, 2n));
+    publishAt(venue, 13n, backing, release(backing, SECRETS.alice, first.hash, 2n));
+    publishAt(venue, 13n, backing, release(backing, SECRETS.alice, second.hash, 3n));
+    publishAt(venue, 14n, backing, challengeOf(backing, 100n, 0n));
+    publishAt(venue, 14n, backing, transfer(backing, SECRETS.alice, KEYS.alice, KEYS.carol, 100n, 1n));
+
+    const [one, two] = snapshotRedemptions(venue, backing, served);
+    expect(compareBytes(one!.payments[0]!.payee, KEYS.bob)).toBe(0);
+    expect(compareBytes(two!.payments[0]!.payee, KEYS.alice)).toBe(0);
+    expect(compareBytes(two!.payments[0]!.payee, KEYS.carol)).not.toBe(0);
   });
 
   it("hears the claimant's spends in sequence order, however they were published", () => {
