@@ -5,6 +5,7 @@ import {
   type Backing,
   type RelianceEntry,
   type SilenceClause,
+  type WitnessingTerms,
 } from "../src/backing.js";
 import { TransparentLedger } from "../src/ledger.js";
 import { Venue } from "../src/venue.js";
@@ -44,15 +45,21 @@ export function makeTransparentBacking(
   thing = "EUR",
   reliance: readonly RelianceEntry[] = [],
   silence?: SilenceClause,
+  witnessing?: WitnessingTerms,
 ): Backing {
   return makeBacking({
     obligor: pub(secret),
     payout: { thing, quantumExponent: -2, perUnit: 100n },
     reliance,
-    evidence:
-      silence === undefined
-        ? { setting: "transparent", operator: KEYS.operator }
-        : { setting: "transparent", operator: KEYS.operator, silence },
+    evidence: {
+      setting: "transparent",
+      operator: KEYS.operator,
+      // Spread rather than branch: with two independent optional blocks the
+      // if/else form is four arms, and exactOptionalPropertyTypes forbids
+      // passing an explicit undefined.
+      ...(silence === undefined ? {} : { silence }),
+      ...(witnessing === undefined ? {} : { witnessing }),
+    },
   });
 }
 

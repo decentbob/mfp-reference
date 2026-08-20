@@ -29,6 +29,18 @@
 //            u8 tag 0x02 (transparent, silence clause declared)
 //              || 32-byte operator key
 //              || u64 no-commitment duration || u64 challenge window
+//            u8 tag 0x03 (transparent, witnessing terms declared)
+//              || 32-byte operator key
+//              || 32-byte venue id || u64 witness interval
+//            u8 tag 0x04 (transparent, both)
+//              || 32-byte operator key
+//              || 32-byte venue id || u64 witness interval
+//              || u64 no-commitment duration || u64 challenge window
+//
+// The two blocks are independent, which is why they are four tags rather than
+// more fields on one: E declares the venue and the interval whether or not it
+// declares a silence clause, and a backer may promise a schedule without ever
+// conceding a grade.
 //
 // Tags not listed (threshold obligors, the payout expression language,
 // chain-asset reliance targets, shielded evidence settings) are future slices;
@@ -58,6 +70,8 @@ const TAG_PAYOUT_CONSTANT = 0x01;
 const TAG_TARGET_BACKING = 0x01;
 const TAG_EVIDENCE_TRANSPARENT = 0x01;
 const TAG_EVIDENCE_SILENCE = 0x02;
+const TAG_EVIDENCE_WITNESSING = 0x03;
+const TAG_EVIDENCE_WITNESSING_SILENCE = 0x04;
 
 const NAME_LENGTH = 32;
 const MAX_THING_BYTES = 1024;
@@ -98,10 +112,43 @@ export interface SilenceClause {
   readonly challengeWindow: bigint;
 }
 
+/**
+ * §C2's witnessing terms: "At the declared interval each publishes a small
+ * commitment to a widely witnessed venue... Venue and attester are named in E
+ * and move only under its replacement rule."
+ *
+ * Both sit inside the name, so neither is the operator's to edit (invariant 1).
+ * The venue matters because §C2b makes a grade effective "at its witnessed index
+ * on that backing's declared venue" — measured against whichever venue a caller
+ * happened to hold, a grade is a fact about who you asked rather than one a
+ * stranger checks against the published record. The interval matters because a
+ * payment is final when witnessed rather than co-signed, so a payee waiting for
+ * the next commitment has to know how long that is: "the interval is a signed
+ * field rather than operational discretion".
+ *
+ * The venue is an opaque 32-byte identity, and §C2's finality rule — "the depth
+ * or gadget under which an index counts as witnessed there" — is NOT declared
+ * here. This implementation's venue has immediate finality and says so, and a
+ * tag carries only what code here enforces.
+ */
+export interface WitnessingTerms {
+  /** Identity of the venue this backing's commitments are published to. */
+  readonly venue: Uint8Array;
+  /** How often the operator promises to commit, in that venue's indices. */
+  readonly interval: bigint;
+}
+
 export interface TransparentEvidence {
   readonly setting: "transparent";
   /** Verification key of the sequencer that witnesses spends. */
   readonly operator: Uint8Array;
+  /**
+   * Absent (tags 0x01 and 0x02) means the backer declared neither a venue nor a
+   * schedule: the grade is read against whichever record the reader holds, and
+   * the operator is never late because it promised nothing. A setting the backer
+   * chose and the holder read, not an oversight.
+   */
+  readonly witnessing?: WitnessingTerms;
   /**
    * Absent (tag 0x01) means the backer declared no silence clause, so snapshot
    * redemption never opens and claims can go illiquid forever. That is a
@@ -138,6 +185,17 @@ export type Backing = BackingFields & {
   readonly [validated]: true;
 };
 
+/** Which of the four evidence shapes these two independent blocks make. */
+function evidenceTag(
+  silence: SilenceClause | undefined,
+  witnessing: WitnessingTerms | undefined,
+): number {
+  if (witnessing === undefined) {
+    return silence === undefined ? TAG_EVIDENCE_TRANSPARENT : TAG_EVIDENCE_SILENCE;
+  }
+  return silence === undefined ? TAG_EVIDENCE_WITNESSING : TAG_EVIDENCE_WITNESSING_SILENCE;
+}
+
 /** Serialize validated fields. Fixed-width fields are asserted by key32. */
 function encodeFields(b: BackingFields): Uint8Array {
   const w = new ByteWriter();
@@ -159,9 +217,13 @@ function encodeFields(b: BackingFields): Uint8Array {
     w.lengthPrefixed(bigintToMinimalBytes(entry.count));
   }
 
-  const silence = b.evidence.silence;
-  w.u8(silence === undefined ? TAG_EVIDENCE_TRANSPARENT : TAG_EVIDENCE_SILENCE);
+  const { silence, witnessing } = b.evidence;
+  w.u8(evidenceTag(silence, witnessing));
   w.key32(b.evidence.operator, "operator key");
+  if (witnessing !== undefined) {
+    w.key32(witnessing.venue, "venue id");
+    w.u64(witnessing.interval);
+  }
   if (silence !== undefined) {
     w.u64(silence.noCommitmentDuration);
     w.u64(silence.challengeWindow);
@@ -172,16 +234,28 @@ function encodeFields(b: BackingFields): Uint8Array {
 
 /** Field by field, so nothing rides along on a spread of caller input. */
 function canonicalEvidence(evidence: TransparentEvidence): TransparentEvidence {
-  const operator = copyBytes(evidence.operator);
-  const silence = evidence.silence;
-  if (silence === undefined) return { setting: "transparent", operator };
+  const { silence, witnessing } = evidence;
+  // Spread rather than branch: two independent optional blocks are four arms as
+  // an if/else, and exactOptionalPropertyTypes forbids an explicit undefined.
   return {
     setting: "transparent",
-    operator,
-    silence: Object.freeze({
-      noCommitmentDuration: silence.noCommitmentDuration,
-      challengeWindow: silence.challengeWindow,
-    }),
+    operator: copyBytes(evidence.operator),
+    ...(witnessing === undefined
+      ? {}
+      : {
+          witnessing: Object.freeze({
+            venue: copyBytes(witnessing.venue),
+            interval: witnessing.interval,
+          }),
+        }),
+    ...(silence === undefined
+      ? {}
+      : {
+          silence: Object.freeze({
+            noCommitmentDuration: silence.noCommitmentDuration,
+            challengeWindow: silence.challengeWindow,
+          }),
+        }),
   };
 }
 
@@ -323,25 +397,33 @@ export function decodeBacking(bytes: Uint8Array): Backing {
     reliance.push({ target, count });
   }
 
-  const evidenceTag = r.u8();
-  if (evidenceTag !== TAG_EVIDENCE_TRANSPARENT && evidenceTag !== TAG_EVIDENCE_SILENCE) {
-    throw new EncodingError(`unsupported evidence tag ${evidenceTag}`);
+  const tag = r.u8();
+  const declaresWitnessing =
+    tag === TAG_EVIDENCE_WITNESSING || tag === TAG_EVIDENCE_WITNESSING_SILENCE;
+  const declaresSilence = tag === TAG_EVIDENCE_SILENCE || tag === TAG_EVIDENCE_WITNESSING_SILENCE;
+  if (tag !== TAG_EVIDENCE_TRANSPARENT && !declaresWitnessing && !declaresSilence) {
+    throw new EncodingError(`unsupported evidence tag ${tag}`);
   }
   const operator = r.raw(KEY_LENGTH);
-  const silence =
-    evidenceTag === TAG_EVIDENCE_SILENCE
-      ? { noCommitmentDuration: r.u64(), challengeWindow: r.u64() }
-      : undefined;
+  // Read in the order written: the witnessing block, then the silence block.
+  const witnessing = declaresWitnessing
+    ? { venue: r.raw(NAME_LENGTH), interval: r.u64() }
+    : undefined;
+  const silence = declaresSilence
+    ? { noCommitmentDuration: r.u64(), challengeWindow: r.u64() }
+    : undefined;
 
   r.expectEnd();
   return makeBacking({
     obligor,
     payout: { thing, quantumExponent, perUnit },
     reliance,
-    evidence:
-      silence === undefined
-        ? { setting: "transparent", operator }
-        : { setting: "transparent", operator, silence },
+    evidence: {
+      setting: "transparent",
+      operator,
+      ...(witnessing === undefined ? {} : { witnessing }),
+      ...(silence === undefined ? {} : { silence }),
+    },
   });
 }
 

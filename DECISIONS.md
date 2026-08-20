@@ -16,6 +16,100 @@ Format:
 
 ---
 
+## 2026-08-20 - Slice 10: E declares its venue and its witness interval
+
+**Question:** the previous round wrote two holder rules into CLAUDE.md, and one
+of them was unusable. "A payment is final when witnessed, not when co-signed"
+tells a payee to wait for the next commitment without telling them how long that
+is. Meanwhile the glossary's own field list has E declaring "who currently
+attests a claim unspent, the venue it commits to, **the witness interval**, the
+replacement rule... and the silence clause", and ours declared the operator key
+and the silence clause. What does the omission cost, and what can be enforced?
+
+**Decisions (Bob):**
+
+- **The venue is a soundness gap rather than a missing convenience, and goes in
+  first.** `isSilent` measured the grade against whichever `Venue` the caller
+  handed it, while §C2b makes a grade effective "for each backing at its
+  witnessed index on that backing's declared venue". The whole reason a grade
+  works is that it is a fact a stranger checks against the published record -
+  something a backer concedes rather than argues. Measured against an undeclared
+  venue it is a fact about who you asked: two holders with two records get two
+  grades for one backing and neither is wrong. The interval, by contrast, only
+  cost a wallet a judgement call.
+
+- **An opaque 32-byte identity, and no finality rule.** §C2 names a venue
+  "together with its finality rule, the depth or gadget under which an index
+  counts as witnessed there". This venue has immediate finality and says so, so
+  the rule has nothing to declare, and a tag carries only what code here enforces
+  - tag 0x02's own rule. The same shape as the operator key in slice 1: E names
+  an identity, the code checks it matches, and what it MEANS is elsewhere.
+
+- **Four tags, not one.** The plan had a single tag 0x03 carrying venue,
+  interval and the silence clause together. The paper treats them as independent
+  - the field list names them separately, and a backer may promise a schedule
+  without ever conceding a grade - so folding them together would make a coherent
+  setting unrepresentable. 0x03 is the witnessing block, 0x04 is both, and 0x01
+  and 0x02 are byte-identical to what they were, so the slice-1 golden vector is
+  untouched again.
+
+- **Lateness is a fact, not a third grade.** §C2b declares two grades and
+  `isOverdue` is neither: nothing fires, nothing opens, no remedy follows. It is
+  what a payee reads to decide whether to wait. Quiet for exactly the interval is
+  on time, one index more is late, and it counts from the venue's genesis where
+  the operator has never published - the same rule `quietFor` already uses, for
+  the same reason.
+
+- **Still no calibration policed.** An interval longer than the backing's own
+  silence duration is representable and means what it says: permanently in the
+  aggravated grade. Incoherent, and not this code's to refuse (slice 6). A
+  relation between two declared numbers is as much the backer's choice as either
+  number alone.
+
+- **A backing that declares neither is answered by whichever record its reader
+  holds**, exactly as before. That keeps tags 0x01 and 0x02 meaning what they
+  meant, and it is the same shape as a backing with no silence clause never being
+  silent. A backer who wants the grade pinned declares a venue.
+
+- **One consequence, worth saying out loud: the venue is inside the name, so a
+  backing cannot change venue.** That is invariant 1 and §C2's own arrangement -
+  "Venue and attester are named in E and move only under its replacement rule" -
+  but the replacement rule is not built, so declaring a venue today means no
+  venue change at all until it is.
+
+**One mechanism.** `venueIsDeclared` is the single definition of "the right
+record", and the five predicates that read the venue's record on a backing's
+behalf go through it: `isSilent`, `isOverdue`, `provesHolding` (via
+`replayLatestState`), `snapshotRedemptions` and `gapLegsFor`, which is also how
+`Sequencer.adopt` inherits it. `quietFor` deliberately does not - it takes an
+operator rather than a backing and has no terms to consult. The sequencer asks
+the same question in its own voice: `register` refuses a backing declaring a
+venue this operator does not publish at, which is the second half of "is this
+backing mine".
+
+**Found reviewing the implementation, and it is a meaning rather than a bug:**
+the guard makes a mismatched venue answer `false`, and a holder reading that is
+told "not silent, not overdue" while the operator is in fact dark. That reads as
+reassurance about the operator when it is only a statement that this record shows
+nothing. Both predicates now say so, `venueIsDeclared` is exported so a caller
+can ask first, and a test pins the meaning rather than leaving it remembered. It
+is the same reading `provesHolding`'s false has always needed.
+
+**Found writing the tests:** one of them asserted an empty redemption result
+against a venue with nothing published, which no implementation could ever fail.
+It now publishes byte-identical legs on both venues, so the declared one settles
+and the stranger resolves nothing, and the difference between them is the only
+thing it can be measuring.
+
+**Not built, unchanged:** the finality rule, the replacement rule, the
+non-service aggregate (m, W) and the refusal aggregate (m', W'). Each needs
+something this slice does not have, and each would otherwise be a number in the
+name that no code checks - which is worse than declaring nothing, because a
+holder reading the terms would believe it was enforced.
+
+**Spec change:** none needed. The implementation moves toward the paper's own
+field list rather than away from it.
+
 ## 2026-08-20 - The challenge window's reach, and why no patch fits it
 
 **Question:** Bob asked for the merged implementation to be reviewed for

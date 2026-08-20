@@ -76,7 +76,7 @@ import {
   type WithdrawalOp,
 } from "./presentation.js";
 import { copyReceipt, signReceipt, type Receipt } from "./receipt.js";
-import { gapLegsFor } from "./recovery.js";
+import { gapLegsFor, venueIsDeclared } from "./recovery.js";
 import { Venue } from "./venue.js";
 
 /** This operator declines to serve you. */
@@ -126,6 +126,13 @@ export class Sequencer {
     // non-small-order point; the only question left here is whether it is mine.
     if (compareBytes(backing.evidence.operator, this.operatorKey) !== 0) {
       throw new SequencerError("this sequencer does not serve that backing");
+    }
+    // The second half of the same routing question. A backing declaring a venue
+    // this sequencer does not publish at would have its commitments witnessed
+    // somewhere its own terms do not name, so nobody reading correctly could
+    // find them — and the operator would look permanently silent to everyone.
+    if (!venueIsDeclared(this.venue, backing)) {
+      throw new SequencerError("this sequencer does not publish at that backing's venue");
     }
     this.ledger.register(backing, backingSignature);
     this.backings.set(backing.nameHex, makeBacking(backing));
