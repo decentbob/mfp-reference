@@ -24,6 +24,17 @@
 //     the party that owes the money.
 //   - `isDoublePosition` — an operator co-signed two operations into one log
 //     position, so one of its receipts is a lie about its own log.
+//   - `isRewrittenHistory` — an operator committed a log that takes back one it
+//     had already committed. An append-only log may grow and may not shrink, and
+//     no committed entry may change. This is what restoring from stale data and
+//     carrying on produces, and it is the fault ACROSS sequences where
+//     isEquivocation is the fault at one.
+//
+// A fourth reading lives beside the receipt rather than here, because three of
+// its four answers are ordinary rather than faults: `receiptStatus`
+// (receipt.ts) tells a payee whether a committed log holds their operation, has
+// not reached it yet, or holds something else. The last of those is this file's
+// business; naming it again here would be a second name for one thing.
 //
 // The two operator faults also catch a **botched failover**: two live servers
 // holding one operator key, with no leader election between them, produce
@@ -47,7 +58,8 @@ import { compareBytes, copyBytes } from "./bytes.js";
 import { verifySignatureStrict } from "./keys.js";
 import { signerFromTerms } from "./ledger.js";
 import { opMessageOfEntry, type PublishedOp } from "./oplog.js";
-import { receiptCovers, verifyReceipt, type Receipt } from "./receipt.js";
+import { committedLogFor, type ServedState } from "./commitment.js";
+import { receiptCovers, isOperatorReceipt, type Receipt } from "./receipt.js";
 
 /** An operation and the operator co-signature that accepted it. */
 export interface AcceptedOp {
@@ -112,8 +124,8 @@ export function equivocatingSigner(
 export function isDoubleAcceptance(backing: Backing, a: AcceptedOp, b: AcceptedOp): boolean {
   try {
     if (equivocatingSigner(backing, a.op, b.op) === undefined) return false;
-    if (!isTheOperator(backing, a.receipt)) return false;
-    if (!isTheOperator(backing, b.receipt)) return false;
+    if (!isOperatorReceipt(backing, a.receipt)) return false;
+    if (!isOperatorReceipt(backing, b.receipt)) return false;
     // Each receipt has to cover the operation it is exhibited with, ON THIS
     // BACKING, or an accuser pins any operator's signature to any operation it
     // likes — including a receipt the operator issued perfectly correctly
@@ -143,8 +155,8 @@ export function isDoubleAcceptance(backing: Backing, a: AcceptedOp, b: AcceptedO
 export function isDoublePosition(backing: Backing, a: Receipt, b: Receipt): boolean {
   try {
     return (
-      isTheOperator(backing, a) &&
-      isTheOperator(backing, b) &&
+      isOperatorReceipt(backing, a) &&
+      isOperatorReceipt(backing, b) &&
       a.position === b.position &&
       compareBytes(a.opHash, b.opHash) !== 0
     );
@@ -154,21 +166,42 @@ export function isDoublePosition(backing: Backing, a: Receipt, b: Receipt): bool
 }
 
 /**
- * Whether this receipt is a valid co-signature by the key **E names as this
- * backing's operator**, over this backing.
+ * Whether one operator committed a history that takes back a history it had
+ * already committed. An operation log is append-only, so a later commitment must
+ * have the earlier one's log as a **prefix**: it may grow and it may not shrink,
+ * and no entry already committed may change.
  *
- * Both halves matter and neither is enough. Without the backing name, a receipt
- * the operator issued perfectly correctly on another backing covers an
- * operation here, since an operation carries no name of its own. Without the
- * operator key, a stranger signs both halves of somebody's real equivocation
- * and it reads as a fault by the operator of this backing — which is what a
- * caller takes these predicates to mean, and under §C2's backer-run default
- * names the party that owes the money.
+ * This is the artefact an operator produces by restoring from stale data and
+ * carrying on — it commits an old log at a new sequence, so the log shrinks —
+ * and equally the artefact of a quiet rewrite, where the log grows but an
+ * earlier entry is not what it was. Neither is reachable by isEquivocation,
+ * which is two roots at ONE sequence; this is the fault across sequences.
+ *
+ * **Which state came first is derived from the sequence, never from the argument
+ * order.** A caller who could label them could choose which log is the rewrite,
+ * so the two arguments are symmetric. Two states at one sequence answer false:
+ * that is isEquivocation's fault, and naming it twice would let one artefact be
+ * reported as two.
+ *
+ * Compared by canonical message rather than by object, because the message is
+ * what the commitment commits to — the signature beside an entry is served, not
+ * committed (oplog.ts).
  */
-function isTheOperator(backing: Backing, receipt: Receipt): boolean {
-  return (
-    compareBytes(receipt.backingName, backing.name) === 0 &&
-    compareBytes(receipt.operator, backing.evidence.operator) === 0 &&
-    verifyReceipt(receipt)
-  );
+export function isRewrittenHistory(backing: Backing, a: ServedState, b: ServedState): boolean {
+  try {
+    const first = committedLogFor(backing, a);
+    const second = committedLogFor(backing, b);
+    if (first === undefined || second === undefined) return false;
+    if (first.sequence === second.sequence) return false;
+    const [earlier, later] = first.sequence < second.sequence ? [first, second] : [second, first];
+    if (later.opLog.length < earlier.opLog.length) return true;
+    for (let i = 0; i < earlier.opLog.length; i++) {
+      const before = opMessageOfEntry(backing.name, earlier.opLog[i] as PublishedOp);
+      const after = opMessageOfEntry(backing.name, later.opLog[i] as PublishedOp);
+      if (compareBytes(before, after) !== 0) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }

@@ -14,11 +14,13 @@
 // value.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
+import type { Backing } from "./backing.js";
 import { ByteWriter, compareBytes, copyBytes } from "./bytes.js";
+import { committedLogFor, type ServedState } from "./commitment.js";
 import { RECEIPT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
 import type { BackingSnapshot } from "./ledger.js";
-import { opHashOfEntry, type PublishedOp } from "./oplog.js";
+import { opHashOfEntry, type OpLogEntry, type PublishedOp } from "./oplog.js";
 
 export interface Receipt {
   readonly backingName: Uint8Array;
@@ -130,14 +132,107 @@ export function receiptCovers(
 export function receiptProvenBy(receipt: Receipt, snapshot: BackingSnapshot): boolean {
   try {
     if (compareBytes(snapshot.name, receipt.backingName) !== 0) return false;
-    if (receipt.position < 0n || receipt.position > BigInt(Number.MAX_SAFE_INTEGER)) return false;
-    const entry = snapshot.opLog[Number(receipt.position)];
+    const entry = entryAt(snapshot.opLog, receipt.position);
     if (entry === undefined) return false;
-    if (!Number.isSafeInteger(entry.position) || BigInt(entry.position) !== receipt.position) {
-      return false;
-    }
     return compareBytes(opHashOfEntry(snapshot.name, entry), receipt.opHash) === 0;
   } catch {
     return false;
+  }
+}
+
+/**
+ * The entry a receipt's position names, or undefined if the log does not reach
+ * it. The position is pinned to the index by the commitment encoder, and checked
+ * again here because a served log comes from whoever serves it.
+ */
+function entryAt(
+  opLog: readonly OpLogEntry[],
+  position: bigint,
+): OpLogEntry | undefined {
+  if (position < 0n || position > BigInt(Number.MAX_SAFE_INTEGER)) return undefined;
+  const entry = opLog[Number(position)];
+  if (entry === undefined) return undefined;
+  if (!Number.isSafeInteger(entry.position) || BigInt(entry.position) !== position) {
+    return undefined;
+  }
+  return entry;
+}
+
+/**
+ * Whether this receipt is a valid co-signature by the key **E names as this
+ * backing's operator**, over this backing.
+ *
+ * Both halves matter and neither is enough. Without the backing name, a receipt
+ * the operator issued perfectly correctly on another backing covers an operation
+ * here, since an operation carries no name of its own. Without the operator key,
+ * a stranger signs both halves of somebody's real equivocation and it reads as a
+ * fault by the operator of this backing — which is what a caller takes these
+ * predicates to mean, and under §C2's backer-run default names the party that
+ * owes the money.
+ */
+export function isOperatorReceipt(backing: Backing, receipt: Receipt): boolean {
+  try {
+    return (
+      compareBytes(receipt.backingName, backing.name) === 0 &&
+      compareBytes(receipt.operator, backing.evidence.operator) === 0 &&
+      verifyReceipt(receipt)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What a committed state says about a receipt — the question behind CLAUDE.md's
+ * rule that **a payment is final when witnessed, not when co-signed** (§C2:
+ * "Finality means witnessed rather than co-signed").
+ *
+ *   - `witnessed`    the committed log holds this operation at this position.
+ *   - `pending`      the log is shorter than the position. Not yet.
+ *   - `contradicted` the log is long enough and holds something else, so one of
+ *                    the operator's two signatures is a lie about its own log.
+ *   - `unrelated`    not this backing's operator's receipt, or not its state.
+ *
+ * **`witnessed` does not need the latest commitment.** Positions are pinned and
+ * the log is append-only, so once witnessed, always witnessed — unlike
+ * provesHolding, where "last" is load-bearing because a holding can be spent
+ * afterwards and an accepted operation cannot un-happen.
+ *
+ * **`unrelated` exists so that a proof never accuses the wrong party**, which is
+ * the finding slice 9 made twice. Reading a stranger's receipt as contradicted
+ * would name this backing's operator — the party that owes the money under the
+ * backer-run default — for something it did not do.
+ *
+ * The log is not replayed. Whether the operator committed a lawful history is a
+ * different question (stateIsAuthentic); what is asked here is only what the
+ * operator put its own signature to, twice.
+ *
+ * A verifier: everything here comes from whoever exhibits it.
+ */
+export type ReceiptStatus = "witnessed" | "pending" | "contradicted" | "unrelated";
+
+export function receiptStatus(
+  backing: Backing,
+  receipt: Receipt,
+  served: ServedState,
+): ReceiptStatus {
+  try {
+    if (!isOperatorReceipt(backing, receipt)) return "unrelated";
+    const committed = committedLogFor(backing, served);
+    if (committed === undefined) return "unrelated";
+    if (receipt.position < 0n || receipt.position >= BigInt(committed.opLog.length)) {
+      return "pending";
+    }
+    // Not reachable through committedLogFor, which recomputes the root and so
+    // rejects a log whose positions are not pinned to their indices. Answered
+    // "unrelated" rather than "contradicted" anyway: a state this malformed is
+    // not this operator's committed state, and a proof must not accuse on it.
+    const entry = entryAt(committed.opLog, receipt.position);
+    if (entry === undefined) return "unrelated";
+    return compareBytes(opHashOfEntry(backing.name, entry), receipt.opHash) === 0
+      ? "witnessed"
+      : "contradicted";
+  } catch {
+    return "unrelated";
   }
 }

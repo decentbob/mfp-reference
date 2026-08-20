@@ -64,19 +64,11 @@ import {
 } from "./ledger.js";
 import { compareBytes, copyBytes, isValidQuantity } from "./bytes.js";
 import { type PublishedOp } from "./oplog.js";
-import {
-  stateProvesCommitment,
-  type BackingSnapshot,
-  type Commitment,
-} from "./commitment.js";
+import { committedLogFor, type ServedState } from "./commitment.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { Venue, type WitnessedOp } from "./venue.js";
 
-/** A served state and the commitment it must prove against — what a holder is handed. */
-export interface ServedState {
-  readonly snapshots: readonly BackingSnapshot[];
-  readonly commitment: Commitment;
-}
+export type { ServedState };
 
 /**
  * How many witnessed indices this operator has been quiet. Measured from its
@@ -178,14 +170,12 @@ export function stateIsAuthentic(backing: Backing, served: ServedState): boolean
  */
 function replayServedState(backing: Backing, served: ServedState): LedgerState | undefined {
   try {
-    const operator = backing.evidence.operator;
-    // Signed by the operator E names — anyone can sign a valid commitment over
-    // any state they like, and a stranger's says nothing about this backing.
-    if (compareBytes(served.commitment.operator, operator) !== 0) return undefined;
-    if (!stateProvesCommitment(served.snapshots, served.commitment)) return undefined;
-    const snapshot = served.snapshots.find((s) => compareBytes(s.name, backing.name) === 0);
-    if (snapshot === undefined) return undefined;
-    return replayLog(backing, snapshot.opLog);
+    // committedLogFor asks the three questions that always travel together: is
+    // this signed by the operator E names, is this the state it commits to, and
+    // does it carry this backing. What is left here is the law.
+    const committed = committedLogFor(backing, served);
+    if (committed === undefined) return undefined;
+    return replayLog(backing, committed.opLog);
   } catch {
     return undefined;
   }
