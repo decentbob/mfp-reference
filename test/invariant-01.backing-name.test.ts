@@ -350,6 +350,49 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
     expect(() => witnessed(VENUE_ID, 1n << 64n)).toThrow(EncodingError);
   });
 
+  it("carries the replacement rule as clause 0x03, sorted after the others", () => {
+    // §C2's rule, and §C2b's answer to whether a sequencer can be replaced at
+    // all. Inside the name like the rest: the party that may hand the backing to
+    // a successor is not the operator's to nominate.
+    const declared = makeBacking({
+      ...baseFields(),
+      evidence: {
+        setting: "transparent",
+        operator: OPERATOR,
+        replacementRule: OBLIGOR,
+        witnessing: { venue: VENUE_ID, interval: 10n },
+        silence: { noCommitmentDuration: 50n, challengeWindow: 5n },
+      },
+    });
+    expect(bytesToHex(encodeBacking(declared))).toContain(
+      "05" +
+        bytesToHex(OPERATOR) +
+        "00000003" +
+        SILENCE_CLAUSE_HEX +
+        WITNESSING_CLAUSE_HEX +
+        "03" +
+        bytesToHex(OBLIGOR),
+    );
+    const decoded = decodeBacking(encodeBacking(declared));
+    expect(decoded.nameHex).toBe(declared.nameHex);
+    expect(bytesToHex(decoded.evidence.replacementRule as Uint8Array)).toBe(bytesToHex(OBLIGOR));
+  });
+
+  it("puts the replacement rule inside the name", () => {
+    const ruled = (rule: Uint8Array | undefined) =>
+      makeBacking({
+        ...baseFields(),
+        evidence: {
+          setting: "transparent",
+          operator: OPERATOR,
+          ...(rule === undefined ? {} : { replacementRule: rule }),
+        },
+      }).nameHex;
+    expect(ruled(OBLIGOR)).not.toBe(ruled(undefined));
+    expect(ruled(OBLIGOR)).not.toBe(ruled(OBLIGOR_2));
+    expect(ruled(OBLIGOR)).toBe(ruled(OBLIGOR));
+  });
+
   it("rejects an empty clause list, which tag 0x01 already spells", () => {
     // The canonicality rule the extensible form needs: two spellings of one
     // backing would make the name stop being a function of the terms, so the
