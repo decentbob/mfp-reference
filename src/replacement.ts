@@ -47,7 +47,7 @@ import { type Backing } from "./backing.js";
 import { ByteReader, ByteWriter, compareBytes, copyBytes } from "./bytes.js";
 import { REPLACEMENT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
-import type { Venue } from "./venue.js";
+import { VenueError, type Venue } from "./venue.js";
 
 /** The only role this slice can replace. */
 export const ROLE_OPERATOR = 0x01;
@@ -241,7 +241,15 @@ export function successionOf(backing: Backing, venue: Venue): Succession[] {
       chain.push({ operator: copyBytes(successor), from, link: copyBytes(hash) });
       link = hash;
     }
-  } catch {
+  } catch (cause) {
+    // **A venue that declines to answer is not a short chain.** Swallowing it
+    // here hands back the genesis chain — the pre-succession answer slice 14
+    // warned a caller must never get silently — so a view never synced for this
+    // backing reads the RETIRED operator as the one in force, and isSilent then
+    // grades a successor committing on schedule as silent. That opens snapshot
+    // redemption against an honest operator out of not having looked, which is
+    // the hole slice 17 closed at the venue and this catch reopened above it.
+    if (cause instanceof VenueError) throw cause;
     return chain;
   }
 }

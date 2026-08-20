@@ -51,7 +51,7 @@
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { copyBytes } from "./bytes.js";
+import { compareBytes, copyBytes } from "./bytes.js";
 import {
   decodeCommitment,
   encodeCommitment,
@@ -59,6 +59,7 @@ import {
   type Commitment,
 } from "./commitment.js";
 import { utf8Encoder } from "./contexts.js";
+import type { Backing } from "./backing.js";
 import { decodePublishedOp, encodePublishedOp, type PublishedOp } from "./oplog.js";
 import {
   decodeReplacement,
@@ -66,8 +67,39 @@ import {
   type Replacement,
   type WitnessedReplacement,
 } from "./replacement.js";
+import {
+  decodeRevocation,
+  encodeRevocation,
+  isSignedRevocation,
+  type Revocation,
+  type WitnessedRevocation,
+} from "./revocation.js";
 
 export class VenueError extends Error {}
+
+/**
+ * Whether this venue is the one the backing declares (§C2b: a grade is effective
+ * "at its witnessed index on that backing's declared venue", and a revocation is
+ * "effective for each backing at its witnessed index on that backing's declared
+ * venue").
+ *
+ * **A backing that declares no venue answers true**, and that is the setting
+ * rather than a hole: E tags 0x01 and 0x02 name no venue, so their grade is read
+ * against whichever record the reader holds, exactly as it was before a venue
+ * could be declared at all. A backer who wants the grade pinned declares one.
+ *
+ * Every predicate that reads a venue's record on a backing's behalf goes through
+ * this, so there is one definition of "the right record" rather than one per
+ * caller. It lives here rather than beside the grades because the revocation
+ * reads it too, and a second copy over there would be one definition drifting
+ * from another. quietFor deliberately does not use it: it takes an operator
+ * rather than a backing, and has no terms to consult.
+ */
+export function venueIsDeclared(venue: Venue, backing: Backing): boolean {
+  const declared = backing.evidence.witnessing?.venue;
+  if (declared === undefined) return true;
+  return compareBytes(venue.id, declared) === 0;
+}
 
 /**
  * The identity of a venue nobody named. A backing that declares no venue (E
@@ -121,8 +153,15 @@ export interface Venue {
   publish(commitment: Commitment): void;
   publishOp(backingName: Uint8Array, op: PublishedOp): void;
   publishReplacement(backingName: Uint8Array, replacement: Replacement): void;
+  /**
+   * Filed under the key it revokes, not under a backing: §C2b's revocation is
+   * "published by K to every venue its backings name", and one K obligates many
+   * backings. The record names its own subject, so nothing is passed beside it.
+   */
+  publishRevocation(revocation: Revocation): void;
   publishedOpsFor(backingName: Uint8Array): WitnessedOp[];
   replacementsFor(backingName: Uint8Array): WitnessedReplacement[];
+  revocationsFor(obligor: Uint8Array): WitnessedRevocation[];
   latestFor(operator: Uint8Array, asOf?: bigint): Commitment | undefined;
   witnessedAtFor(operator: Uint8Array, asOf?: bigint): bigint | undefined;
   firstCommitmentFor(operator: Uint8Array, notBefore?: bigint): bigint | undefined;
@@ -140,6 +179,8 @@ export class LocalVenue implements Venue {
   private readonly opsByBacking = new Map<string, Witnessed[]>();
   /** Backing name hex -> replacement records, in published order. */
   private readonly replacementsByBacking = new Map<string, Witnessed[]>();
+  /** Obligor key hex -> revocation records, in published order. */
+  private readonly revocationsByObligor = new Map<string, Witnessed[]>();
 
   /**
    * A venue carries an identity, because §C2b reads a grade "at its witnessed
@@ -278,6 +319,41 @@ export class LocalVenue implements Venue {
   replacementsFor(backingName: Uint8Array): WitnessedReplacement[] {
     const log = this.replacementsByBacking.get(bytesToHex(backingName)) ?? [];
     return log.map((w) => ({ replacement: decodeReplacement(w.bytes).replacement, at: w.at }));
+  }
+
+  /**
+   * Record K's revocation of itself, filed under K.
+   *
+   * **This one is checked, where a published operation is not**, and the
+   * difference is what a bad record could do. Anyone may publish an operation
+   * and the venue takes no view, because a publication is not an accepted
+   * operation and recovery.ts decides what force it has. A revocation has its
+   * whole effect the moment it is recorded — it stops issuance and moves the
+   * boundary every holder reads — so an unsigned one would let any stranger
+   * freeze any backer's issuance for the cost of a publication. It is one
+   * signature by the key named in the record, which is the whole of what a
+   * revocation is, so the venue can check it without taking a view on anything.
+   */
+  publishRevocation(revocation: Revocation): void {
+    if (!isSignedRevocation(revocation)) {
+      throw new VenueError("revocation is not signed by the key it revokes");
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = encodeRevocation(revocation);
+    } catch (cause) {
+      throw new VenueError(`published revocation does not encode: ${String(cause)}`);
+    }
+    const key = bytesToHex(revocation.obligor);
+    const log = this.revocationsByObligor.get(key);
+    if (log === undefined) this.revocationsByObligor.set(key, [{ bytes, at: this.height }]);
+    else log.push({ bytes, at: this.height });
+  }
+
+  /** Every revocation published against this key, as copies, in order. */
+  revocationsFor(obligor: Uint8Array): WitnessedRevocation[] {
+    const log = this.revocationsByObligor.get(bytesToHex(obligor)) ?? [];
+    return log.map((w) => ({ revocation: decodeRevocation(w.bytes), at: w.at }));
   }
 
   /**
