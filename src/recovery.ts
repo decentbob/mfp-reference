@@ -88,16 +88,69 @@ export function quietFor(venue: Venue, operator: Uint8Array): bigint {
 }
 
 /**
+ * Whether this venue is the one the backing declares (§C2b: a grade is effective
+ * "at its witnessed index on that backing's declared venue").
+ *
+ * **A backing that declares no venue answers true**, and that is the setting
+ * rather than a hole: E tags 0x01 and 0x02 name no venue, so their grade is read
+ * against whichever record the reader holds, exactly as it was before a venue
+ * could be declared at all. A backer who wants the grade pinned declares one.
+ *
+ * Every predicate here that reads the venue's record on a backing's behalf goes
+ * through this, so there is one definition of "the right record" rather than one
+ * per caller. quietFor deliberately does not: it takes an operator rather than a
+ * backing, and has no terms to consult.
+ */
+export function venueIsDeclared(venue: Venue, backing: Backing): boolean {
+  const declared = backing.evidence.witnessing?.venue;
+  if (declared === undefined) return true;
+  return compareBytes(venue.id, declared) === 0;
+}
+
+/**
  * §C2b's aggravated grade for this backing: its operator has published no
  * commitment for longer than the duration the backing declares. A backing whose
  * E declares no silence clause is never silent — snapshot redemption never opens
  * for it and its claims can go illiquid forever, which is a setting the backer
  * chose and the holder read before accepting.
+ *
+ * **False means this record does not show it, never that the operator is fine.**
+ * A record from a venue the backing does not declare answers false however dark
+ * the operator has gone, because a grade is read on the declared venue and this
+ * is not it. Ask venueIsDeclared first to tell the two apart — as provesHolding
+ * already asks callers to read its false as "this state does not prove it".
  */
 export function isSilent(venue: Venue, backing: Backing): boolean {
   const clause = backing.evidence.silence;
   if (clause === undefined) return false;
+  if (!venueIsDeclared(venue, backing)) return false;
   return quietFor(venue, backing.evidence.operator) > clause.noCommitmentDuration;
+}
+
+/**
+ * Whether this operator is late against the schedule its backing declares (§C2:
+ * "At the declared interval each publishes a small commitment").
+ *
+ * **A fact, not a grade.** §C2b declares two grades and this is neither: nothing
+ * fires, nothing opens, and no remedy follows. It is what a payee reads to
+ * decide whether to wait, because a payment is final when witnessed rather than
+ * co-signed — so "is the next commitment merely due, or overdue" has to be
+ * answerable, and §C2 makes the interval "a signed field rather than operational
+ * discretion" for exactly that reason.
+ *
+ * Quiet for exactly the interval is on time; one index more is late. Counted
+ * from the venue's genesis where the operator has never published, or never
+ * publishing at all would be the way to look punctual forever.
+ *
+ * **False means this record does not show it**, on the same terms as isSilent: a
+ * backing that declared no schedule cannot be late against one, and a record
+ * from a venue it does not declare says nothing either way.
+ */
+export function isOverdue(venue: Venue, backing: Backing): boolean {
+  const terms = backing.evidence.witnessing;
+  if (terms === undefined) return false;
+  if (!venueIsDeclared(venue, backing)) return false;
+  return quietFor(venue, backing.evidence.operator) > terms.interval;
 }
 
 /**
@@ -178,6 +231,7 @@ function replayLatestState(
   backing: Backing,
   served: ServedState,
 ): LedgerState | undefined {
+  if (!venueIsDeclared(venue, backing)) return undefined;
   const latest = venue.latestFor(backing.evidence.operator);
   if (latest === undefined) return undefined;
   if (latest.sequence !== served.commitment.sequence) return undefined;
@@ -259,6 +313,7 @@ function publishedInGap(venue: Venue, backing: Backing, at: bigint): boolean {
  * publication can do, rather than two that have to agree.
  */
 export function gapLegsFor(venue: Venue, backing: Backing): WitnessedOp[] {
+  if (!venueIsDeclared(venue, backing)) return [];
   return venue
     .publishedOpsFor(backing.name)
     .filter((w) => isLeg(w.op) && publishedInGap(venue, backing, w.at));
@@ -478,6 +533,7 @@ export function snapshotRedemptions(
   try {
     const clause = backing.evidence.silence;
     if (clause === undefined) return [];
+    if (!venueIsDeclared(venue, backing)) return [];
     const state = replayServedState(backing, served);
     if (state === undefined) return [];
 

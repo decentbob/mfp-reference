@@ -19,9 +19,11 @@ import { EncodingError } from "../src/bytes.js";
 // them from fixed seeds rather than using arbitrary bytes.
 const OBLIGOR = ed25519.getPublicKey(new Uint8Array(32).fill(0x01));
 const OBLIGOR_2 = ed25519.getPublicKey(new Uint8Array(32).fill(0x02));
-const OPERATOR = new Uint8Array(32).fill(0x22); // a key, validated by length only
+const OPERATOR = new Uint8Array(32).fill(0x22); // a valid non-small-order point
 const TARGET_A = new Uint8Array(32).fill(0x33); // a backing name (hash), any 32 bytes
 const TARGET_B = new Uint8Array(32).fill(0x44);
+const VENUE_ID = new Uint8Array(32).fill(0x55); // a venue identity, any 32 bytes
+const OTHER_VENUE_ID = new Uint8Array(32).fill(0x66);
 
 function baseFields(): BackingFields {
   return {
@@ -262,14 +264,94 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
     const bare = makeBacking(baseFields());
     const decoded = decodeBacking(encodeBacking(bare));
     expect(decoded.evidence.silence).toBeUndefined();
+    expect(decoded.evidence.witnessing).toBeUndefined();
     expect(decoded.nameHex).toBe(bare.nameHex);
+  });
+
+  it("evidence tag 0x03 carries the witnessing terms and round-trips", () => {
+    // §C2 names the venue and the interval in E, so both are inside the name:
+    // a backer cannot move the venue its own silence is measured on, and cannot
+    // quietly lengthen the schedule a payee waits against (invariant 1).
+    // Independent of the silence clause, which is why it is its own tag rather
+    // than more fields on 0x02 — a backer may promise a schedule without ever
+    // conceding a grade.
+    const declared = makeBacking({
+      ...baseFields(),
+      evidence: {
+        setting: "transparent",
+        operator: OPERATOR,
+        witnessing: { venue: VENUE_ID, interval: 10n },
+      },
+    });
+    const bytes = encodeBacking(declared);
+    // ...0x03 || operator (32) || venue (32) || u64 10
+    expect(bytesToHex(bytes)).toContain(
+      "03" + bytesToHex(OPERATOR) + bytesToHex(VENUE_ID) + "000000000000000a",
+    );
+    const decoded = decodeBacking(bytes);
+    expect(decoded.nameHex).toBe(declared.nameHex);
+    expect(decoded.evidence.witnessing?.interval).toBe(10n);
+    expect(bytesToHex(decoded.evidence.witnessing?.venue as Uint8Array)).toBe(bytesToHex(VENUE_ID));
+    expect(decoded.evidence.silence).toBeUndefined();
+  });
+
+  it("evidence tag 0x04 carries witnessing and the silence clause together", () => {
+    const declared = makeBacking({
+      ...baseFields(),
+      evidence: {
+        setting: "transparent",
+        operator: OPERATOR,
+        silence: { noCommitmentDuration: 50n, challengeWindow: 5n },
+        witnessing: { venue: VENUE_ID, interval: 10n },
+      },
+    });
+    const bytes = encodeBacking(declared);
+    // ...0x04 || operator || venue || u64 10 || u64 50 || u64 5
+    expect(bytesToHex(bytes)).toContain(
+      "04" +
+        bytesToHex(OPERATOR) +
+        bytesToHex(VENUE_ID) +
+        "000000000000000a" +
+        "0000000000000032" +
+        "0000000000000005",
+    );
+    const decoded = decodeBacking(bytes);
+    expect(decoded.nameHex).toBe(declared.nameHex);
+    expect(decoded.evidence.witnessing?.interval).toBe(10n);
+    expect(decoded.evidence.silence).toEqual({ noCommitmentDuration: 50n, challengeWindow: 5n });
+  });
+
+  it("the venue and the interval are both inside the name", () => {
+    const witnessed = (venue: Uint8Array, interval: bigint) =>
+      makeBacking({
+        ...baseFields(),
+        evidence: { setting: "transparent", operator: OPERATOR, witnessing: { venue, interval } },
+      }).nameHex;
+    const base = witnessed(VENUE_ID, 10n);
+    expect(witnessed(OTHER_VENUE_ID, 10n)).not.toBe(base);
+    expect(witnessed(VENUE_ID, 11n)).not.toBe(base);
+    expect(witnessed(VENUE_ID, 10n)).toBe(base);
+  });
+
+  it("rejects a venue id that is not 32 bytes, or an interval outside u64", () => {
+    const witnessed = (venue: Uint8Array, interval: bigint) =>
+      makeBacking({
+        ...baseFields(),
+        evidence: { setting: "transparent", operator: OPERATOR, witnessing: { venue, interval } },
+      });
+    expect(() => witnessed(new Uint8Array(31), 10n)).toThrow(EncodingError);
+    expect(() => witnessed(new Uint8Array(33), 10n)).toThrow(EncodingError);
+    expect(() => witnessed(VENUE_ID, -1n)).toThrow(EncodingError);
+    expect(() => witnessed(VENUE_ID, 1n << 64n)).toThrow(EncodingError);
   });
 
   it("rejects an unknown evidence tag rather than guessing", () => {
     const bytes = encodeBacking(makeBacking(baseFields()));
     // The evidence tag is the byte before the trailing 32-byte operator key.
+    // 0x05 rather than 0x03: tags through 0x04 are assigned now, and "tags not
+    // listed are future slices" only means anything if the test uses one.
     const tampered = bytes.slice();
-    tampered[tampered.length - 33] = 0x03;
+    tampered[tampered.length - 33] = 0x05;
     expect(() => decodeBacking(tampered)).toThrow(EncodingError);
   });
 

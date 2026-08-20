@@ -155,9 +155,12 @@ construction — which is why they are rules here rather than code.
   receipt, and dies with it — in **every** construction, since a Chaumian token
   signed but never committed is exactly as unprovable. So the exposure is the
   interval since the last commitment, which is why §C2 makes the interval "a
-  signed field rather than operational discretion". **E does not carry it yet**:
-  a payee can measure how stale the last commitment is (`Venue.witnessedAtFor`)
-  but cannot tell a fast operator running late from a slow one running on time.
+  signed field rather than operational discretion". E carries it, with the venue
+  it is read on, under evidence tags 0x03 and 0x04 — so a payee can tell a fast
+  operator running late from a slow one running on time (`isOverdue`), and a
+  grade is read on the venue the backing itself declares. A backing that declares
+  neither is answered by whichever record its reader holds, which is a setting
+  its backer chose.
 
 A receipt proves **acceptance, not a holding**: a payee who was paid and paid
 onward still holds the receipt for what they received. Reading it as a holding

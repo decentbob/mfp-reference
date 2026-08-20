@@ -26,6 +26,13 @@
 // a reference to what it published, and `readonly` does not stop it rewriting
 // those bytes.
 //
+// **A venue has an identity, and E names it.** §C2b makes a grade effective
+// "for each backing at its witnessed index on that backing's declared venue",
+// so a reader asking whether an operator has gone silent has to be asking the
+// right record. recovery.ts refuses to answer for a backing that names a
+// different venue; a backing that names none is answered by whichever record
+// its reader holds, which is the setting its backer chose.
+//
 // Anyone may publish, so every query is per operator: a stranger's commitments
 // must not be mistaken for the operator you are checking. The venue does not
 // judge equivocation; it records what was published, and isEquivocation
@@ -42,11 +49,22 @@
 // Refusing bytes that do not encode is the one thing it does judge, because an
 // entry with no canonical message is not a record of anything.
 
+import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { copyBytes } from "./bytes.js";
 import { copyCommitment, verifyCommitment, type Commitment } from "./commitment.js";
+import { utf8Encoder } from "./contexts.js";
 import { copyOp, opMessageOfEntry, type PublishedOp } from "./oplog.js";
 
 export class VenueError extends Error {}
+
+/**
+ * The identity of a venue nobody named. A backing that declares no venue (E
+ * tags 0x01 and 0x02) is graded against whichever record its reader holds, and
+ * a Venue built without an identity is that record — one venue, not a wildcard,
+ * so a backing may declare this id and mean it.
+ */
+export const UNNAMED_VENUE = sha256(utf8Encoder.encode("mfp/venue/unnamed/v1"));
 
 /** A commitment together with the venue's own word on when it was witnessed. */
 interface Witnessed {
@@ -67,10 +85,33 @@ export interface WitnessedOp {
 export class Venue {
   /** The venue's own clock: the latest witnessed index (immediate finality). */
   private height = 0n;
+  /** This venue's own identity, the value E declares to name it. */
+  private readonly venueId: Uint8Array;
   /** Operator hex -> that operator's commitments, in published order. */
   private readonly byOperator = new Map<string, Witnessed[]>();
   /** Backing name hex -> operations published against it, in published order. */
   private readonly opsByBacking = new Map<string, WitnessedOp[]>();
+
+  /**
+   * A venue carries an identity, because §C2b reads a grade "at its witnessed
+   * index on that backing's declared venue". Without one, whether an operator
+   * has gone silent is a fact about which record you happened to be handed
+   * rather than one a stranger checks — and the grade pays money.
+   *
+   * Its own copy, handed out as a copy: a venue that could be re-identified
+   * after publication could be made to answer for a backing it never served.
+   */
+  constructor(id: Uint8Array = UNNAMED_VENUE) {
+    if (!(id instanceof Uint8Array) || id.length !== 32) {
+      throw new VenueError("a venue id must be 32 bytes");
+    }
+    this.venueId = copyBytes(id);
+  }
+
+  /** This venue's identity, as a copy — the value E declares to name it. */
+  get id(): Uint8Array {
+    return copyBytes(this.venueId);
+  }
 
   /**
    * The latest witnessed index at this venue — the clock instants, deadlines and
