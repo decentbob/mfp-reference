@@ -12,7 +12,7 @@ import {
   encodeRelease,
 } from "../src/presentation.js";
 import { Sequencer } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 import { KEYS, makeTransparentBacking, pub, register, SECRETS } from "./support.js";
 
 // Invariant 10: outstanding = issued − burned, in claim quantity, per
@@ -105,7 +105,7 @@ describe("invariant 10: outstanding = issued - burned at every moment", () => {
     // folds over the log now, so the identity is a property of the fold: every
     // operation either conserves the total or moves issued/burned with it. This
     // is that property, checked over a log carrying all seven operation kinds.
-    const venue = new Venue();
+    const venue = new LocalVenue();
     const sequencer = new Sequencer(SECRETS.operator, venue);
     const backing = makeTransparentBacking(SECRETS.backer);
     sequencer.register(backing, signBacking(SECRETS.backer, backing));

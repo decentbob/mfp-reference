@@ -16,6 +16,73 @@ Format:
 
 ---
 
+## 2026-08-20 - Slice 15: a venue's records are bytes, and Venue is an interface
+
+**Question:** Ergo will likely be the first venue, and we should not be welded to
+it. What has to be true here before any real venue can be written, and how much
+of Ergo should this slice touch?
+
+**Decisions (Bob):**
+
+- **None of Ergo.** Modelling boxes and registers without a node means inventing
+  an interface that may not fit, and the seam is the point rather than the
+  client. What a real venue actually forces is something we had never built.
+
+- **A venue stores bytes, not objects** - a chain stores bytes - so every record
+  a venue holds needs a canonical encoding and a strict inverse. That is the
+  substance of the slice, and it is construction-independent: it is what an Ergo
+  venue serialises, and equally what any other one does.
+
+  Two properties, and the second keeps the first honest: `decode(encode(x))` is
+  `x`, so nothing is lost, and `encode(decode(bytes))` is `bytes`, so a record has
+  exactly one spelling. The op decoder asserts the second itself, since a record
+  is the only thing a stranger has.
+
+- **The operation record carries the signed message**, not a second field-by-field
+  description of the operation. Two encoders that must agree is the drift slice 5
+  removed, and it would be worse here: the message is what the signature covers,
+  so a record describing the operation differently could carry a signature over
+  something else. The cost is a decoder for the message, which is new and forced -
+  the honest inverse of `opMessageOfEntry`, dispatching on the domain tag the
+  message already opens with. No kind tag beside it, for the reason commitment.ts
+  stopped writing one: contexts.ts asserts the tags are prefix-free.
+
+- **Every record names its own backing.** An operation's message always did.
+  A replacement's did not, and now does - found reviewing the implementation. A
+  chain finds a box and has to know what it is without being told, and a record
+  that needed its filing to say which backing it belonged to would be one more
+  thing an implementation could get wrong. Thirty-two bytes, already inside the
+  signature, so it cannot disagree with itself.
+
+- **`Venue` becomes an interface and the existing class becomes `LocalVenue`.**
+  Every method on it is something a chain can answer: a height, records filed by
+  key, records in witnessed order. **`advance` is deliberately not on it** -
+  block production is not a venue's to offer, it is the thing no participant
+  controls, and only a local stand-in can pretend otherwise. It is why the
+  interface was needed at all rather than relying on structural typing: the class
+  has private fields, so nothing else could ever have satisfied it.
+
+**Consequences, and one is a mechanism removed rather than added.** Holding bytes
+makes copy-in-copy-out **structural**: encoding produces fresh bytes on the way
+in and decoding a fresh object on the way out, so a publisher cannot rewrite what
+it published and a reader cannot poison the record for the next one.
+`copyCommitment` and `copyReplacement` existed for exactly that and are deleted.
+The rule CLAUDE.md states without exception now needs nothing remembered at the
+venue. `copyOp` stays, because the ledger still holds objects.
+
+It also tightened one thing quietly: a published operation whose signature is not
+64 bytes is now refused at the venue, where before it was stored and left for the
+law. That is the venue's own rule - bytes that do not encode are a record of
+nothing - reaching one field further.
+
+**What an Ergo venue still has to decide, recorded so the next slice starts from
+it:** which register holds which record, and whether the commitment's sequence
+lives in a register or is derived from the box chain. Basis puts the tracker key
+in R4 and the AVL digest in R5 and takes the index from the box's creation
+height; ours needs the sequence too, because equivocation is keyed on it.
+
+**Spec change:** none needed.
+
 ## 2026-08-20 - Basis read in full: what we take, what we do not, and the curve
 
 **Question:** §21 names Basis (BetterMoneyLabs/basis-tracker) and says its tracker,

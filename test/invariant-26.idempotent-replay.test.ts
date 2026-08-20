@@ -6,7 +6,7 @@ import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { receiptProvenBy, signReceipt, verifyReceipt } from "../src/receipt.js";
 import { EncodingError } from "../src/bytes.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 // Invariant 26: a repeated request returns the identical prior response, and a
@@ -15,7 +15,7 @@ import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 // "refuses a second spend by declining to sign").
 
 function setup() {
-  const sequencer = new Sequencer(SECRETS.operator, new Venue());
+  const sequencer = new Sequencer(SECRETS.operator, new LocalVenue());
   const backing = makeTransparentBacking(SECRETS.backer);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
   const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
@@ -146,7 +146,7 @@ describe("invariant 26: a repeated request returns the identical prior response"
 
 describe("a sequencer serves only the backings whose E names it", () => {
   it("refuses to register a backing served by a different operator", () => {
-    const sequencer = new Sequencer(SECRETS.operator, new Venue());
+    const sequencer = new Sequencer(SECRETS.operator, new LocalVenue());
     const foreign = makeBacking({
       obligor: KEYS.backer,
       payout: { thing: "EUR", quantumExponent: -2, perUnit: 100n },
@@ -159,7 +159,7 @@ describe("a sequencer serves only the backings whose E names it", () => {
   });
 
   it("refuses to submit against a backing it does not serve", () => {
-    const sequencer = new Sequencer(SECRETS.operator, new Venue());
+    const sequencer = new Sequencer(SECRETS.operator, new LocalVenue());
     const backing = makeTransparentBacking(SECRETS.backer);
     const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
     expect(() =>

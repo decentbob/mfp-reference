@@ -14,7 +14,7 @@ import {
 import { provesHolding, stateIsAuthentic } from "../src/recovery.js";
 import { receiptProvenBy } from "../src/receipt.js";
 import { Sequencer } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 // Invariant 8: "No clawback, no reversal, no privileged party who can move
@@ -39,7 +39,7 @@ import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 // of them, and anything checked against them has to be served".
 
 function setup() {
-  const venue = new Venue();
+  const venue = new LocalVenue();
   const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer, "EUR", [], {
     noCommitmentDuration: 10n,
@@ -58,7 +58,7 @@ function setup() {
 }
 
 /** Publish `snapshots` as this operator's committed state, whatever they say. */
-function publish(venue: Venue, snapshots: ReturnType<Sequencer["snapshot"]>) {
+function publish(venue: LocalVenue, snapshots: ReturnType<Sequencer["snapshot"]>) {
   const commitment = signCommitment(SECRETS.operator, venue.nextSequenceFor(KEYS.operator), stateRoot(snapshots));
   venue.publish(commitment);
   return { snapshots, commitment };

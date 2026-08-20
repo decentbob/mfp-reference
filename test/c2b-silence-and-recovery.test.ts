@@ -5,7 +5,7 @@ import { signCommitment, stateProvesCommitment, type Commitment } from "../src/c
 import { encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { isSilent, provesHolding, quietFor, redemptionIsOpen } from "../src/recovery.js";
 import { Sequencer } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 // §C2b: "When sequencers go dark, claims go illiquid rather than dead... after
@@ -35,7 +35,7 @@ const SILENCE = { noCommitmentDuration: 10n, challengeWindow: 5n };
 // `null` means "declares no clause". A defaulted `undefined` would silently fall
 // back to SILENCE and leave the no-clause path untested, which it did.
 function setup(silence: typeof SILENCE | null = SILENCE) {
-  const venue = new Venue();
+  const venue = new LocalVenue();
   const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer, "EUR", [], silence ?? undefined);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
@@ -100,7 +100,7 @@ describe("§C2b: silence is a public fact, measured on the venue's clock", () =>
 
   it("two backings grade one silent operator by their own declared durations", () => {
     // The fact is the operator's; the threshold is each backing's own term.
-    const venue = new Venue();
+    const venue = new LocalVenue();
     const sequencer = new Sequencer(SECRETS.operator, venue);
     const patient = makeTransparentBacking(SECRETS.backer, "EUR", [], {
       noCommitmentDuration: 100n,

@@ -5,7 +5,7 @@ import { LedgerError, TransparentLedger } from "../src/ledger.js";
 import { encodeIssuance } from "../src/messages.js";
 import { demandHash, encodeAcceptance, encodeDemand } from "../src/presentation.js";
 import { Sequencer } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 import {
   advanceWitnessedIndex,
   KEYS,
@@ -29,7 +29,7 @@ import {
 // so an acceptance cannot name an unwitnessed instant either.
 
 function sequencerAt(index: bigint) {
-  const venue = new Venue();
+  const venue = new LocalVenue();
   const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));

@@ -13,7 +13,7 @@ import {
 import { receiptProvenBy, verifyReceipt } from "../src/receipt.js";
 import { replayLog } from "../src/ledger.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 import { advanceWitnessedIndex, KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 // Invariant 26: "The swap is idempotent, and so is presentation. A repeated
@@ -34,7 +34,7 @@ import { advanceWitnessedIndex, KEYS, makeTransparentBacking, SECRETS } from "./
 
 /** Issue 100 to Alice, then publish commitments up to witnessed index 5. */
 function setup() {
-  const venue = new Venue();
+  const venue = new LocalVenue();
   const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
@@ -273,7 +273,7 @@ describe("invariant 26: a presentation receipt proves against committed state", 
 
 describe("the sequencer owns routing and the clock", () => {
   it("presentation against a backing it does not serve is refused", () => {
-    const venue = new Venue();
+    const venue = new LocalVenue();
     const sequencer = new Sequencer(SECRETS.operator, venue);
     const backing = makeTransparentBacking(SECRETS.backer);
     const op = {
@@ -295,7 +295,7 @@ describe("the sequencer owns routing and the clock", () => {
     // LedgerError." A client must be able to tell "you do not serve this" from
     // "the law refused me", and every read accessor is a place that can be
     // asked about a backing this operator never took on.
-    const sequencer = new Sequencer(SECRETS.operator, new Venue());
+    const sequencer = new Sequencer(SECRETS.operator, new LocalVenue());
     const stranger = makeTransparentBacking(SECRETS.backer2, "kWh");
     expect(() => sequencer.nextNonce(KEYS.alice, stranger)).toThrow(SequencerError);
     expect(() => sequencer.balance(stranger, KEYS.alice)).toThrow(SequencerError);

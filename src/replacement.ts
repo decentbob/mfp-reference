@@ -44,7 +44,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { type Backing } from "./backing.js";
-import { ByteWriter, compareBytes, copyBytes } from "./bytes.js";
+import { ByteReader, ByteWriter, compareBytes, copyBytes } from "./bytes.js";
 import { REPLACEMENT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
 import type { Venue } from "./venue.js";
@@ -71,17 +71,6 @@ export interface WitnessedReplacement {
   readonly at: bigint;
 }
 
-/** A snapshot of a replacement's bytes, for the reason commitments are copied. */
-export function copyReplacement(replacement: Replacement): Replacement {
-  return {
-    role: replacement.role,
-    successor: copyBytes(replacement.successor),
-    predecessor: copyBytes(replacement.predecessor),
-    effective: replacement.effective,
-    signature: copyBytes(replacement.signature),
-  };
-}
-
 /** The bytes the replacement rule's key signs. Throws on a malformed field. */
 export function replacementMessage(backingName: Uint8Array, replacement: Replacement): Uint8Array {
   const w = new ByteWriter();
@@ -97,6 +86,49 @@ export function replacementMessage(backingName: Uint8Array, replacement: Replace
 /** A replacement's identity, and the value its successor names as predecessor. */
 export function replacementHash(backingName: Uint8Array, replacement: Replacement): Uint8Array {
   return sha256(replacementMessage(backingName, replacement));
+}
+
+/**
+ * A replacement as a **record**, for a venue that stores bytes: the backing it
+ * replaces the operator of, the signed fields, then the signature.
+ *
+ * **The backing name is in the record**, as it is in an operation's, so a record
+ * stands alone. A chain finds a box and has to know what it is without being
+ * told; a record that needed its filing to say which backing it belongs to would
+ * be one more thing an implementation could get wrong. It costs 32 bytes and it
+ * is already inside the signature, so it cannot disagree with itself.
+ */
+export function encodeReplacement(
+  backingName: Uint8Array,
+  replacement: Replacement,
+): Uint8Array {
+  const w = new ByteWriter();
+  w.key32(backingName, "backing name");
+  w.u8(replacement.role);
+  w.key32(replacement.successor, "successor key");
+  w.key32(replacement.predecessor, "predecessor");
+  w.u64(replacement.effective);
+  w.fixed(replacement.signature, 64, "signature");
+  return w.finish();
+}
+
+/**
+ * Strict inverse of encodeReplacement, handing back the backing it names.
+ * Throws EncodingError on anything else.
+ */
+export function decodeReplacement(bytes: Uint8Array): {
+  readonly backingName: Uint8Array;
+  readonly replacement: Replacement;
+} {
+  const r = new ByteReader(bytes);
+  const backingName = r.raw(32);
+  const role = r.u8();
+  const successor = r.raw(32);
+  const predecessor = r.raw(32);
+  const effective = r.u64();
+  const signature = r.raw(64);
+  r.expectEnd();
+  return { backingName, replacement: { role, successor, predecessor, effective, signature } };
 }
 
 /**

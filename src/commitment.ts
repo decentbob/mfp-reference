@@ -39,7 +39,7 @@
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { ByteWriter, compareBytes, copyBytes, EncodingError } from "./bytes.js";
+import { ByteReader, ByteWriter, compareBytes, copyBytes, EncodingError } from "./bytes.js";
 import { COMMITMENT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
 import type { Backing } from "./backing.js";
@@ -60,22 +60,6 @@ export interface Commitment {
   readonly root: Uint8Array;
   readonly operator: Uint8Array;
   readonly signature: Uint8Array;
-}
-
-/**
- * A snapshot of a commitment's bytes. `readonly` is erased at runtime and does
- * not stop a Uint8Array's contents changing, so anything that stores or serves a
- * commitment copies it (CLAUDE.md: copy on the way in, copy on the way out).
- * Without it an operator can mutate the object it published and retroactively
- * deny its own commitment.
- */
-export function copyCommitment(commitment: Commitment): Commitment {
-  return {
-    sequence: commitment.sequence,
-    root: copyBytes(commitment.root),
-    operator: copyBytes(commitment.operator),
-    signature: copyBytes(commitment.signature),
-  };
 }
 
 /**
@@ -213,6 +197,31 @@ export function signCommitment(
 ): Commitment {
   const operator = ed25519.getPublicKey(operatorSecret);
   const signature = ed25519.sign(commitmentMessage(sequence, root), operatorSecret);
+  return { sequence, root, operator, signature };
+}
+
+/**
+ * A commitment as a **record**, for a venue that stores bytes rather than
+ * objects: sequence, root, operator, signature. Fixed width throughout, so there
+ * is one spelling and no length to disagree with.
+ */
+export function encodeCommitment(commitment: Commitment): Uint8Array {
+  const w = new ByteWriter();
+  w.u64(commitment.sequence);
+  w.key32(commitment.root, "root");
+  w.key32(commitment.operator, "operator key");
+  w.fixed(commitment.signature, 64, "signature");
+  return w.finish();
+}
+
+/** Strict inverse of encodeCommitment. Throws EncodingError on anything else. */
+export function decodeCommitment(bytes: Uint8Array): Commitment {
+  const r = new ByteReader(bytes);
+  const sequence = r.u64();
+  const root = r.raw(32);
+  const operator = r.raw(32);
+  const signature = r.raw(64);
+  r.expectEnd();
   return { sequence, root, operator, signature };
 }
 

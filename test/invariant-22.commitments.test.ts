@@ -14,7 +14,7 @@ import { Sequencer } from "../src/sequencer.js";
 import { EncodingError } from "../src/bytes.js";
 import { stateProvesCommitment } from "../src/commitment.js";
 import { receiptProvenBy, verifyReceipt } from "../src/receipt.js";
-import { Venue, VenueError } from "../src/venue.js";
+import { LocalVenue, VenueError, type Venue } from "../src/venue.js";
 import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 // Invariant 22: every state a sequencer asserts must prove against its latest
@@ -23,7 +23,7 @@ import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 // operator, are provable equivocation.
 
 function setup() {
-  const venue = new Venue();
+  const venue = new LocalVenue();
   const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
