@@ -52,12 +52,17 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { copyBytes } from "./bytes.js";
-import { copyCommitment, verifyCommitment, type Commitment } from "./commitment.js";
-import { utf8Encoder } from "./contexts.js";
-import { copyOp, opMessageOfEntry, type PublishedOp } from "./oplog.js";
 import {
-  copyReplacement,
-  replacementMessage,
+  decodeCommitment,
+  encodeCommitment,
+  verifyCommitment,
+  type Commitment,
+} from "./commitment.js";
+import { utf8Encoder } from "./contexts.js";
+import { decodePublishedOp, encodePublishedOp, type PublishedOp } from "./oplog.js";
+import {
+  decodeReplacement,
+  encodeReplacement,
   type Replacement,
   type WitnessedReplacement,
 } from "./replacement.js";
@@ -72,9 +77,20 @@ export class VenueError extends Error {}
  */
 export const UNNAMED_VENUE = sha256(utf8Encoder.encode("mfp/venue/unnamed/v1"));
 
-/** A commitment together with the venue's own word on when it was witnessed. */
+/**
+ * One record, as a venue holds it: the canonical bytes, and the venue's own word
+ * on when it witnessed them.
+ *
+ * **Bytes, not objects.** Any venue that is not a variable in this process
+ * stores bytes — a chain stores bytes — so holding them here is the honest model
+ * rather than a concession. It also makes the copy rule structural instead of
+ * remembered: encoding produces fresh bytes on the way in and decoding produces
+ * a fresh object on the way out, so a publisher cannot rewrite what it
+ * published and a reader cannot poison the record for the next one. Three
+ * explicit copy functions stopped being needed the moment this changed.
+ */
 interface Witnessed {
-  readonly commitment: Commitment;
+  readonly bytes: Uint8Array;
   readonly at: bigint;
 }
 
@@ -88,17 +104,42 @@ export interface WitnessedOp {
   readonly at: bigint;
 }
 
-export class Venue {
+/**
+ * What the rest of the system needs from a venue, and nothing else.
+ *
+ * An interface rather than a class, because there will be more than one: this
+ * process holds `LocalVenue`, and a real one is a chain. Every method here is
+ * something a chain can answer — a height, records filed by key, records in the
+ * order they were witnessed. `advance` is deliberately NOT here: block
+ * production is not a venue's to offer, it is the thing no participant controls,
+ * and only the local stand-in can pretend otherwise.
+ */
+export interface Venue {
+  /** This venue's identity, as a copy — the value E declares to name it. */
+  readonly id: Uint8Array;
+  witnessedIndex(): bigint;
+  publish(commitment: Commitment): void;
+  publishOp(backingName: Uint8Array, op: PublishedOp): void;
+  publishReplacement(backingName: Uint8Array, replacement: Replacement): void;
+  publishedOpsFor(backingName: Uint8Array): WitnessedOp[];
+  replacementsFor(backingName: Uint8Array): WitnessedReplacement[];
+  latestFor(operator: Uint8Array, asOf?: bigint): Commitment | undefined;
+  witnessedAtFor(operator: Uint8Array, asOf?: bigint): bigint | undefined;
+  firstCommitmentFor(operator: Uint8Array, notBefore?: bigint): bigint | undefined;
+  nextSequenceFor(operator: Uint8Array): bigint;
+}
+
+export class LocalVenue implements Venue {
   /** The venue's own clock: the latest witnessed index (immediate finality). */
   private height = 0n;
   /** This venue's own identity, the value E declares to name it. */
   private readonly venueId: Uint8Array;
-  /** Operator hex -> that operator's commitments, in published order. */
+  /** Operator hex -> that operator's commitment records, in published order. */
   private readonly byOperator = new Map<string, Witnessed[]>();
-  /** Backing name hex -> operations published against it, in published order. */
-  private readonly opsByBacking = new Map<string, WitnessedOp[]>();
-  /** Backing name hex -> replacements published against it, in published order. */
-  private readonly replacementsByBacking = new Map<string, WitnessedReplacement[]>();
+  /** Backing name hex -> operation records, in published order. */
+  private readonly opsByBacking = new Map<string, Witnessed[]>();
+  /** Backing name hex -> replacement records, in published order. */
+  private readonly replacementsByBacking = new Map<string, Witnessed[]>();
 
   /**
    * A venue carries an identity, because §C2b reads a grade "at its witnessed
@@ -149,16 +190,16 @@ export class Venue {
       throw new VenueError("commitment signature invalid");
     }
     const key = bytesToHex(commitment.operator);
-    // The venue's own copy. The publisher keeps a reference to what it handed
-    // over, and mutating those bytes afterwards would let it rewrite its
-    // published past — the one thing this class exists to prevent.
-    const witnessed: Witnessed = { commitment: copyCommitment(commitment), at: this.height };
+    // Encoded on the way in, which is what makes the record the venue's own: the
+    // publisher keeps a reference to the object it handed over, and mutating it
+    // afterwards must not rewrite a published past.
+    const witnessed: Witnessed = { bytes: encodeCommitment(commitment), at: this.height };
     const log = this.byOperator.get(key);
     if (log === undefined) {
       this.byOperator.set(key, [witnessed]);
       return;
     }
-    const highest = (log[log.length - 1] as Witnessed).commitment.sequence;
+    const highest = decodeCommitment((log[log.length - 1] as Witnessed).bytes).sequence;
     if (commitment.sequence <= highest) {
       throw new VenueError("commitment sequence does not extend the operator's history");
     }
@@ -183,18 +224,16 @@ export class Venue {
     // outside, the half the message cannot see escaped as a TypeError naming no
     // boundary. The copy is the venue's own, for the reason commitments are
     // copied: the publisher keeps a reference to what it handed over.
-    let copy: PublishedOp;
+    let bytes: Uint8Array;
     try {
-      opMessageOfEntry(backingName, op);
-      copy = copyOp(op);
+      bytes = encodePublishedOp(backingName, op);
     } catch (cause) {
       throw new VenueError(`published operation does not encode: ${String(cause)}`);
     }
     const key = bytesToHex(backingName);
-    const witnessed: WitnessedOp = { op: copy, at: this.height };
     const log = this.opsByBacking.get(key);
-    if (log === undefined) this.opsByBacking.set(key, [witnessed]);
-    else log.push(witnessed);
+    if (log === undefined) this.opsByBacking.set(key, [{ bytes, at: this.height }]);
+    else log.push({ bytes, at: this.height });
   }
 
   /**
@@ -204,7 +243,13 @@ export class Venue {
    */
   publishedOpsFor(backingName: Uint8Array): WitnessedOp[] {
     const log = this.opsByBacking.get(bytesToHex(backingName)) ?? [];
-    return log.map((witnessed) => ({ op: copyOp(witnessed.op), at: witnessed.at }));
+    // Decoded on the way out, so every reader gets its own object and the record
+    // itself is unreachable. Nothing published here can fail to decode: publishOp
+    // refused anything that did not encode.
+    return log.map((witnessed) => ({
+      op: decodePublishedOp(witnessed.bytes).op,
+      at: witnessed.at,
+    }));
   }
 
   /**
@@ -217,24 +262,22 @@ export class Venue {
    * with no canonical message is a record of nothing.
    */
   publishReplacement(backingName: Uint8Array, replacement: Replacement): void {
-    let copy: Replacement;
+    let bytes: Uint8Array;
     try {
-      replacementMessage(backingName, replacement);
-      copy = copyReplacement(replacement);
+      bytes = encodeReplacement(backingName, replacement);
     } catch (cause) {
       throw new VenueError(`published replacement does not encode: ${String(cause)}`);
     }
     const key = bytesToHex(backingName);
-    const witnessed: WitnessedReplacement = { replacement: copy, at: this.height };
     const log = this.replacementsByBacking.get(key);
-    if (log === undefined) this.replacementsByBacking.set(key, [witnessed]);
-    else log.push(witnessed);
+    if (log === undefined) this.replacementsByBacking.set(key, [{ bytes, at: this.height }]);
+    else log.push({ bytes, at: this.height });
   }
 
   /** Every replacement published against this backing, as copies, in order. */
   replacementsFor(backingName: Uint8Array): WitnessedReplacement[] {
     const log = this.replacementsByBacking.get(bytesToHex(backingName)) ?? [];
-    return log.map((w) => ({ replacement: copyReplacement(w.replacement), at: w.at }));
+    return log.map((w) => ({ replacement: decodeReplacement(w.bytes).replacement, at: w.at }));
   }
 
   /**
@@ -267,7 +310,7 @@ export class Venue {
    */
   latestFor(operator: Uint8Array, asOf?: bigint): Commitment | undefined {
     const witnessed = this.latestWitnessedFor(operator, asOf);
-    return witnessed === undefined ? undefined : copyCommitment(witnessed.commitment);
+    return witnessed === undefined ? undefined : decodeCommitment(witnessed.bytes);
   }
 
   /**
@@ -307,6 +350,6 @@ export class Venue {
    */
   nextSequenceFor(operator: Uint8Array): bigint {
     const latest = this.latestWitnessedFor(operator);
-    return latest === undefined ? 0n : latest.commitment.sequence + 1n;
+    return latest === undefined ? 0n : decodeCommitment(latest.bytes).sequence + 1n;
   }
 }

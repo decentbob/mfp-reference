@@ -8,7 +8,7 @@ import { encodeIssuanceMessage, encodeTransferMessage } from "../src/messages.js
 import { type OpLogEntry, type PublishedOp } from "../src/oplog.js";
 import { receiptStatus, type Receipt } from "../src/receipt.js";
 import { Sequencer } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 // §C2's receipts, and invariant 22, from the holder's side.
@@ -36,7 +36,7 @@ import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 // isRewrittenHistory, and it is why both live in one slice.
 
 function setup() {
-  const venue = new Venue();
+  const venue = new LocalVenue();
   const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));

@@ -16,7 +16,7 @@ import {
   venueIsDeclared,
 } from "../src/recovery.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 // §C2: "At the declared interval each publishes a small commitment to a widely
@@ -70,7 +70,7 @@ function setup(
     interval: INTERVAL,
   },
 ) {
-  const venue = new Venue(venueId);
+  const venue = new LocalVenue(venueId);
   const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer, "EUR", [], SILENCE, witnessing);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
@@ -84,7 +84,7 @@ function setup(
  * at fixed indices, so two venues can be given byte-identical records and the
  * only difference between them is which one E names.
  */
-function redeemAt(v: Venue, backing: Backing): void {
+function redeemAt(v: LocalVenue, backing: Backing): void {
   const at = (i: bigint) => {
     const now = v.witnessedIndex();
     if (i > now) v.advance(i - now);
@@ -162,7 +162,7 @@ describe("§C2: the witness interval is declared, so lateness is a public fact",
     // Tag 0x01 and 0x02 declare no witnessing terms, and a backing that
     // promised no schedule cannot be late against one. The same shape as a
     // backing with no silence clause never being silent.
-    const venue = new Venue();
+    const venue = new LocalVenue();
     const backing = makeTransparentBacking(SECRETS.backer, "EUR", [], SILENCE);
     venue.advance(10_000n);
     expect(isOverdue(venue, backing)).toBe(false);
@@ -187,7 +187,7 @@ describe("§C2: the witness interval is declared, so lateness is a public fact",
     // and the slice-6 decision). A backing promising to commit every 100 while
     // being graded silent at 50 means what it says: permanently in the
     // aggravated grade. Incoherent, and not this code's to refuse.
-    const venue = new Venue(VENUE);
+    const venue = new LocalVenue(VENUE);
     const backing = makeTransparentBacking(SECRETS.backer, "EUR", [], SILENCE, {
       venue: VENUE,
       interval: SILENCE.noCommitmentDuration + 50n,
@@ -204,7 +204,7 @@ describe("§C2b: a grade is read on the backing's OWN declared venue", () => {
     // commitment record from another venue where this operator looks punctual —
     // or looks dead — and either way it says nothing about this backing.
     const { backing } = setup();
-    const stranger = new Venue(OTHER_VENUE);
+    const stranger = new LocalVenue(OTHER_VENUE);
     stranger.advance(10_000n);
     expect(isSilent(stranger, backing)).toBe(false);
     expect(isOverdue(stranger, backing)).toBe(false);
@@ -215,7 +215,7 @@ describe("§C2b: a grade is read on the backing's OWN declared venue", () => {
     const served = { snapshots: sequencer.snapshot(), commitment: sequencer.commit() };
     expect(provesHolding(venue, backing, served, KEYS.alice, 100n)).toBe(true);
 
-    const stranger = new Venue(OTHER_VENUE);
+    const stranger = new LocalVenue(OTHER_VENUE);
     stranger.publish(served.commitment);
     expect(provesHolding(stranger, backing, served, KEYS.alice, 100n)).toBe(false);
   });
@@ -228,7 +228,7 @@ describe("§C2b: a grade is read on the backing's OWN declared venue", () => {
     // cannot come from an empty record.
     const { venue, sequencer, backing } = setup();
     const served = { snapshots: sequencer.snapshot(), commitment: sequencer.commit() };
-    const stranger = new Venue(OTHER_VENUE);
+    const stranger = new LocalVenue(OTHER_VENUE);
     stranger.publish(served.commitment);
     for (const v of [venue, stranger]) redeemAt(v, backing);
 
@@ -239,7 +239,7 @@ describe("§C2b: a grade is read on the backing's OWN declared venue", () => {
   it("refuses to serve a backing that declares a venue this sequencer is not on", () => {
     // The sequencer's own question, in its own voice: routing, not the law.
     // Same shape as "is this operator me".
-    const venue = new Venue(OTHER_VENUE);
+    const venue = new LocalVenue(OTHER_VENUE);
     const sequencer = new Sequencer(SECRETS.operator, venue);
     const backing = makeTransparentBacking(SECRETS.backer, "EUR", [], SILENCE, {
       venue: VENUE,
@@ -266,13 +266,13 @@ describe("§C2b: a grade is read on the backing's OWN declared venue", () => {
     // exported so a caller can. Pinned here so the meaning is asserted rather
     // than remembered.
     const { backing } = setup();
-    const wrong = new Venue(OTHER_VENUE);
+    const wrong = new LocalVenue(OTHER_VENUE);
     wrong.advance(10_000n);
     expect(isSilent(wrong, backing)).toBe(false);
     expect(isOverdue(wrong, backing)).toBe(false);
     expect(venueIsDeclared(wrong, backing)).toBe(false);
 
-    const right = new Venue(VENUE);
+    const right = new LocalVenue(VENUE);
     right.advance(10_000n);
     expect(venueIsDeclared(right, backing)).toBe(true);
     expect(isSilent(right, backing)).toBe(true);
@@ -283,7 +283,7 @@ describe("§C2b: a grade is read on the backing's OWN declared venue", () => {
     // Unchanged for tags 0x01 and 0x02, and it is a setting rather than an
     // oversight: a backer who wants the grade pinned declares a venue.
     const backing = makeTransparentBacking(SECRETS.backer, "EUR", [], SILENCE);
-    const anywhere = new Venue(OTHER_VENUE);
+    const anywhere = new LocalVenue(OTHER_VENUE);
     anywhere.advance(SILENCE.noCommitmentDuration + 1n);
     expect(isSilent(anywhere, backing)).toBe(true);
   });

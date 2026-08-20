@@ -16,7 +16,7 @@ import { encodeIssuanceMessage, encodeTransferMessage } from "../src/messages.js
 import { receiptStatus } from "../src/receipt.js";
 import { isOverdue, isSilent, stateIsAuthentic } from "../src/recovery.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
-import { Venue, VenueError } from "../src/venue.js";
+import { LocalVenue, VenueError, type Venue } from "../src/venue.js";
 import { KEYS, pub, SECRETS } from "./support.js";
 
 // §C2, succession: "A replacement is itself a witnessed object. It is signed by
@@ -48,7 +48,7 @@ const THIRD = pub(THIRD_SECRET);
 
 /** A backing whose replacement rule is the backer's own key — §C2's default. */
 function setup(replaceable = true) {
-  const venue = new Venue();
+  const venue = new LocalVenue();
   const backing = makeBacking({
     obligor: KEYS.backer,
     payout: { thing: "EUR", quantumExponent: -2, perUnit: 100n },
@@ -82,12 +82,12 @@ function replacementBy(
 }
 
 /** Put a commitment from `secret` at the venue — what gives a successor force. */
-function commitAs(venue: Venue, secret: Uint8Array): void {
+function commitAs(venue: LocalVenue, secret: Uint8Array): void {
   const operator = ed25519.getPublicKey(secret);
   venue.publish(signCommitment(secret, venue.nextSequenceFor(operator), stateRoot([])));
 }
 
-function at(venue: Venue, index: bigint): void {
+function at(venue: LocalVenue, index: bigint): void {
   const now = venue.witnessedIndex();
   if (index > now) venue.advance(index - now);
 }
@@ -296,7 +296,7 @@ describe("§C2: the venue records a replacement and judges nothing", () => {
 
 describe("§C2: a successor serves, and only once it is in force", () => {
   /** The incumbent, holding Alice's 100 with 40 already moved to Bob. */
-  function incumbentServing(venue: Venue, backing: Backing) {
+  function incumbentServing(venue: LocalVenue, backing: Backing) {
     const server = new Sequencer(SECRETS.operator, venue);
     server.register(backing, signBacking(SECRETS.backer, backing));
     const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };

@@ -5,7 +5,7 @@ import { signBacking } from "../src/backing.js";
 import { stateRoot } from "../src/commitment.js";
 import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { Sequencer } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 import { TransparentLedger } from "../src/ledger.js";
 import {
   advanceWitnessedIndex,
@@ -30,7 +30,7 @@ import { replayLog } from "../src/ledger.js";
 // sequencers with identical served state must produce the identical root.
 
 function fresh() {
-  const venue = new Venue();
+  const venue = new LocalVenue();
   const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
@@ -86,10 +86,10 @@ describe("invariant 23: the commitment commits to totals, balances, and the log"
   it("the root is independent of the order backings were registered", () => {
     const eur = makeTransparentBacking(SECRETS.backer, "EUR");
     const kwh = makeTransparentBacking(SECRETS.backer2, "kWh");
-    const a = new Sequencer(SECRETS.operator, new Venue());
+    const a = new Sequencer(SECRETS.operator, new LocalVenue());
     a.register(eur, signBacking(SECRETS.backer, eur));
     a.register(kwh, signBacking(SECRETS.backer2, kwh));
-    const b = new Sequencer(SECRETS.operator, new Venue());
+    const b = new Sequencer(SECRETS.operator, new LocalVenue());
     b.register(kwh, signBacking(SECRETS.backer2, kwh));
     b.register(eur, signBacking(SECRETS.backer, eur));
     expect(rootOf(a)).toBe(rootOf(b));

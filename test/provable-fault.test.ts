@@ -9,7 +9,7 @@ import { opHashOfEntry, type PublishedOp } from "../src/oplog.js";
 import { encodeDemandMessage, encodeReleaseMessage } from "../src/presentation.js";
 import { receiptCovers, signReceipt, type Receipt } from "../src/receipt.js";
 import { Sequencer } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 import { KEYS, makeTransparentBacking, pub, SECRETS } from "./support.js";
 
 // What can be proven, against whom, without trusting anybody.
@@ -167,7 +167,7 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
    * Each takes one of Alice's two spends at nonce 0 and co-signs it.
    */
   function splitBrain() {
-    const venue = new Venue();
+    const venue = new LocalVenue();
     const one = new Sequencer(SECRETS.operator, venue);
     const two = new Sequencer(SECRETS.operator, venue);
     const alice2 = pub(new Uint8Array(32).fill(0x09));
@@ -228,7 +228,7 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
     // no backing name — the name comes from whoever encodes it. So a receipt
     // from a DIFFERENT backing covers the operation just as well, and pairing
     // one with an equivocation here accuses an operator that did nothing.
-    const venue = new Venue();
+    const venue = new LocalVenue();
     const server = new Sequencer(SECRETS.operator, venue);
     const other = makeTransparentBacking(SECRETS.backer, "USD");
     for (const b of [backing, other]) {
@@ -285,7 +285,7 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
   it("refuses operations that are not an equivocation", () => {
     // An honest operator co-signs many operations; only a conflicting pair is
     // a fault, and that judgement is the signer predicate's, not a second one.
-    const venue = new Venue();
+    const venue = new LocalVenue();
     const server = new Sequencer(SECRETS.operator, venue);
     server.register(backing, signBacking(SECRETS.backer, backing));
     const issue = { backing, recipient: KEYS.alice, quantity: 100n, nonce: 0n };
@@ -328,7 +328,7 @@ describe("an operator that co-signed a history one nonce cannot hold", () => {
 
 describe("a receipt covers exactly one operation", () => {
   function accepted() {
-    const venue = new Venue();
+    const venue = new LocalVenue();
     const server = new Sequencer(SECRETS.operator, venue);
     server.register(backing, signBacking(SECRETS.backer, backing));
     const receipt = server.submitIssue(

@@ -8,7 +8,7 @@ import {
   type WitnessingTerms,
 } from "../src/backing.js";
 import { TransparentLedger } from "../src/ledger.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 
 // Shared fixtures for the claim-layer tests. Every key is a real Ed25519
 // point (makeBacking and the ledger reject anything else), and each role has
@@ -80,7 +80,7 @@ export function register(
  * and advances whether or not any operator publishes, so nothing here needs a
  * commitment — which is the whole point (see invariant-21.witnessed-time).
  */
-export function advanceWitnessedIndex(venue: Venue, to: bigint): void {
+export function advanceWitnessedIndex(venue: LocalVenue, to: bigint): void {
   const now = venue.witnessedIndex();
   if (to > now) venue.advance(to - now);
 }

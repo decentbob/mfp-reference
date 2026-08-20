@@ -12,7 +12,7 @@ import {
   encodeWithdrawal,
 } from "../src/presentation.js";
 import { Sequencer } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 // Invariant 21 and §C2: the witnessed clock belongs to the venue, not to any
@@ -37,7 +37,7 @@ import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 /** A backer-run sequencer (§C2's cold-start default) holding Alice's 100 units. */
 function setup() {
-  const venue = new Venue();
+  const venue = new LocalVenue();
   const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
@@ -86,7 +86,7 @@ function tryWithdraw(f: ReturnType<typeof setup>, hash: Uint8Array): boolean {
 
 describe("invariant 21: the witnessed clock is the venue's, not the operator's", () => {
   it("advances with nobody publishing anything", () => {
-    const venue = new Venue();
+    const venue = new LocalVenue();
     expect(venue.witnessedIndex()).toBe(0n);
     venue.advance();
     expect(venue.witnessedIndex()).toBe(1n);

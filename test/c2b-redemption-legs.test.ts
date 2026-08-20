@@ -16,7 +16,7 @@ import {
 import { receiptProvenBy, verifyReceipt } from "../src/receipt.js";
 import { isSilent, snapshotRedemptions, type ServedState } from "../src/recovery.js";
 import { Sequencer } from "../src/sequencer.js";
-import { Venue, VenueError } from "../src/venue.js";
+import { LocalVenue, VenueError, type Venue } from "../src/venue.js";
 import { advanceWitnessedIndex, KEYS, makeTransparentBacking, pub, SECRETS } from "./support.js";
 
 // §C2b's payment path: the claim, acceptance and release legs, the challenge
@@ -46,7 +46,7 @@ import { advanceWitnessedIndex, KEYS, makeTransparentBacking, pub, SECRETS } fro
 const SILENCE = { noCommitmentDuration: 10n, challengeWindow: 5n };
 
 function setup(quantity = 100n) {
-  const venue = new Venue();
+  const venue = new LocalVenue();
   const sequencer = new Sequencer(SECRETS.operator, venue);
   const backing = makeTransparentBacking(SECRETS.backer, "EUR", [], SILENCE);
   sequencer.register(backing, signBacking(SECRETS.backer, backing));
@@ -57,7 +57,7 @@ function setup(quantity = 100n) {
 }
 
 /** Commit the state a redemption runs against, then let the silence elapse. */
-function goDark(venue: Venue, sequencer: Sequencer): ServedState {
+function goDark(venue: LocalVenue, sequencer: Sequencer): ServedState {
   const snapshots = sequencer.snapshot();
   const commitment = sequencer.commit();
   venue.advance(SILENCE.noCommitmentDuration + 1n);
@@ -136,7 +136,7 @@ function payeeOf(op: PublishedOp): Uint8Array {
 }
 
 /** Publish an operation at the venue at exactly witnessed index `at`. */
-function publishAt(venue: Venue, at: bigint, backing: Backing, op: PublishedOp): void {
+function publishAt(venue: LocalVenue, at: bigint, backing: Backing, op: PublishedOp): void {
   advanceWitnessedIndex(venue, at);
   venue.publishOp(backing.name, op);
 }
@@ -146,7 +146,7 @@ function publishAt(venue: Venue, at: bigint, backing: Backing, op: PublishedOp):
  * at the venue, while the operator is dark. Indices 11/12/13, so the challenge
  * window (5) closes at 18.
  */
-function redeemAtVenue(venue: Venue, backing: Backing, quantity = 100n) {
+function redeemAtVenue(venue: LocalVenue, backing: Backing, quantity = 100n) {
   const claim = demand(backing, SECRETS.alice, KEYS.alice, quantity, 11n, 40n, 0n);
   publishAt(venue, 11n, backing, claim.op);
   publishAt(venue, 12n, backing, acceptance(backing, SECRETS.backer, claim.hash, 11n, 40n, 1n));
@@ -1022,7 +1022,7 @@ describe("§C2b: what the record shows when redemption cannot complete", () => {
   });
 
   it("refuses a redemption on a backing that declares no silence clause", () => {
-    const venue = new Venue();
+    const venue = new LocalVenue();
     const sequencer = new Sequencer(SECRETS.operator, venue);
     const backing = makeTransparentBacking(SECRETS.backer, "EUR");
     sequencer.register(backing, signBacking(SECRETS.backer, backing));

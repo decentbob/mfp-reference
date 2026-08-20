@@ -46,7 +46,17 @@ import {
   encodeWithdrawalMessage,
 } from "./presentation.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { copyBytes, EncodingError } from "./bytes.js";
+import { ByteReader, ByteWriter, compareBytes, copyBytes, EncodingError, MAX_QUANTITY_BYTES, minimalBytesToBigint } from "./bytes.js";
+import {
+  ACCEPTANCE_CONTEXT,
+  BURN_CONTEXT,
+  DEMAND_CONTEXT,
+  ISSUANCE_CONTEXT,
+  RELEASE_CONTEXT,
+  TRANSFER_CONTEXT,
+  WITHDRAWAL_CONTEXT,
+} from "./contexts.js";
+import { SIGNATURE_LENGTH } from "./keys.js";
 
 /**
  * One operation, as its signer put a signature over it: the signed fields and
@@ -174,6 +184,112 @@ export function opMessageOfEntry(backingName: Uint8Array, entry: PublishedOp): U
 /** The operation hash a receipt is bound to: sha256 of the signed message. */
 export function opHashOfEntry(backingName: Uint8Array, entry: PublishedOp): Uint8Array {
   return sha256(opMessageOfEntry(backingName, entry));
+}
+
+/**
+ * An operation as a **record**: the exact bytes its signer signed, then the
+ * signature over them.
+ *
+ * A venue that is anything but an object in memory stores bytes, so a published
+ * operation needs one. It is the signed message rather than a second
+ * field-by-field description of the operation, because two encoders that have to
+ * agree is the drift slice 5 removed — the message is the only description, and
+ * this record is that message with the signature that authorised it.
+ *
+ * The backing name is inside the message, so a record stands alone: nothing
+ * beside it says which backing it belongs to and can disagree.
+ */
+export function encodePublishedOp(backingName: Uint8Array, op: PublishedOp): Uint8Array {
+  const w = new ByteWriter();
+  w.lengthPrefixed(opMessageOfEntry(backingName, op));
+  w.fixed(op.signature, SIGNATURE_LENGTH, "signature");
+  return w.finish();
+}
+
+/** The longest context is the one a prefix-free set lets us match unambiguously. */
+const OP_CONTEXTS: readonly (readonly [Uint8Array, PublishedOp["kind"]])[] = [
+  [ISSUANCE_CONTEXT, "issue"],
+  [TRANSFER_CONTEXT, "transfer"],
+  [BURN_CONTEXT, "burn"],
+  [DEMAND_CONTEXT, "demand"],
+  [ACCEPTANCE_CONTEXT, "acceptance"],
+  [RELEASE_CONTEXT, "release"],
+  [WITHDRAWAL_CONTEXT, "withdrawal"],
+];
+
+/** A quantity, as every operation message writes it. */
+function readQuantity(r: ByteReader): bigint {
+  return minimalBytesToBigint(r.lengthPrefixed(MAX_QUANTITY_BYTES));
+}
+
+/**
+ * Strict inverse of encodePublishedOp: accepts exactly the canonical bytes and
+ * nothing else, and hands back the backing name the message names alongside the
+ * operation.
+ *
+ * The kind is read from the domain tag the message already opens with.
+ * contexts.ts asserts those are prefix-free, so at most one can match and no
+ * second tag is needed — the same reason commitment.ts stopped writing one.
+ *
+ * Throws EncodingError on anything else. Round-tripping is the contract:
+ * decode(encode(x)) is x, and encode(decode(bytes)) is bytes, so a record has
+ * exactly one spelling.
+ */
+export function decodePublishedOp(bytes: Uint8Array): {
+  readonly backingName: Uint8Array;
+  readonly op: PublishedOp;
+} {
+  const outer = new ByteReader(bytes);
+  const message = outer.lengthPrefixed(1 << 16);
+  const signature = outer.raw(SIGNATURE_LENGTH);
+  outer.expectEnd();
+
+  const found = OP_CONTEXTS.find(
+    ([context]) =>
+      message.length >= context.length &&
+      compareBytes(message.subarray(0, context.length), context) === 0,
+  );
+  if (found === undefined) throw new EncodingError("no known operation context");
+  const [context, kind] = found;
+
+  const r = new ByteReader(message.subarray(context.length));
+  const backingName = r.raw(32);
+  const op = ((): PublishedOp => {
+    switch (kind) {
+      case "issue": {
+        const recipient = r.raw(32);
+        return { kind, recipient, quantity: readQuantity(r), nonce: r.u64(), signature };
+      }
+      case "transfer": {
+        const from = r.raw(32);
+        const to = r.raw(32);
+        return { kind, from, to, quantity: readQuantity(r), nonce: r.u64(), signature };
+      }
+      case "burn": {
+        const holder = r.raw(32);
+        return { kind, holder, quantity: readQuantity(r), nonce: r.u64(), signature };
+      }
+      case "demand": {
+        const holder = r.raw(32);
+        const quantity = readQuantity(r);
+        return { kind, holder, quantity, instant: r.u64(), deadline: r.u64(), nonce: r.u64(), signature };
+      }
+      case "acceptance": {
+        const demandHash = r.raw(32);
+        return { kind, demandHash, instant: r.u64(), deadline: r.u64(), nonce: r.u64(), signature };
+      }
+      case "release":
+      case "withdrawal":
+        return { kind, demandHash: r.raw(32), nonce: r.u64(), signature };
+    }
+  })();
+  r.expectEnd();
+  // The message is the only description of the operation, so the round trip is
+  // what proves this decoder is its inverse rather than a second reading of it.
+  if (compareBytes(encodePublishedOp(backingName, op), bytes) !== 0) {
+    throw new EncodingError("published operation is not canonical");
+  }
+  return { backingName, op };
 }
 
 /** A deep copy: no accessor hands out a write path into ledger state (inv 8). */

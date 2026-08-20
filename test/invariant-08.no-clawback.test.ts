@@ -6,7 +6,7 @@ import { encodeBurn, encodeIssuance, encodeTransfer } from "../src/messages.js";
 import { makeTransparentBacking, KEYS, register, SECRETS } from "./support.js";
 import { signBacking } from "../src/backing.js";
 import { Sequencer } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { LocalVenue, type Venue } from "../src/venue.js";
 
 // Invariant 8: no clawback, no reversal, no privileged party who can move
 // claims. The rule is not "don't call it" — the path must not exist. These
@@ -103,7 +103,7 @@ describe("invariant 8: accessors expose no mutation path into ledger state", () 
     // The rule is absolute: no accessor hands out a write path into state. A
     // public Uint8Array field is one, even where the blast radius is only the
     // operator's own service.
-    const venue = new Venue();
+    const venue = new LocalVenue();
     const sequencer = new Sequencer(SECRETS.operator, venue);
     const backing = makeTransparentBacking(SECRETS.backer);
     sequencer.register(backing, signBacking(SECRETS.backer, backing));
@@ -121,7 +121,7 @@ describe("invariant 8: accessors expose no mutation path into ledger state", () 
     // sequencer keeps routing as the operator E names while signing as another,
     // so its declared identity reads as having gone quiet.
     const secret = new Uint8Array(32).fill(0x07);
-    const venue = new Venue();
+    const venue = new LocalVenue();
     const sequencer = new Sequencer(secret, venue);
     const backing = makeTransparentBacking(SECRETS.backer);
     sequencer.register(backing, signBacking(SECRETS.backer, backing));
