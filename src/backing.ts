@@ -244,6 +244,17 @@ function encodeFields(b: BackingFields): Uint8Array {
     });
   }
   clauses.sort((x, y) => x.tag - y.tag);
+  // Asserted where they are written, not only where they are read back. Sorting
+  // does not deduplicate, and a clause added later under a tag another already
+  // uses would emit a list this file's own decoder refuses — surfacing as a
+  // decode failure in whatever test happens to declare both together, which
+  // points at the reader rather than at the mistake. Same reason ByteWriter
+  // asserts a fixed width at the point that writes it.
+  for (let i = 1; i < clauses.length; i++) {
+    if ((clauses[i] as { tag: number }).tag <= (clauses[i - 1] as { tag: number }).tag) {
+      throw new EncodingError("two evidence clauses share a tag");
+    }
+  }
 
   w.u8(clauses.length === 0 ? TAG_EVIDENCE_TRANSPARENT : TAG_EVIDENCE_CLAUSES);
   w.key32(b.evidence.operator, "operator key");

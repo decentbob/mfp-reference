@@ -69,6 +69,14 @@ that exact combination. The encoder now collects clauses and sorts them, so the
 order is structural on both sides. It is the shape this codebase keeps finding,
 caught this time before it shipped rather than after.
 
+And once more reviewing that fix: sorting does not deduplicate, and nothing
+asserted the sorted list was strictly ascending. A clause added later under a
+tag another already uses would emit a list this file's own decoder refuses,
+surfacing as a decode failure in whatever test declares both together - pointing
+at the reader rather than at the mistake. Asserted at the writer now, for the
+reason ByteWriter asserts a fixed width where the field is written. Slice 13 adds
+a clause, so this was worth one line.
+
 **No semantics moved.** `SilenceClause` and `WitnessingTerms` are unchanged and
 every predicate above them is untouched; the only observable difference is that
 a backing declaring a future clause is representable at all.
