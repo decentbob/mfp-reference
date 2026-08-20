@@ -66,6 +66,7 @@ import { compareBytes, copyBytes, isValidQuantity } from "./bytes.js";
 import { type PublishedOp } from "./oplog.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { opHashOfEntry } from "./oplog.js";
 import { operatorAt, operatorIn, successionOf, type Succession } from "./replacement.js";
 import { Venue, type WitnessedOp } from "./venue.js";
 
@@ -153,6 +154,141 @@ export function isOverdue(venue: Venue, backing: Backing): boolean {
   if (terms === undefined) return false;
   if (!venueIsDeclared(venue, backing)) return false;
   return quietFor(venue, operatorNow(venue, backing)) > terms.interval;
+}
+
+/**
+ * The requests this operator has left unserved, as §C2b counts them: "a signed
+ * transfer request, published where demands are, left unserved past the declared
+ * duration and counted only while still unserved."
+ *
+ * This is the grade **measured on service rather than publication**, and it is
+ * the one that reaches the party the aggravated grade cannot: "A stalling
+ * backer-run sequencer publishes on time, and the stall shows only as a spent
+ * set that stops growing."
+ *
+ * Four things make a request count, and each is a sentence of the clause:
+ *
+ *   - **It is a transfer published at the venue.** §C3's demand shape without
+ *     the backer.
+ *   - **It is not in the committed log.** Served means served, and a request the
+ *     operator took stops counting the moment it commits it.
+ *   - **Its age is past the declared duration and inside the window W.** Below
+ *     the duration it has not been left unserved yet; past the window it is no
+ *     longer standing.
+ *   - **The committed state could have served them.** "Faking a request means
+ *     holding a real claim, so the count is checkable" - so they are put to the
+ *     law against the state the operator actually committed, which is the test
+ *     the challenge window needed when a request the snapshot could never have
+ *     served counted as a spend.
+ *
+ * **Served as a sequence, not one at a time.** The paper's own case for m is one
+ * holder: "one holder can split a holding into m claims and file as many
+ * requests... no request is fake, though one holder can supply all m of them."
+ * Under transparent those m requests occupy consecutive nonces, so tested
+ * independently against the committed state every one after the first is refused
+ * as ahead of the signer's next - and the clause could never fire for the
+ * scenario it was written for. They are folded onto one working state in nonce
+ * order instead, which is what "the operator could have served these" means: it
+ * could have served them in the order they were signed.
+ *
+ * Chains across holders - Alice pays Bob, Bob spends onward, both unserved - are
+ * out of scope here for the reason they are in the challenge window: "a spend by
+ * the payee is a different signer's sequence".
+ *
+ * Distinct by the operation each request is, so republishing one is not two. Two
+ * requests at one nonce are one holder equivocating, and the second finds its
+ * nonce spent by the first, so the fold counts one without needing a rule.
+ *
+ * A verifier: the state comes from an operator with a motive and the venue from
+ * anyone at all.
+ */
+export function unservedRequests(
+  venue: Venue,
+  backing: Backing,
+  served: ServedState,
+): WitnessedOp[] {
+  try {
+    const terms = backing.evidence.nonService;
+    if (terms === undefined) return [];
+    if (!venueIsDeclared(venue, backing)) return [];
+    const committed = committedLogFor(backing, venue, served);
+    if (committed === undefined) return [];
+    const state = replayLog(backing, committed.opLog);
+    if (state === undefined) return [];
+
+    const servedAlready = new Set(
+      committed.opLog.map((entry) => bytesToHex(opHashOfEntry(backing.name, entry))),
+    );
+    const now = venue.witnessedIndex();
+    const counted = new Set<string>();
+    const standing: WitnessedOp[] = [];
+    // In nonce order, then witnessed order: a signer's own requests must be
+    // folded in the order they were signed, and the witnessed index is the only
+    // thing that separates two signed at one nonce (§C2, witnessing pins order).
+    const candidates = venue
+      .publishedOpsFor(backing.name)
+      .filter((w) => w.op.kind === "transfer")
+      .sort((a, b) =>
+        a.op.nonce !== b.op.nonce
+          ? a.op.nonce < b.op.nonce
+            ? -1
+            : 1
+          : a.at < b.at
+            ? -1
+            : a.at > b.at
+              ? 1
+              : 0,
+      );
+    const working = copyState(state);
+    for (const witnessed of candidates) {
+      const hash = bytesToHex(opHashOfEntry(backing.name, witnessed.op));
+      // Already in the committed log, so the state below already has it, and
+      // applying it again would only meet its own spent nonce.
+      if (servedAlready.has(hash) || counted.has(hash)) continue;
+      try {
+        applyEntry(working, backing, witnessed.op, undefined);
+      } catch {
+        continue;
+      }
+      counted.add(hash);
+      // **Applied, then counted — not the other way round.** A request outside
+      // the counting band is still one the operator was handed and did not
+      // serve, so it advances the sequence even though it no longer stands: a
+      // request too young to count today is what tomorrow's depends on, and one
+      // that has aged out is what a still-standing later request sits behind.
+      // Filtering before the fold would silently refuse every request behind
+      // them, which is the same mistake as testing them one at a time.
+      const age = now - witnessed.at;
+      if (age <= terms.duration || age > terms.window) continue;
+      standing.push(witnessed);
+    }
+    return standing;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * §C2b's non-service grade: at least *m* distinct requests standing unserved
+ * within the window the backing declares.
+ *
+ * **False means this record does not show it**, on the same terms as isSilent: a
+ * backing that conceded no non-service grade is never non-serving, and a state
+ * that is not this backing's operator's says nothing either way.
+ *
+ * **What firing does here, and what it deliberately does not.** §C2b: "Firing
+ * opens E's replacement rule and moves no dates, and the remedy is inert
+ * wherever that rule names the backer." Read as a gate - the rule closed until
+ * the grade fires - it would make §C2's ordinary replacement unwritable, and §C2
+ * plainly contemplates a backer changing operators deliberately rather than only
+ * under a failure. So "opens" is read as bringing the remedy into play rather
+ * than unlocking it, and the grade is a fact a stranger checks, exactly like
+ * silence and dishonour. Flagged rather than chosen silently; see DECISIONS.md.
+ */
+export function isNonServing(venue: Venue, backing: Backing, served: ServedState): boolean {
+  const terms = backing.evidence.nonService;
+  if (terms === undefined) return false;
+  return unservedRequests(venue, backing, served).length >= terms.count;
 }
 
 /**

@@ -36,6 +36,8 @@
 //                     || 32-byte venue id || u64 witness interval
 //                   u8 0x03 replacement rule
 //                     || 32-byte key that may sign a successor
+//                   u8 0x04 non-service aggregate
+//                     || u64 duration || u32 count m || u64 window W
 //
 // **A list, not a tag per combination.** E's clauses are independent — a backer
 // may promise a schedule without conceding a grade, and §C2 has several more to
@@ -83,6 +85,7 @@ const TAG_EVIDENCE_CLAUSES = 0x05;
 const CLAUSE_SILENCE = 0x01;
 const CLAUSE_WITNESSING = 0x02;
 const CLAUSE_REPLACEMENT = 0x03;
+const CLAUSE_NON_SERVICE = 0x04;
 /** E has a handful of blocks in the paper, not a stream of them. */
 const MAX_EVIDENCE_CLAUSES = 16;
 
@@ -151,6 +154,26 @@ export interface WitnessingTerms {
   readonly interval: bigint;
 }
 
+/**
+ * §C2b's other grade, and the one measured on **service rather than
+ * publication**: "A stalling backer-run sequencer publishes on time, and the
+ * stall shows only as a spent set that stops growing."
+ *
+ * "It fires in the aggregate, and E declares the aggregate: at least m distinct
+ * requests, each unserved past the duration, standing within a window W. Set m
+ * low and one scripted wallet replaces an operator; set it high and the clause
+ * never fires. The holder reads the choice before accepting." So nothing here is
+ * policed beyond its width, exactly as the silence clause is not.
+ */
+export interface NonServiceTerms {
+  /** A request unserved for longer than this begins to count. */
+  readonly duration: bigint;
+  /** How many must stand at once for the grade to fire — the paper's *m*. */
+  readonly count: number;
+  /** The window they must stand within — the paper's *W*. */
+  readonly window: bigint;
+}
+
 export interface TransparentEvidence {
   readonly setting: "transparent";
   /** Verification key of the sequencer that witnesses spends. */
@@ -171,6 +194,13 @@ export interface TransparentEvidence {
    * A key rather than a flag, because "the backer" is just that key named.
    */
   readonly replacementRule?: Uint8Array;
+  /**
+   * Absent means the backer conceded no non-service grade, so a sequencer that
+   * publishes on time and serves nobody is graded by nothing. A setting, and one
+   * a holder reads before accepting — the same choice tag 0x01 makes about
+   * silence.
+   */
+  readonly nonService?: NonServiceTerms;
   /**
    * Absent (tag 0x01) means the backer declared no silence clause, so snapshot
    * redemption never opens and claims can go illiquid forever. That is a
@@ -259,6 +289,17 @@ function encodeFields(b: BackingFields): Uint8Array {
     const rule = b.evidence.replacementRule;
     clauses.push({ tag: CLAUSE_REPLACEMENT, write: () => w.key32(rule, "replacement rule key") });
   }
+  if (b.evidence.nonService !== undefined) {
+    const terms = b.evidence.nonService;
+    clauses.push({
+      tag: CLAUSE_NON_SERVICE,
+      write: () => {
+        w.u64(terms.duration);
+        w.u32(terms.count);
+        w.u64(terms.window);
+      },
+    });
+  }
   clauses.sort((x, y) => x.tag - y.tag);
   // Asserted where they are written, not only where they are read back. Sorting
   // does not deduplicate, and a clause added later under a tag another already
@@ -287,7 +328,7 @@ function encodeFields(b: BackingFields): Uint8Array {
 
 /** Field by field, so nothing rides along on a spread of caller input. */
 function canonicalEvidence(evidence: TransparentEvidence): TransparentEvidence {
-  const { silence, witnessing, replacementRule } = evidence;
+  const { silence, witnessing, replacementRule, nonService } = evidence;
   // Spread rather than branch: two independent optional blocks are four arms as
   // an if/else, and exactOptionalPropertyTypes forbids an explicit undefined.
   return {
@@ -310,6 +351,15 @@ function canonicalEvidence(evidence: TransparentEvidence): TransparentEvidence {
           }),
         }),
     ...(replacementRule === undefined ? {} : { replacementRule: copyBytes(replacementRule) }),
+    ...(nonService === undefined
+      ? {}
+      : {
+          nonService: Object.freeze({
+            duration: nonService.duration,
+            count: nonService.count,
+            window: nonService.window,
+          }),
+        }),
   };
 }
 
@@ -460,6 +510,7 @@ export function decodeBacking(bytes: Uint8Array): Backing {
   let silence: SilenceClause | undefined;
   let witnessing: WitnessingTerms | undefined;
   let replacementRule: Uint8Array | undefined;
+  let nonService: NonServiceTerms | undefined;
   if (tag === TAG_EVIDENCE_CLAUSES) {
     const count = r.u32();
     // An empty list is tag 0x01's spelling, and two spellings of one backing
@@ -479,6 +530,8 @@ export function decodeBacking(bytes: Uint8Array): Backing {
         witnessing = { venue: r.raw(NAME_LENGTH), interval: r.u64() };
       } else if (clause === CLAUSE_REPLACEMENT) {
         replacementRule = r.raw(KEY_LENGTH);
+      } else if (clause === CLAUSE_NON_SERVICE) {
+        nonService = { duration: r.u64(), count: r.u32(), window: r.u64() };
       } else {
         // Not skipped: a reader reporting terms it cannot check is worse than
         // one reporting none.
@@ -498,6 +551,7 @@ export function decodeBacking(bytes: Uint8Array): Backing {
       ...(witnessing === undefined ? {} : { witnessing }),
       ...(silence === undefined ? {} : { silence }),
       ...(replacementRule === undefined ? {} : { replacementRule }),
+      ...(nonService === undefined ? {} : { nonService }),
     },
   });
 }
