@@ -127,15 +127,22 @@ export class Venue {
    * and every reader would have to handle the throw instead.
    */
   publishOp(backingName: Uint8Array, op: PublishedOp): void {
+    // Both halves of "can this be recorded at all" are inside one guard.
+    // Encoding proves the operation names something; copying it proves every
+    // field is really there — including the signature, which the canonical
+    // message deliberately does not contain and so cannot vouch for. Left
+    // outside, the half the message cannot see escaped as a TypeError naming no
+    // boundary. The copy is the venue's own, for the reason commitments are
+    // copied: the publisher keeps a reference to what it handed over.
+    let copy: PublishedOp;
     try {
       opMessageOfEntry(backingName, op);
+      copy = copyOp(op);
     } catch (cause) {
       throw new VenueError(`published operation does not encode: ${String(cause)}`);
     }
     const key = bytesToHex(backingName);
-    // The venue's own copy, for the reason commitments are copied: the
-    // publisher keeps a reference to what it handed over.
-    const witnessed: WitnessedOp = { op: copyOp(op), at: this.height };
+    const witnessed: WitnessedOp = { op: copy, at: this.height };
     const log = this.opsByBacking.get(key);
     if (log === undefined) this.opsByBacking.set(key, [witnessed]);
     else log.push(witnessed);

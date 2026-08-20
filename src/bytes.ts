@@ -30,8 +30,20 @@ export function validateQuantity(n: bigint, what: string): void {
  * The one byte-copy in the codebase. Node's Buffer overrides `slice` to return
  * a view sharing memory, so the copying form must be forced explicitly or a
  * decoded value silently aliases (and mutates with) the caller's buffer.
+ *
+ * It refuses anything that is not bytes, because it is the boundary that finds
+ * out. `readonly Uint8Array` is erased at runtime, so a field that arrives from
+ * outside as a string, or missing, reaches here typed as bytes — and the raw
+ * TypeError from `slice` names no boundary and is not what a caller guarding a
+ * trust boundary catches. The signature on a published operation is exactly
+ * that case: it is the one field the canonical message never reads, so encoding
+ * an operation cannot vouch for it (venue.ts, publishOp).
  */
 export function copyBytes(bytes: Uint8Array): Uint8Array {
+  // instanceof rather than ArrayBuffer.isView: a DataView is a view and is
+  // still not a receiver TypedArray.slice accepts. Node's Buffer is a subclass,
+  // so it passes.
+  if (!(bytes instanceof Uint8Array)) throw new EncodingError("not a byte array");
   return Uint8Array.prototype.slice.call(bytes);
 }
 

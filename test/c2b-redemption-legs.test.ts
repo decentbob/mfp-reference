@@ -16,7 +16,7 @@ import {
 import { receiptProvenBy, verifyReceipt } from "../src/receipt.js";
 import { isSilent, snapshotRedemptions, type ServedState } from "../src/recovery.js";
 import { Sequencer } from "../src/sequencer.js";
-import { Venue } from "../src/venue.js";
+import { Venue, VenueError } from "../src/venue.js";
 import { advanceWitnessedIndex, KEYS, makeTransparentBacking, pub, SECRETS } from "./support.js";
 
 // §C2b's payment path: the claim, acceptance and release legs, the challenge
@@ -821,6 +821,21 @@ describe("§C2b: the venue carries evidence, never a second claim layer", () => 
     expect(() => sequencer.commit()).not.toThrow();
     expect(isSilent(venue, backing)).toBe(false);
     expect(isSilent(venue, other)).toBe(false);
+  });
+
+  it("refuses a publication whose signature is not bytes", () => {
+    // The guard encodes the operation, and the canonical message is the one
+    // place the signature is deliberately absent — so encoding cannot vouch for
+    // it, and copyOp met it instead, outside the try/catch, with a TypeError
+    // naming no boundary. copyBytes is the boundary that finds out.
+    const { venue, backing } = setup();
+    const op = transfer(backing, SECRETS.alice, KEYS.alice, KEYS.bob, 40n, 0n);
+    for (const signature of [undefined, "not bytes", 0]) {
+      expect(() =>
+        venue.publishOp(backing.name, { ...op, signature } as unknown as PublishedOp),
+      ).toThrow(VenueError);
+    }
+    expect(venue.publishedOpsFor(backing.name)).toHaveLength(0);
   });
 
   it("hands out copies, in and out", () => {

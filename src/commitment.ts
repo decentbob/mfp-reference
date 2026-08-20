@@ -167,13 +167,12 @@ export function signCommitment(
 
 /** A commitment is valid iff the operator signed exactly (sequence, root). */
 export function verifyCommitment(commitment: Commitment): boolean {
-  let message: Uint8Array;
   try {
-    message = commitmentMessage(commitment.sequence, commitment.root);
+    const message = commitmentMessage(commitment.sequence, commitment.root);
+    return verifySignatureStrict(commitment.signature, message, commitment.operator);
   } catch {
     return false;
   }
-  return verifySignatureStrict(commitment.signature, message, commitment.operator);
 }
 
 /**
@@ -184,11 +183,20 @@ export function verifyCommitment(commitment: Commitment): boolean {
  * while signing two roots as its Nth commitment is the fault.
  */
 export function isEquivocation(a: Commitment, b: Commitment): boolean {
-  return (
-    compareBytes(a.operator, b.operator) === 0 &&
-    a.sequence === b.sequence &&
-    compareBytes(a.root, b.root) !== 0 &&
-    verifyCommitment(a) &&
-    verifyCommitment(b)
-  );
+  // A verifier, and it was the one that did not say so: anyone may exhibit two
+  // commitments they found at a venue, and these fields are read before
+  // anything verifies them, so a malformed one crashed the proof instead of
+  // failing it. The try is the mechanism the other fault predicates already use
+  // (receiptCovers, isDoublePosition, equivocatingSigner), not a new layer.
+  try {
+    return (
+      compareBytes(a.operator, b.operator) === 0 &&
+      a.sequence === b.sequence &&
+      compareBytes(a.root, b.root) !== 0 &&
+      verifyCommitment(a) &&
+      verifyCommitment(b)
+    );
+  } catch {
+    return false;
+  }
 }

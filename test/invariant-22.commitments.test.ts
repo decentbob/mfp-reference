@@ -7,6 +7,7 @@ import {
   signCommitment,
   stateRoot,
   verifyCommitment,
+  type Commitment,
 } from "../src/commitment.js";
 import { encodeIssuance } from "../src/messages.js";
 import { Sequencer } from "../src/sequencer.js";
@@ -122,6 +123,28 @@ describe("invariant 22: state proves against the latest commitment", () => {
     const honest = sequencer.commit();
     const impostor = signCommitment(SECRETS.mallory, honest.sequence, new Uint8Array(32).fill(0xcd));
     expect(isEquivocation(honest, impostor)).toBe(false);
+  });
+
+  it("answers false, rather than throwing, on a malformed commitment", () => {
+    // Anyone may exhibit two commitments they found at a venue, so both
+    // arguments are adversary-supplied and the fault proof has to answer rather
+    // than crash. It read operator, sequence and root before anything verified
+    // them, so an absent field raised a TypeError naming no boundary — the one
+    // fault predicate that lacked the guard the others have.
+    const { sequencer } = setup();
+    const honest = sequencer.commit();
+    const malformed = [
+      { ...honest, operator: undefined },
+      { ...honest, root: undefined },
+      { ...honest, signature: undefined },
+      { ...honest, sequence: undefined },
+      undefined,
+    ];
+    for (const bad of malformed) {
+      expect(isEquivocation(bad as unknown as Commitment, honest)).toBe(false);
+      expect(isEquivocation(honest, bad as unknown as Commitment)).toBe(false);
+      expect(verifyCommitment(bad as unknown as Commitment)).toBe(false);
+    }
   });
 });
 
