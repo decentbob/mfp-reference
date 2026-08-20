@@ -16,6 +16,150 @@ Format:
 
 ---
 
+## 2026-08-20 - Slice 19: revocation, and the boundary a stolen key draws
+
+**Question:** which of the backlog to take. Revocation is §C2b's first paragraph
+and the only failure branch in the paper with no implementation at all;
+self-contained, no §C3 dependency. `closure(S)` stays deferred - its own deadline
+is "before any presentation moves a leg", which is §C3, and building machinery
+nothing can emit is what this codebase keeps deleting.
+
+**The design question, and it is the one the last several slices trained for.**
+§C2b: "issuance witnessed before the revocation stands, anything witnessed after
+is void." But a log entry has no witnessed index - `applyEntry`'s clock is
+`undefined` on replay precisely because "the log does not record the index each
+operation was accepted at". An issuance is witnessed when a commitment carrying
+it is witnessed, so the rule is read **between two committed states**: once the
+revocation is witnessed at R, the outstanding that stands is the one in the last
+commitment witnessed strictly before R. No new operation kind, no nonce for an
+object the paper never gives one, no change to the law.
+
+**Decisions (Bob):**
+
+- **The record is keyed by K, not by a backing**, which makes it the one venue
+  record that does not name one. §C2b: "published by K to every venue its
+  backings name", and one K obligates many. Slice 15's rule was written for
+  records about a backing; this is a record about a key.
+
+- **The message is the tag and K, and nothing else.** No sequence - "revocation
+  is the one act no later signature can repair", so there is nothing to order. No
+  venue, because the paper wants it relayed and a copy is one anyone may make. No
+  expiry, because "de-revocation would carry the same K". Two by one key are
+  byte-identical, so republishing is harmless, and **earliest witnessed wins** -
+  taking the latest would let a thief holding K push its own boundary forward.
+
+- **The venue checks this one**, where it takes no view on a published operation.
+  A publication has force only where recovery.ts gives it some; a revocation has
+  its whole effect the moment it is recorded, so an unsigned one would let a
+  stranger freeze any backer's issuance for the price of a publication. One
+  signature by the key named in the record, so the venue checks it without taking
+  a view on anything.
+
+- **Only issuance is void.** Transfers, burns and every presentation leg go on -
+  "existing claims keep their terms" - and registration stays open, because an
+  operator that could not serve a revoked backing would strand its holders. The
+  tie at R goes against the operator, which is slice 8's rule for a publication
+  judged "against the record as it stood strictly before its own index".
+
+- **The shortfall is an aggregate, and never a verdict about a holding.** Which
+  units descend from a void issuance is provenance, which CLAUDE.md rules out
+  rather than defers and which no blinded construction could answer. So the code
+  publishes one number about the BACKING - committed outstanding less standing
+  outstanding - and that is all. `committedOutstanding` had to be added: a
+  verifier had no way to read invariant 10's number out of a served state at all,
+  which is what made the shortfall uncomputable.
+
+- **Void, not a fault, and nothing is unwound.** An honest operator can hold an
+  accepted-but-uncommitted issuance when the revocation lands. More decisively:
+  refusing it in the replay makes `replayLog` return undefined, so
+  `stateIsAuthentic` and `provesHolding` go **false for every holder of the
+  backing**, including ones whose units predate the theft entirely. Revocation
+  would go from capping a supply to destroying the backing's verifiability. It
+  would also allocate the loss by spend order, which is worse than any declared
+  shape, and it is a reversal in all but name (invariant 8).
+
+**Bob's push-back, and where it landed.** Bob doubted pro-rata: "the backers will
+decide what to do in such a case, and they should... pro rata would also not work
+if a thief issues a huge amount - each claim would be nearly worthless." Checked
+against the paper rather than argued:
+
+- **Right that allocation is the backer's**, and my "pro-rata is the fairer
+  answer" was a norm the paper does not hold. §5: "what the core defers is a
+  choice about allocation, priced in advance."
+- **Wrong about when.** §18: "the excluded ingredient is **discretion after the
+  fact**, not loss allocation: a payout running pro-rata below a declared ratio
+  *is* a bail-in, writable because every holder priced it before accepting." The
+  backer chooses in P, at mint, where the holder reads it.
+- **"Only paying people he trusts" is forbidden in the terms** by invariant 19:
+  a payout must be "not a function of the holder's identity or of what they
+  present". As an act it is dishonour, which §C3 records and §C2's refusal
+  aggregate counts. Permitted physically, never as a setting.
+- **Right on the fact, wrong on the inference** about a huge theft. Appendix A:
+  "no shape binds past capacity. What a shape decides is allocation. The constant
+  payout has the same mean as the pro-rata one, paying the fastest in full." The
+  claims are worthless because the cover is; pro-rata distributes that rather
+  than causing it. The threat table already concedes it: "a stolen backer key,
+  ruinous under every payout form."
+- **And I was wrong twice over:** pro-rata is not a workout that fires on a
+  shortfall, it is a payout SHAPE declared in P under invariant 19's conditions.
+  A backing with a constant payout never gets pro-rata, ever. For any given
+  backing the allocation question was answered when P was written - which is why
+  the claim layer allocates nothing.
+- **Bob's own addition, and the paper agrees:** prevention beats remedy, through
+  a multisig for issuance. §C2b calls a stolen key "the strongest argument for a
+  threshold K". A sixth party rule in CLAUDE.md, invisible here for the same
+  reason the operator's is: t-of-n aggregated to one Ed25519 key leaves the name,
+  E and strict verification untouched.
+
+**A paper gap this surfaced, not yet raised.** Invariant 19 lets a payout decline
+in the backing's own **outstanding count**; invariant 10 defines outstanding from
+the operator's log; §C2b makes post-revocation issuance void. Nothing connects
+them. On the literal reading the payout reads the committed count - and then a
+thief already caught and revoked can keep issuing and drive every honest holder's
+payout toward zero, in public, for free, on the one payout shape built to survive
+over-issuance. It has to be the standing count, which is checkable and so meets
+invariant 19's "published" condition. That makes `standingOutstanding`
+load-bearing rather than informational.
+
+**Found reviewing the implementation, three, and the third was not mine.**
+
+`revokedAt` wrapped its venue read in `catch { return undefined }`, and undefined
+means NOT REVOKED - so a view never synced for an obligor answered with a clean
+bill of health for a stolen key, and `submitIssue` accepted a million units
+against it. The guard was in ErgoVenue, with a comment of mine saying it "bites
+hardest here", and it was swallowed one layer above. Demonstrated in
+`review-unsynced-reads-unrevoked.mjs`.
+
+Second: `revokedAt` carried its own inlined copy of `venueIsDeclared`, to dodge an
+import cycle. One property in two places, which CLAUDE.md forbids without
+exception, so `venueIsDeclared` moved to venue.ts where both callers reach one
+definition.
+
+Third, regression-reviewing the first and **pre-existing since slice 17**:
+`successionOf` has the same catch and turns a venue's refusal into the **genesis
+chain** - the pre-succession answer slice 14 warned a caller must never get
+silently. On a backing whose operator was replaced, that reads the RETIRED key as
+in force, so a successor committing every five indices grades as silent and
+snapshot redemption opens against an honest operator. Slice 17's guard passes for
+a coincidental reason: its unsynced backing has an operator nobody fetched. §C5
+recommends one operator serving many backings, and then syncing A fetches the
+operator, so asking about unsynced B sails past both guards.
+
+It bites only where the backing declares a replacement rule, because that is when
+the chain is read at all - without one `successionOf` never reaches the venue and
+its answer is right, since an operator's commitments are the operator's. First
+draft of the test missed exactly that and passed for the wrong reason.
+
+**Still open, recorded rather than fixed:** the same catch-all sits in
+`committedLogFor`, `receiptStatus`, `isRewrittenHistory` and `unservedRequests`.
+Those swallow into the refusing direction rather than the exonerating one, so
+none is as dangerous, but "a venue that declines to answer is never a verdict" is
+enforced in four places by hand and not structurally. Making it structural is its
+own piece of work.
+
+**Spec change:** none made. The invariant-19 count question above is the one to
+raise.
+
 ## 2026-08-20 - Slice 18: the backing that vanished, and the remedy that could not be taken
 
 **Question:** where to continue. The loosest thread was the dropped-backing hole
