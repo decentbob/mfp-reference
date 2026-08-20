@@ -152,8 +152,14 @@ identity and cannot be moved, while a nonce is a position its signer chooses. So
 the sentence lists transparent alongside constructions whose mechanism it then
 gives, and the transparent case has no equivalent. Proposed: either scope the
 clause to accumulator and pooled, or say what the transparent check actually
-keys on and that it is weaker for it. The "pays the request's presenter" wording
-from slice 8 remains filed as money-from-first-principles#1.
+keys on and that it is weaker for it.
+
+*[Made the same day, in money-from-first-principles@2ac2e85, taking the second
+option: §C3's clause scopes to the accumulator and pooled and then says what
+transparent falls back on, and §C2b's "stands in for the nullifier" carries the
+same qualifier. The same commit closes money-from-first-principles#1 with the
+payee reading the implementation already followed, so no code change follows
+from either.]*
 
 ## 2026-08-19 - Slice 9: the holder can be at fault too
 
@@ -287,7 +293,8 @@ takes the backing for the same reason rather than trusting whichever key its
 receipts happen to name.
 
 **Spec change:** none needed. The wording fix from slice 8 is filed as
-money-from-first-principles#1.
+money-from-first-principles#1. *[Landed 2026-08-20 in
+money-from-first-principles@2ac2e85; the issue is closed.]*
 
 ## 2026-08-19 - Slice 8: the redemption legs are operations, published elsewhere
 
@@ -458,7 +465,9 @@ judges neither beyond refusing bytes that do not encode.
   committed log that carries it.
 
 **Spec change:** the "pays the request's presenter" wording, above. Otherwise
-none needed.
+none needed. *[Landed 2026-08-20 in money-from-first-principles@2ac2e85: "pays
+the payee the request names instead". The implementation already read it that
+way, so nothing here changed.]*
 
 ## 2026-08-19 - Aligning the decisions: the law is applied once
 
