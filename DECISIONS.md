@@ -16,6 +16,66 @@ Format:
 
 ---
 
+## 2026-08-20 - Slice 12: E's clauses are a list, not a tag per combination
+
+**Question:** the replacement rule is E's third optional block. Slice 10 spent
+four tags on two blocks by enumerating combinations, so a third needs four more,
+and the paper's E has several after it - the non-service aggregate (m, W), the
+refusal aggregate (m', W'), the construction. Enumeration doubles with each
+block and was already doomed; it had simply not hurt yet. Doing the replacement
+rule first would mean writing four tags and then deprecating them.
+
+**Decisions (Bob):** the encoding first, so the replacement rule lands as one
+clause. E declares a canonical **list** of clauses - sorted strictly ascending by
+clause tag, so duplicates are unrepresentable, which is the rule the reliance
+list already follows for the same reason.
+
+- **A clause payload is not length-prefixed, deliberately.** A reader that could
+  skip a clause it did not understand would report terms it cannot check, which
+  is worse than declaring nothing - the rule tag 0x02 was created under. So an
+  unknown clause tag is refused exactly as an unknown evidence tag is, and the
+  encoding gains no field that would make skipping possible.
+
+- **The canonicality rule.** Two spellings of one backing would stop the name
+  being a function of the terms, so an empty clause list is refused: that set is
+  tag 0x01's, and tag 0x01 is what it must use.
+
+**Changed from the plan, and it is the reason it changed.** The plan kept tags
+0x01-0x04 frozen beside the new list. That does not work: with the older tags
+still canonical for their own clause sets, and only two clauses existing, every
+set expressible today already has a shorter tag - so the list would be
+**unreachable**, its encoder half dead code, and only its refusals testable.
+Building a mechanism nothing can emit is what this codebase keeps deleting.
+
+Keeping them as decode-only legacy is worse, and not merely untidy: it breaks
+`decodeBacking`'s own stated contract, that "decode(bytes) succeeding proves
+bytes is THE encoding of the result". An encoder that never emits tag 0x02 makes
+`encode(decode(bytes))` differ from `bytes`.
+
+So **tags 0x02, 0x03 and 0x04 are retired**, and the sets they spelled are
+written as clause lists. Their numbers are not recycled - an old decoder reading
+new bytes as something else is exactly what tag numbers exist to prevent - which
+is why the list is 0x05. Nothing outside this repository's own fixtures held a
+name under those tags, since they were minted in slices 6 and 10. **Tag 0x01 is
+byte-identical and the slice-1 golden vector is untouched**, which is the promise
+those slices actually made.
+
+**Found reviewing the implementation:** the encoder wrote the silence clause
+before the witnessing clause because their tags happen to sort that way, while
+the decoder enforced ascending order. Agreement by convention rather than by
+construction, and the first clause added with a tag that sorted between them
+would have emitted a list this decoder refuses - visible only to a test covering
+that exact combination. The encoder now collects clauses and sorts them, so the
+order is structural on both sides. It is the shape this codebase keeps finding,
+caught this time before it shipped rather than after.
+
+**No semantics moved.** `SilenceClause` and `WitnessingTerms` are unchanged and
+every predicate above them is untouched; the only observable difference is that
+a backing declaring a future clause is representable at all.
+
+**Spec change:** none needed. The paper names E's fields and leaves the encoding
+to the implementation.
+
 ## 2026-08-20 - Slice 11: what a receipt is worth, and what an operator cannot take back
 
 **Question:** CLAUDE.md now says a payment is final when witnessed rather than
@@ -146,6 +206,11 @@ and the silence clause. What does the omission cost, and what can be enforced?
   setting unrepresentable. 0x03 is the witnessing block, 0x04 is both, and 0x01
   and 0x02 are byte-identical to what they were, so the slice-1 golden vector is
   untouched again.
+
+  *[Superseded 2026-08-20 by slice 12: two blocks cost four tags, a third would
+  cost four more, so the blocks became a canonical clause list and tags
+  0x02-0x04 were retired. Tag 0x01 and the golden vector are untouched, which is
+  what this slice actually promised.]*
 
 - **Lateness is a fact, not a third grade.** §C2b declares two grades and
   `isOverdue` is neither: nothing fires, nothing opens, no remedy follows. It is
