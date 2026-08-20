@@ -16,6 +16,71 @@ Format:
 
 ---
 
+## 2026-08-20 - Slice 16: non-service, the grade measured on service
+
+**Question:** the Ergo layout was next, and without a node it means inventing a
+box model that cannot be validated - the risk slice 15 was scoped to avoid. §C2b's
+other grade is buildable now and its remedy exists as of slice 13, so it went
+first. It is also the answer to the hole slice 11 recorded: an operator that
+drops a backing from its commitments keeps publishing and reads as perfectly
+live, and this is the grade that counts what it stopped doing.
+
+**Decisions (Bob):**
+
+- **E clause 0x04 carries the aggregate**: the non-service duration, *m*, and
+  *W*. "Set m low and one scripted wallet replaces an operator; set it high and
+  the clause never fires. The holder reads the choice before accepting" - so
+  nothing is policed beyond its width, exactly as the silence clause is not, and
+  a backing that declares no clause concedes no grade.
+
+- **Four things make a request count**, each a sentence of the clause: it is a
+  transfer published at the venue; it is not in the committed log; its age is
+  past the duration and inside the window; and the committed state could have
+  served it. The last is "faking a request means holding a real claim, so the
+  count is checkable", and it is the same test the challenge window needed when
+  a request the snapshot could never have served counted as a spend.
+
+- **Served as a sequence, not one at a time**, and this was found by the tests
+  rather than by reasoning. The paper's own case for *m* is one holder: "one
+  holder can split a holding into m claims and file as many requests... no
+  request is fake, though one holder can supply all m of them." Under transparent
+  those m requests occupy consecutive nonces, so tested independently against the
+  committed state every one after the first is refused as ahead of the signer's
+  next - and the clause could never fire for the scenario it was written for.
+  They are folded onto one working state in nonce order instead, which is what
+  "the operator could have served these" means.
+
+  Chains across holders are out of scope for the reason they are in the challenge
+  window: "a spend by the payee is a different signer's sequence."
+
+**Found reviewing the implementation, and it is the recurring shape again.** The
+age filter ran *before* the fold, so a request outside the counting band was
+skipped entirely - and every later request by that signer then failed as ahead of
+a nonce nobody had reached. An operator could have escaped the grade forever by
+being handed one request early and the rest later. Applied first, counted second:
+a request too young to stand is what tomorrow's sits behind, and one that has
+aged out is what a still-standing later one sits behind. Two tests pin both
+directions.
+
+**A reading of the spec, flagged rather than taken silently.** §C2b: "Firing
+opens **E**'s replacement rule and moves no dates." Read as a gate - the rule
+closed until the grade fires - it would make §C2's ordinary replacement
+unwritable, and §C2 plainly contemplates a backer changing operators
+deliberately rather than only under a failure ("Whether a sequencer can be
+replaced at all is answered in E"). So "opens" is read as bringing the remedy
+into play rather than unlocking it, and the grade is a fact a stranger checks,
+exactly like silence and dishonour. Slice 13's ungated replacement stands. If the
+gated reading was meant, §C2's replacement and this sentence need reconciling in
+the paper.
+
+**Consequence worth stating: firing licenses nothing this code refuses.** The
+rule-holder could already replace the operator. What the grade adds is the
+publicly checkable fact that it should - which is the whole of what §C2b's grades
+ever do, since silence does not move money either; it opens a path a holder then
+walks.
+
+**Spec change:** none needed, unless the gated reading above was intended.
+
 ## 2026-08-20 - Slice 15: a venue's records are bytes, and Venue is an interface
 
 **Question:** Ergo will likely be the first venue, and we should not be welded to
