@@ -88,19 +88,6 @@ export function quietFor(venue: Venue, operator: Uint8Array): bigint {
 }
 
 /**
- * §C2b's aggravated grade for this backing: its operator has published no
- * commitment for longer than the duration the backing declares. A backing whose
- * E declares no silence clause is never silent — snapshot redemption never opens
- * for it and its claims can go illiquid forever, which is a setting the backer
- * chose and the holder read before accepting.
- *
- * **False means this record does not show it, never that the operator is fine.**
- * A record from a venue the backing does not declare answers false however dark
- * the operator has gone, because a grade is read on the declared venue and this
- * is not it. Ask venueIsDeclared first to tell the two apart — as provesHolding
- * already asks callers to read its false as "this state does not prove it".
- */
-/**
  * Whether this venue is the one the backing declares (§C2b: a grade is effective
  * "at its witnessed index on that backing's declared venue").
  *
@@ -120,6 +107,19 @@ export function venueIsDeclared(venue: Venue, backing: Backing): boolean {
   return compareBytes(venue.id, declared) === 0;
 }
 
+/**
+ * §C2b's aggravated grade for this backing: its operator has published no
+ * commitment for longer than the duration the backing declares. A backing whose
+ * E declares no silence clause is never silent — snapshot redemption never opens
+ * for it and its claims can go illiquid forever, which is a setting the backer
+ * chose and the holder read before accepting.
+ *
+ * **False means this record does not show it, never that the operator is fine.**
+ * A record from a venue the backing does not declare answers false however dark
+ * the operator has gone, because a grade is read on the declared venue and this
+ * is not it. Ask venueIsDeclared first to tell the two apart — as provesHolding
+ * already asks callers to read its false as "this state does not prove it".
+ */
 export function isSilent(venue: Venue, backing: Backing): boolean {
   const clause = backing.evidence.silence;
   if (clause === undefined) return false;

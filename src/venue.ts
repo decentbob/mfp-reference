@@ -85,7 +85,12 @@ export interface WitnessedOp {
 export class Venue {
   /** The venue's own clock: the latest witnessed index (immediate finality). */
   private height = 0n;
+  /** This venue's own identity, the value E declares to name it. */
   private readonly venueId: Uint8Array;
+  /** Operator hex -> that operator's commitments, in published order. */
+  private readonly byOperator = new Map<string, Witnessed[]>();
+  /** Backing name hex -> operations published against it, in published order. */
+  private readonly opsByBacking = new Map<string, WitnessedOp[]>();
 
   /**
    * A venue carries an identity, because §C2b reads a grade "at its witnessed
@@ -107,10 +112,6 @@ export class Venue {
   get id(): Uint8Array {
     return copyBytes(this.venueId);
   }
-  /** Operator hex -> that operator's commitments, in published order. */
-  private readonly byOperator = new Map<string, Witnessed[]>();
-  /** Backing name hex -> operations published against it, in published order. */
-  private readonly opsByBacking = new Map<string, WitnessedOp[]>();
 
   /**
    * The latest witnessed index at this venue — the clock instants, deadlines and
