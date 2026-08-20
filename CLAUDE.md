@@ -116,7 +116,7 @@ construction.md before touching anything they govern.
 
 ## What the parties must do, that no code here enforces
 
-Five rules the protocol cannot check but the reference implementation must not
+Six rules the protocol cannot check but the reference implementation must not
 leave unsaid. Each was reached by asking what a failing sequencer costs
 somebody, and each is recorded in [[DECISIONS.md]] with the reasoning.
 
@@ -132,6 +132,14 @@ construction — which is why they are rules here rather than code.
   t > n/2** removes the possibility rather than recording it, since two disjoint
   quorums cannot exist; aggregated to one Ed25519 key it is invisible here, so
   the name, E and strict verification are untouched.
+- **A threshold K, or theft is unbounded.** §C2b: a stolen backer key does
+  damage that is "unbounded and permanent, since K alone authorises issuance and
+  nothing expires", and revocation is a stop-loss rather than a remedy — a thief
+  issues fast and a backer notices slowly, so the fraudulent supply is already
+  witnessed and stands. The paper calls this "the strongest argument for a
+  threshold K". Like the operator rule above it is **invisible here**: t-of-n
+  aggregated to one Ed25519 key leaves the name, E and strict verification
+  untouched, so nothing in this repository can check that a backer took it.
 - **The payee obtains the receipt at payment time.** During a §C2b gap the
   operator's log is unpublished, so its receipt is the only evidence outside it
   that an operation was accepted at all. A payee without one has the payer's

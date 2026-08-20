@@ -17,6 +17,7 @@
 //   mfp/release/v1             a holder settling an accepted demand
 //   mfp/withdrawal/v1          a holder ending an unanswered demand
 //   mfp/replacement/v1         E's rule naming a successor operator
+//   mfp/revocation/v1          K withdrawing its own authority to issue
 
 const encoder = new TextEncoder();
 const tag = (s: string): Uint8Array => encoder.encode(s);
@@ -32,6 +33,7 @@ export const ACCEPTANCE_CONTEXT = tag("mfp/acceptance/v1");
 export const RELEASE_CONTEXT = tag("mfp/release/v1");
 export const WITHDRAWAL_CONTEXT = tag("mfp/withdrawal/v1");
 export const REPLACEMENT_CONTEXT = tag("mfp/replacement/v1");
+export const REVOCATION_CONTEXT = tag("mfp/revocation/v1");
 
 /** Shared UTF-8 codecs. The decoder is strict and BOM-preserving so that
  *  decode(encode(s)) === s for every well-formed string. */
@@ -56,6 +58,7 @@ const ALL_CONTEXTS = [
   RELEASE_CONTEXT,
   WITHDRAWAL_CONTEXT,
   REPLACEMENT_CONTEXT,
+  REVOCATION_CONTEXT,
 ];
 
 export function contextsArePrefixFree(tags: readonly Uint8Array[] = ALL_CONTEXTS): boolean {

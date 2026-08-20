@@ -41,6 +41,7 @@ const VENUE_ID = ergoVenueId("ergo-testnet", DEPTH, SCRIPT);
 const ADDRESSING: ErgoAddressing = {
   commitments: (operator) => `commit:${Buffer.from(operator).toString("hex")}`,
   publications: (backingName) => `publish:${Buffer.from(backingName).toString("hex")}`,
+  revocations: (obligor) => `revoke:${Buffer.from(obligor).toString("hex")}`,
 };
 
 /** The node, as far as a venue can see it: boxes by address, and a height. */

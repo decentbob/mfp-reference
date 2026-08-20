@@ -68,6 +68,7 @@ import { committedLogFor, type ServedState } from "./commitment.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { opHashOfEntry } from "./oplog.js";
 import { operatorAt, operatorIn, successionOf, type Succession } from "./replacement.js";
+import { revokedAt } from "./revocation.js";
 import { Venue, type WitnessedOp } from "./venue.js";
 
 export type { ServedState };
@@ -399,6 +400,90 @@ function replayLatestState(
   if (latest.sequence !== served.commitment.sequence) return undefined;
   if (compareBytes(latest.root, served.commitment.root) !== 0) return undefined;
   return replayServedState(backing, venue, served);
+}
+
+/**
+ * This backing's outstanding as one of its operators committed it: issued minus
+ * burned (invariant 10), out of a served state. Undefined where the state is not
+ * one this backing's operator committed, or does not replay under the law.
+ *
+ * Any committed state, not only the latest — a caller comparing two of them
+ * needs both, and which one is current is a question about the commitment rather
+ * than about this arithmetic. The verifier had no way to read this number at all
+ * before, which is what made a shortfall uncomputable.
+ */
+export function committedOutstanding(
+  backing: Backing,
+  venue: Venue,
+  served: ServedState,
+): bigint | undefined {
+  const state = replayServedState(backing, venue, served);
+  return state === undefined ? undefined : state.issued - state.burned;
+}
+
+/**
+ * The outstanding that **stands** against a revoked backing: issued minus burned
+ * as of the last commitment witnessed strictly before the revocation. Undefined
+ * where the backing is not revoked here, or where `boundary` is not that
+ * commitment's state.
+ *
+ * §C2b: "issuance witnessed before the revocation stands, anything witnessed
+ * after is void." An issuance is witnessed when a commitment carrying it is
+ * witnessed, and a log entry records no index of its own (slice 13), so the
+ * boundary is read between committed states rather than per entry. Strictly
+ * before: a commitment witnessed at the revocation's own index is not before it,
+ * and the tie goes against the operator for the reason submitIssue's does.
+ *
+ * **What this is for, and what it is deliberately not.** Subtracting it from
+ * committedOutstanding gives one number — how far the committed supply exceeds
+ * what stands — and that number is a fact about the BACKING. It is never a
+ * verdict about a holding. Which units descend from a void issuance is
+ * provenance, which CLAUDE.md rules out rather than defers and which no blinded
+ * construction could answer anyway; and allocation was settled in P before
+ * anyone accepted, since invariant 19 forbids a payout reading holder identity
+ * and §18 excludes "discretion after the fact".
+ *
+ * **Nothing is unwound, and that is not squeamishness.** Refusing a
+ * post-boundary issuance in the replay would make replayLog return undefined, so
+ * stateIsAuthentic and provesHolding would answer false for EVERY holder of the
+ * backing, including ones whose units predate the theft entirely. Revocation
+ * would go from capping a supply to destroying the backing's verifiability. It
+ * would also allocate the loss by spend order, which is worse than any declared
+ * shape, and it is a reversal in all but name (invariant 8).
+ *
+ * **This is the count invariant 19's payout must read.** A payout declining in
+ * the backing's own outstanding count collapses as that count rises; read
+ * against the committed count, a thief already caught and revoked could keep
+ * issuing and drive every honest holder's payout toward zero, in public, for
+ * free. This count is checkable from the published record, so it satisfies
+ * invariant 19's "published" condition, and a thief cannot move it. The paper
+ * does not connect the two; see DECISIONS.md.
+ */
+export function standingOutstanding(
+  backing: Backing,
+  venue: Venue,
+  boundary: ServedState,
+): bigint | undefined {
+  try {
+    const revoked = revokedAt(venue, backing);
+    if (revoked === undefined) return undefined;
+    const before = revoked - 1n;
+    // Whoever was in force just before the boundary — a handover and a
+    // revocation are independent axes, and this reads the same chain everything
+    // else does rather than assuming the key E names.
+    const last = venue.latestFor(operatorAt(backing, venue, before), before);
+    if (last === undefined) return undefined;
+    if (
+      boundary.commitment.sequence !== last.sequence ||
+      compareBytes(boundary.commitment.root, last.root) !== 0 ||
+      compareBytes(boundary.commitment.operator, last.operator) !== 0
+    ) {
+      return undefined;
+    }
+    return committedOutstanding(backing, venue, boundary);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

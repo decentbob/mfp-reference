@@ -58,6 +58,12 @@ import {
 import { utf8Encoder } from "./contexts.js";
 import { decodePublishedOp, type PublishedOp } from "./oplog.js";
 import { decodeReplacement, type Replacement, type WitnessedReplacement } from "./replacement.js";
+import {
+  decodeRevocation,
+  isSignedRevocation,
+  type Revocation,
+  type WitnessedRevocation,
+} from "./revocation.js";
 import { successionOf } from "./replacement.js";
 import { UNNAMED_VENUE, VenueError, type Venue, type WitnessedOp } from "./venue.js";
 import { type Backing } from "./backing.js";
@@ -106,6 +112,12 @@ export interface ErgoAddressing {
   commitments(operator: Uint8Array): string;
   /** Where anyone publishes operations and replacements for this backing. */
   publications(backingName: Uint8Array): string;
+  /**
+   * Where K publishes its own revocation. Keyed by the obligor key rather than
+   * by a backing, because §C2b's revocation is about a key and one K obligates
+   * many backings.
+   */
+  revocations(obligor: Uint8Array): string;
 }
 
 /**
@@ -187,6 +199,10 @@ export class ErgoVenue implements Venue {
   private readonly covered = new Set<string>();
   /** The operators it fetched — every one in a covered backing's chain. */
   private readonly fetched = new Set<string>();
+  /** Obligor key hex -> that key's revocation records. */
+  private readonly revocations = new Map<string, Witnessed<Revocation>[]>();
+  /** The obligor keys it fetched revocations for. */
+  private readonly revoked = new Set<string>();
 
   constructor(id: Uint8Array, depth: bigint, addressing: ErgoAddressing) {
     if (!(id instanceof Uint8Array) || id.length !== 32) {
@@ -231,10 +247,18 @@ export class ErgoVenue implements Venue {
     this.replacements.clear();
     this.covered.clear();
     this.fetched.clear();
+    this.revocations.clear();
+    this.revoked.clear();
 
     for (const backing of backings) {
       await this.syncPublications(node, backing.name);
       this.covered.add(backing.nameHex);
+      // Each covered backing's obligor, because a revocation is read per key.
+      // Not answering for one that was never fetched is worth more here than
+      // anywhere else: absence of a revocation record reads as NOT revoked,
+      // which is the direction that gets a holder paid in units nobody backs.
+      await this.syncRevocations(node, backing.obligor);
+      this.revoked.add(bytesToHex(backing.obligor));
     }
     // Then every operator the backing has had, not only the key E names. The
     // chain is only walkable once the replacements are in, and each successor's
@@ -328,6 +352,24 @@ export class ErgoVenue implements Venue {
 
   }
 
+  private async syncRevocations(node: ErgoNode, obligor: Uint8Array): Promise<void> {
+    const boxes = await node.boxesByAddress(this.addressing.revocations(obligor));
+    this.revocations.set(
+      bytesToHex(obligor),
+      this.finalised(boxes, (box) => {
+        const revocation = decodeRevocation(register(box, "R5"));
+        // The box says whose it is; the signature says whether that is true.
+        if (compareBytes(revocation.obligor, obligor) !== 0) {
+          throw new EncodingError("box is not this key's revocation");
+        }
+        if (!isSignedRevocation(revocation)) {
+          throw new EncodingError("revocation does not verify");
+        }
+        return revocation;
+      }),
+    );
+  }
+
   private async syncPublications(node: ErgoNode, backingName: Uint8Array): Promise<void> {
     const publicationBoxes = await node.boxesByAddress(this.addressing.publications(backingName));
     const key = bytesToHex(backingName);
@@ -367,6 +409,31 @@ export class ErgoVenue implements Venue {
 
   publishReplacement(): void {
     throw new VenueError("this venue reads the chain; publishing is the operator's wallet");
+  }
+
+  publishRevocation(): void {
+    throw new VenueError("this venue reads the chain; publishing is the backer's wallet");
+  }
+
+  /**
+   * Every revocation this key published here, in witnessed order.
+   *
+   * The guard is the same rule as the other two, and it bites hardest here: a
+   * view never synced for a key would report no revocation, and no revocation
+   * reads as a live backer whose issuance is good. The other absences read as an
+   * accusation against an operator; this one reads as a clean bill of health for
+   * a stolen key.
+   */
+  revocationsFor(obligor: Uint8Array): WitnessedRevocation[] {
+    this.requireRevoked(obligor);
+    const log = this.revocations.get(bytesToHex(obligor)) ?? [];
+    return log.map((w) => ({ revocation: w.value, at: w.at }));
+  }
+
+  private requireRevoked(obligor: Uint8Array): void {
+    if (!this.revoked.has(bytesToHex(obligor))) {
+      throw new VenueError("this view was not synced for that obligor key");
+    }
   }
 
   publishedOpsFor(backingName: Uint8Array): WitnessedOp[] {

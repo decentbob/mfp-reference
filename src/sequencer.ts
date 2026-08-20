@@ -41,9 +41,9 @@
 // so adoption is reproducible by anyone holding the same record — the sequencer
 // asserts nothing about when.
 //
-// NOTE (later slices, see DECISIONS.md): non-service grades, revocation,
-// successor sequencers, dated instruments, multi-sequencer transfers, and
-// prepare–decide–commit (§C3's atomicity across operators) are out of scope.
+// NOTE (later slices, see DECISIONS.md): dated instruments, multi-sequencer
+// transfers, and prepare–decide–commit (§C3's atomicity across operators) are
+// out of scope.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -80,6 +80,7 @@ import { copyReceipt, signReceipt, type Receipt } from "./receipt.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
 import { isNamedSuccessor, operatorAt } from "./replacement.js";
 import { gapLegsFor, venueIsDeclared } from "./recovery.js";
+import { revokedAt } from "./revocation.js";
 import { Venue } from "./venue.js";
 
 /** This operator declines to serve you. */
@@ -326,8 +327,29 @@ export class Sequencer {
     );
   }
 
+  /**
+   * **Refused once this backing's obligor key is revoked** (§C2b: "no further
+   * issuance is valid"). Only issuance — transfers, burns and every presentation
+   * leg go on, because "existing claims keep their terms", and an operator that
+   * stopped serving those would strand the holders the revocation exists to
+   * protect.
+   *
+   * The tie at the revocation's own index goes against this operator, which is
+   * the rule slice 8 settled for a publication judged "against the record as it
+   * stood strictly before its own index": the operator is the party watching the
+   * venue, and the tie must not go to it.
+   *
+   * **Refusal here, and nothing in the law.** The ledger applies a post-boundary
+   * issuance perfectly happily, and that is deliberate — see standingOutstanding
+   * (recovery.ts) for why refusing it in the replay would make every holder of
+   * the backing unable to prove anything at all.
+   */
   submitIssue(op: IssuanceOp, signature: Uint8Array): Receipt {
     this.requireServed(op.backing);
+    const held = this.backings.get(op.backing.nameHex) as Backing;
+    if (revokedAt(this.venue, held) !== undefined) {
+      throw new SequencerError("this backing's obligor key is revoked: no further issuance");
+    }
     return this.submit(op.backing, encodeIssuance(op), () => this.ledger.issue(op, signature));
   }
 
