@@ -186,10 +186,10 @@ describe("§C2: a committed state that carries no log for this backing", () => {
 describe("§C2b: what the venue alone still cannot see", () => {
   it("the aggravated grade stays blind, and that is the spec's own letter", () => {
     // §C2b: "No commitment past a second declared duration". The operator IS
-    // committing — punctually — so on the spec's letter it is not silent. This
-    // is pinned rather than fixed: whether a commitment omitting a backing
-    // counts as a commitment for that backing's grade is unreadable from a root,
-    // which is a question for the paper. See DECISIONS.md.
+    // committing — punctually — so it is not silent. The paper now says this in
+    // its own words, which is what this pins: "the grade fires on the operator
+    // publishing nothing, not on it covering nothing", because a venue witnesses
+    // a root and cannot read which backings it carries. Faithful, not blind.
     const { venue, sequencer, eur } = setup();
     commitAll(sequencer);
     keepCommittingWithout(venue, sequencer, eur, 20);
@@ -550,11 +550,11 @@ describe("§C2: the remedy, and the successor that can now take it", () => {
     // rule that does not exist; the aggravated grade never fires because the
     // operator publishes; so the claims freeze permanently.
     //
-    // It is arguably the setting the holder read — §C2b makes replaceability
-    // "answered in E" — but a holder reading "silence clause: yes" would
-    // reasonably expect an exit, and this is the case where there is none. The
-    // fix is not code here: it is whether §C2b's aggravated grade is read per
-    // backing, which is unreadable from a root and is a question for the paper.
+    // The paper was asked and answered: the aggravated grade is NOT read per
+    // backing, because a venue witnesses a root. So this is the setting the
+    // holder read rather than a defect — §C2b makes replaceability "answered in
+    // E" — and it stays pinned because a holder reading "silence clause: yes"
+    // would reasonably expect an exit, and here there is none.
     const { venue, eur, lastGood } = toHandover(false);
     expect(isNonServing(venue, eur, lastGood)).toBe(true);
     expect(isSilent(venue, eur)).toBe(false);

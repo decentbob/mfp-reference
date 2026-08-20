@@ -119,14 +119,14 @@ export function venueIsDeclared(venue: Venue, backing: Backing): boolean {
  * is not it. Ask venueIsDeclared first to tell the two apart — as provesHolding
  * already asks callers to read its false as "this state does not prove it".
  *
- * **And there is one operator it is known to miss.** §C2 has a shared operator
- * publishing "one transaction over a root of its backings' commitments", so one
- * that drops THIS backing and keeps committing the rest is still committing, and
- * on §C2b's letter — "no commitment past a second declared duration" — it is not
- * silent. Whether a commitment omitting a backing counts as a commitment for it
- * is unreadable from a root, so this cannot answer it and does not pretend to:
- * the grade that reaches that operator is non-service, and the fault is
- * isRewrittenHistory. It is a question for the paper. See DECISIONS.md.
+ * **And there is one operator it does not reach, which the spec now says.** §C2b:
+ * "A shared operator batches, and what a venue witnesses is a root, so whether a
+ * commitment carries any particular backing is unreadable from it: the grade
+ * fires on the operator publishing nothing, not on it covering nothing." So an
+ * operator that drops THIS backing and commits the rest on time is not silent,
+ * and this is faithful rather than blind. What reaches that operator is the
+ * non-service grade, read against the last state that did carry the backing, and
+ * the fault is isRewrittenHistory. See DECISIONS.md.
  */
 export function isSilent(venue: Venue, backing: Backing): boolean {
   const clause = backing.evidence.silence;

@@ -131,14 +131,22 @@ otherwise serve it is the one with the motive not to. It is the same shape as
 "the payee obtains the receipt at payment time": get the evidence while the party
 holding it still has a reason to give it to you. Added to CLAUDE.md.
 
-**Still open:** a backing whose E names no replacement rule has no exit at all
-from a dropped backing - the non-service grade fires and opens a rule that does
-not exist, and the aggravated grade never fires. An `OPEN:` test pins it. It is
-arguably the setting the holder read (§C2b makes replaceability "answered in E"),
-but a holder reading "silence clause: yes" would reasonably expect an exit. The
-answer is the same paper question as above.
+**Still open, and now a setting rather than a question:** a backing whose E names
+no replacement rule has no exit at all from a dropped backing - the non-service
+grade fires and opens a rule that does not exist, and the aggravated grade never
+fires. With the spec change below, that is the setting the holder read (§C2b makes
+replaceability "answered in E") rather than a defect. An `OPEN:` test keeps it
+visible, because a holder reading "silence clause: yes" would reasonably expect an
+exit and here there is none.
 
-**Spec change:** none needed yet, pending the aggravated-grade question.
+**Spec change:** made directly, minimal, at Bob's instruction -
+`money-from-first-principles@e9fd937`, "C2b: say what the aggravated grade is
+actually checkable on". The grade read as if a stranger could check it per
+backing; for the shared operator §C2 recommends it cannot, since that operator
+batches over a root. It now says what it fires on - "the operator publishing
+nothing, not on it covering nothing" - and points at the non-service grade, which
+does reach that operator. The code follows the corrected text: `isSilent` is
+faithful rather than blind, and says so.
 
 ## 2026-08-20 - Slice 17: Ergo as a venue, decided from the node rather than asked
 
