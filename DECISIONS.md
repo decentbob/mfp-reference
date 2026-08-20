@@ -79,6 +79,18 @@ record - and that slice needs the predecessor's tail, which is the other half of
 the same problem. Splitting it here keeps a signature change out of fault.ts and
 its tests for the sake of a half-answer.
 
+**Found by `/code-review high`:** walking the chain verifies a signature per
+published replacement, and the recovery walk read the operator once per published
+operation - so two inputs anyone may publish for free multiplied. At 400 of each
+that is 160,000 verifications, minutes of CPU, bought with nothing but
+publication. The chain is identical at every index, so `gapLegsFor` and the
+redemption walk now walk it once and read it per leg (`operatorIn`). Measured
+afterwards: `gapLegsFor` costs one walk rather than 400.
+
+What is left is linear in published replacements, and it is inherent - rejecting
+a forged replacement means verifying it. That is the same shape as the cost
+recorded for `stateIsAuthentic` in slice 7, and accepted on the same terms.
+
 **Consequences.** `replacement.ts` holds the object, its canonical message and
 the walk; the venue records a third kind of thing beside commitments and
 operations, and judges it exactly as much - which is to say it refuses bytes that

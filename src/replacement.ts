@@ -208,7 +208,19 @@ export function successionOf(backing: Backing, venue: Venue): Succession[] {
  * rather than the one it remembers (§C2).
  */
 export function operatorAt(backing: Backing, venue: Venue, index: bigint): Uint8Array {
-  const chain = successionOf(backing, venue);
+  return operatorIn(successionOf(backing, venue), index);
+}
+
+/**
+ * The same question asked of a chain already walked.
+ *
+ * Walking it verifies a signature per published replacement, and anyone may
+ * publish one for free — so a caller reading the chain at many indices walks it
+ * once and asks here, rather than paying that per index. The recovery walk does
+ * exactly that: it reads the operator at every operation published against the
+ * backing, and both counts are the adversary's to grow.
+ */
+export function operatorIn(chain: readonly Succession[], index: bigint): Uint8Array {
   let inForce = chain[0] as Succession;
   for (const link of chain) if (link.from <= index) inForce = link;
   return copyBytes(inForce.operator);

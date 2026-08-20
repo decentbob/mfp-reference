@@ -66,7 +66,7 @@ import { compareBytes, copyBytes, isValidQuantity } from "./bytes.js";
 import { type PublishedOp } from "./oplog.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { operatorAt } from "./replacement.js";
+import { operatorAt, operatorIn, successionOf, type Succession } from "./replacement.js";
 import { Venue, type WitnessedOp } from "./venue.js";
 
 export type { ServedState };
@@ -299,12 +299,19 @@ function before(at: bigint): bigint {
 }
 
 /** Whether a publication witnessed at `at` landed inside a gap in commitments. */
-function publishedInGap(venue: Venue, backing: Backing, at: bigint): boolean {
+function publishedInGap(
+  venue: Venue,
+  backing: Backing,
+  chain: readonly Succession[],
+  at: bigint,
+): boolean {
   const clause = backing.evidence.silence;
   if (clause === undefined) return false;
   // Judged against whoever was in force at the index the publication landed at,
-  // which is the same rule the publication itself is judged by.
-  const last = venue.witnessedAtFor(operatorAt(backing, venue, at), before(at)) ?? 0n;
+  // which is the same rule the publication itself is judged by. The chain is
+  // walked once by the caller: it is the same chain at every index, and walking
+  // it costs a signature verification per published replacement.
+  const last = venue.witnessedAtFor(operatorIn(chain, at), before(at)) ?? 0n;
   return at - last > clause.noCommitmentDuration;
 }
 
@@ -316,9 +323,10 @@ function publishedInGap(venue: Venue, backing: Backing, at: bigint): boolean {
  */
 export function gapLegsFor(venue: Venue, backing: Backing): WitnessedOp[] {
   if (!venueIsDeclared(venue, backing)) return [];
+  const chain = successionOf(backing, venue);
   return venue
     .publishedOpsFor(backing.name)
-    .filter((w) => isLeg(w.op) && publishedInGap(venue, backing, w.at));
+    .filter((w) => isLeg(w.op) && publishedInGap(venue, backing, chain, w.at));
 }
 
 /** One party the backer pays for one redemption, and how much of it. */
@@ -373,13 +381,14 @@ function walkGap(
   state: LedgerState,
 ): Settlement[] {
   const settlements: Settlement[] = [];
+  const chain = successionOf(backing, venue);
   for (const witnessed of gapLegsFor(venue, backing)) {
     // "Redemption against the LAST witnessed snapshot": the snapshot in hand
     // must be the one that was last when this leg was published. Asked about the
     // present instead, an operator that would rather a redemption were
     // unresolvable could make it so by publishing one more commitment — and a
     // backer-run operator is exactly the party with that motive.
-    if (!isLatestAt(venue, backing, served, witnessed.at)) continue;
+    if (!isLatestAt(venue, backing, chain, served, witnessed.at)) continue;
     // A release settles the demand and drops it, so the record has to be read
     // before the law applies the leg that removes it.
     const settling =
@@ -504,8 +513,14 @@ function inSequenceOrder(requests: readonly WitnessedOp[], holder: Uint8Array): 
 }
 
 /** Whether the served state was this operator's latest commitment before `at`. */
-function isLatestAt(venue: Venue, backing: Backing, served: ServedState, at: bigint): boolean {
-  const latest = venue.latestFor(operatorAt(backing, venue, at), before(at));
+function isLatestAt(
+  venue: Venue,
+  backing: Backing,
+  chain: readonly Succession[],
+  served: ServedState,
+  at: bigint,
+): boolean {
+  const latest = venue.latestFor(operatorIn(chain, at), before(at));
   if (latest === undefined) return false;
   if (latest.sequence !== served.commitment.sequence) return false;
   return compareBytes(latest.root, served.commitment.root) === 0;
