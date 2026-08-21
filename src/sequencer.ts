@@ -69,6 +69,7 @@ import { opHashOfEntry, type OpLogEntry, type PublishedOp } from "./oplog.js";
 import {
   demandHash,
   type AcceptanceOp,
+  type Commit,
   type DemandOp,
   type LockOp,
   type ReleaseOp,
@@ -79,6 +80,7 @@ import { committedLogFor, type ServedState } from "./commitment.js";
 import { isNamedSuccessor, operatorAt } from "./replacement.js";
 import { gapLegsFor, venueIsDeclared } from "./recovery.js";
 import { revokedAt } from "./revocation.js";
+import { isSignedCommit } from "./presentation.js";
 import { Venue } from "./venue.js";
 
 /** This operator declines to serve you. */
@@ -424,6 +426,86 @@ export class Sequencer {
     ]);
   }
 
+  /**
+   * §C3's **prepare**, for one backing of an atomic attempt.
+   *
+   * "The holder locks at *every* sequencer in the set... Any refusal aborts."
+   * Each sequencer reserves its own half and knows nothing about the others —
+   * which backings are in the bundle is the holder's business, and keeping it so
+   * is what lets a sequencer serve one backing at a time (§C2).
+   *
+   * **The decision venue is checked, and refusing is the safe answer.** §C3: "A
+   * cross-operator prepare names a decision venue... so every sequencer evaluates
+   * one predicate against one clock. A sequencer unwilling to watch it refuses to
+   * prepare, which is an abort rather than a fork." Reading the timeout on a
+   * clock nobody else reads is the fork.
+   */
+  submitLock(op: LockOp, signature: Uint8Array): Receipt {
+    const backing = this.served(op.backing);
+    if (compareBytes(op.decisionVenue, this.venue.id) !== 0) {
+      throw new SequencerError("this sequencer does not watch that decision venue");
+    }
+    const lock: PublishedOp = {
+      kind: "lock",
+      attemptId: op.attemptId,
+      holder: op.holder,
+      beneficiary: op.beneficiary,
+      quantity: op.quantity,
+      timeout: op.timeout,
+      decisionVenue: op.decisionVenue,
+      nonce: op.nonce,
+      signature,
+    };
+    return this.submit([{ backing, op: lock }]);
+  }
+
+  /**
+   * §C3's **commit**, applied to this backing's own reservation.
+   *
+   * The holder publishes one object at the decision venue; this reads it there
+   * and settles. **It takes no signature argument**, because the signature is in
+   * the published object — and it takes no set, because the whole point of one
+   * object is that a sequencer needs to recognise its own lock and nothing else.
+   *
+   * Applied at the index the VENUE witnessed the commit at, never at the index
+   * this happens to run — the rule adoption already follows, and the reason §C3
+   * says "effective on witnessing rather than delivery". Two sequencers reading
+   * the same record therefore reach the same verdict whenever they get round to
+   * it, which is what stops half a bundle settling.
+   *
+   * **Earliest witnessing wins.** A commit republished later cannot un-commit an
+   * attempt the record already showed, and a holder who published in time is not
+   * at the mercy of somebody else's copy arriving late.
+   */
+  settle(backing: Backing, attemptId: Uint8Array): Receipt {
+    const held = this.served(backing);
+    const candidates = this.venue
+      .commitsFor(attemptId)
+      .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    const asOp = (commit: Commit): PublishedOp => ({
+      kind: "commit",
+      attemptId: commit.attemptId,
+      signature: commit.signature,
+    });
+    // Anyone may publish anything under any attempt id, so the holder who
+    // reserved here is what picks this operator's own commit out of the noise.
+    const holder = this.ledger.lockHolder(held, attemptId);
+    const witnessed =
+      holder !== undefined
+        ? candidates.find((w) => isSignedCommit(w.commit, holder))
+        : // No lock left, so this attempt has already settled here — or never
+          // existed. Invariant 26 wants a repeat answered with the identical
+          // prior receipt rather than refused, so the one already co-signed is
+          // what is looked for.
+          candidates.find((w) =>
+            this.receipts.has(bytesToHex(opHashOfEntry(held.name, asOp(w.commit)))),
+          );
+    if (witnessed === undefined) {
+      throw new SequencerError("no commit for that attempt is witnessed at this venue");
+    }
+    return this.submit([{ backing: held, op: asOp(witnessed.commit) }], witnessed.at);
+  }
+
   submitAcceptance(op: AcceptanceOp, signature: Uint8Array): Receipt {
     const backing = this.served(op.backing);
     const { demandHash: hash, instant, deadline, nonce } = op;
@@ -462,14 +544,18 @@ export class Sequencer {
     legs: readonly { readonly op: ReleaseOp | WithdrawalOp; readonly signature: Uint8Array }[],
   ): Receipt {
     const backing = this.served(op.backing);
-    // **The head of the set, not one of its legs.** A leg's own state resolves a
-    // release by the lock it holds, and the law cannot tell a head from a leg —
-    // a release names a demand hash and each backing answers for whatever record
-    // it has under it. So a leg submitted on its own would settle its
-    // accompaniment to the backer with no demand settled and no acceptance
-    // needed, which is the whole of what taking the set together prevents.
-    // Found reviewing the slice; review-leg-adjacent.
-    if (this.ledger.hasLock(backing, op.demandHash)) {
+    // **The head of the set, not one of its legs — and only for a release.** A
+    // leg's own state resolves a release by the lock it holds, and the law cannot
+    // tell a head from a leg, so a leg released on its own would settle its
+    // accompaniment with no demand settled and no acceptance needed. That is the
+    // whole of what taking the set together prevents.
+    //
+    // A WITHDRAWAL is the opposite case and must go through: §C3's abort is
+    // "expired locks unlock unilaterally", and unilaterally means the holder
+    // frees their own reservation without anybody's cooperation — which for a
+    // bundle spread over operators is the only exit there is. Freeing a
+    // reservation gives nothing away, so nothing needs holding together.
+    if (kind === "release" && this.ledger.hasLock(backing, op.demandHash)) {
       throw new SequencerError("that backing is a leg of this demand, not the demand it accompanies");
     }
     const head: PublishedOp = { kind, demandHash: op.demandHash, nonce: op.nonce, signature };
@@ -524,7 +610,7 @@ export class Sequencer {
       if (supplied.op.quantity !== quantity * entry.count) {
         throw new SequencerError("a lock does not cover q·c units of its leg");
       }
-      if (compareBytes(supplied.op.demandHash, hash) !== 0) {
+      if (compareBytes(supplied.op.attemptId, hash) !== 0) {
         throw new SequencerError("a lock must name the demand it accompanies");
       }
       if (compareBytes(supplied.op.holder, holder) !== 0) {
@@ -540,11 +626,12 @@ export class Sequencer {
       // and the lock's timeout was forgotten exactly that way.
       const op: PublishedOp = {
         kind: "lock",
-        demandHash: supplied.op.demandHash,
+        attemptId: supplied.op.attemptId,
         holder: supplied.op.holder,
         beneficiary: supplied.op.beneficiary,
         quantity: supplied.op.quantity,
         timeout: supplied.op.timeout,
+        decisionVenue: supplied.op.decisionVenue,
         nonce: supplied.op.nonce,
         signature: supplied.signature,
       };
@@ -646,7 +733,10 @@ export class Sequencer {
    * rejected operation records nothing, so a later valid operation at that
    * nonce still succeeds.
    */
-  private submit(items: readonly { readonly backing: Backing; readonly op: PublishedOp }[]): Receipt {
+  private submit(
+    items: readonly { readonly backing: Backing; readonly op: PublishedOp }[],
+    at: bigint = this.witnessedIndex(),
+  ): Receipt {
     // §C2: "Until then the predecessor's last commitment governs, no new
     // co-signatures issue." A successor that has taken over the state but not
     // yet committed it is not the operator yet, and a receipt from it would be
@@ -673,7 +763,7 @@ export class Sequencer {
     // every later replay is answered with.
     if (existing !== undefined) return copyReceipt(existing);
 
-    const entries = this.ledger.applyAll(items, this.witnessedIndex());
+    const entries = this.ledger.applyAll(items, at);
     const receipts = entries.map((entry, i) =>
       signReceipt(
         this.operatorSecret,

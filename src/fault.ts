@@ -94,6 +94,9 @@ export function equivocatingSigner(
   b: PublishedOp,
 ): Uint8Array | undefined {
   try {
+    // A commit carries no nonce, so it cannot be half of an equivocation at one
+    // — there is no point in a sequence for two of them to collide at.
+    if (a.kind === "commit" || b.kind === "commit") return undefined;
     if (a.nonce !== b.nonce) return undefined;
     const signer = signerFromTerms(backing, a);
     if (signer === undefined) return undefined;

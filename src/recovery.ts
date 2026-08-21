@@ -74,6 +74,19 @@ import { answering, venueIsDeclared, Venue, type WitnessedOp } from "./venue.js"
 export type { ServedState };
 
 /**
+ * A published operation narrowed to a transfer.
+ *
+ * A type guard rather than a bare filter, because the reads below sort on a
+ * nonce and not every operation kind has one — a commit deliberately does not.
+ * The compiler carries that distinction here rather than a cast hiding it.
+ */
+type WitnessedTransfer = WitnessedOp & { readonly op: Extract<PublishedOp, { kind: "transfer" }> };
+
+function isTransfer(witnessed: WitnessedOp): witnessed is WitnessedTransfer {
+  return witnessed.op.kind === "transfer";
+}
+
+/**
  * How many witnessed indices this operator has been quiet. Measured from its
  * latest commitment, or from the venue's genesis where it has never published —
  * otherwise never publishing at all would be the way to escape the grade.
@@ -228,7 +241,7 @@ export function unservedRequests(
     // thing that separates two signed at one nonce (§C2, witnessing pins order).
     const candidates = venue
       .publishedOpsFor(backing.name)
-      .filter((w) => w.op.kind === "transfer")
+      .filter(isTransfer)
       .sort((a, b) =>
         a.op.nonce !== b.op.nonce
           ? a.op.nonce < b.op.nonce
@@ -498,6 +511,12 @@ function isLeg(op: PublishedOp): boolean {
     case "transfer":
     case "burn":
       return false;
+    case "commit":
+      // Not a gap leg either, and for the same reason as a lock: it settles an
+      // attempt that a dark operator would have had to reserve. What §C2b gives
+      // a holder when an operator is away is snapshot redemption, not the
+      // completion of an atomic bundle nobody is left to hold up their end of.
+      return false;
     case "lock":
       // **Deliberately not a gap leg**, and it has to be said rather than left
       // off a list. A lock reserves units for a presentation the dark operator
@@ -743,6 +762,7 @@ function inSequenceOrder(requests: readonly WitnessedOp[], holder: Uint8Array): 
         // because it buys anything. See DECISIONS.md for what would.
         compareBytes(w.op.to, holder) !== 0,
     )
+    .filter(isTransfer)
     .sort((a, b) => {
       if (a.op.nonce !== b.op.nonce) return a.op.nonce < b.op.nonce ? -1 : 1;
       return a.at < b.at ? -1 : a.at > b.at ? 1 : 0;

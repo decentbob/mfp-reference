@@ -68,6 +68,12 @@ import {
   type WitnessedReplacement,
 } from "./replacement.js";
 import {
+  decodeCommit,
+  encodeCommit,
+  isSignedCommit,
+  type Commit,
+} from "./presentation.js";
+import {
   decodeRevocation,
   encodeRevocation,
   isSignedRevocation,
@@ -158,6 +164,12 @@ interface Witnessed {
  * That index is the clock the operation is judged against — the venue's word,
  * never the publisher's, which is the whole reason it is worth publishing here.
  */
+/** A commit together with the venue's word on when it witnessed it. */
+export interface WitnessedCommit {
+  readonly commit: Commit;
+  readonly at: bigint;
+}
+
 export interface WitnessedOp {
   readonly op: PublishedOp;
   readonly at: bigint;
@@ -186,9 +198,16 @@ export interface Venue {
    * backings. The record names its own subject, so nothing is passed beside it.
    */
   publishRevocation(revocation: Revocation): void;
+  /**
+   * Filed under the attempt it commits, not under a backing: §C3's commit is one
+   * object read by every sequencer in a bundle, and which backings those are is
+   * the holder's business rather than the record's.
+   */
+  publishCommit(commit: Commit): void;
   publishedOpsFor(backingName: Uint8Array): WitnessedOp[];
   replacementsFor(backingName: Uint8Array): WitnessedReplacement[];
   revocationsFor(obligor: Uint8Array): WitnessedRevocation[];
+  commitsFor(attemptId: Uint8Array): WitnessedCommit[];
   latestFor(operator: Uint8Array, asOf?: bigint): Commitment | undefined;
   witnessedAtFor(operator: Uint8Array, asOf?: bigint): bigint | undefined;
   firstCommitmentFor(operator: Uint8Array, notBefore?: bigint): bigint | undefined;
@@ -208,6 +227,8 @@ export class LocalVenue implements Venue {
   private readonly replacementsByBacking = new Map<string, Witnessed[]>();
   /** Obligor key hex -> revocation records, in published order. */
   private readonly revocationsByObligor = new Map<string, Witnessed[]>();
+  /** Attempt id hex -> commit records, in published order. */
+  private readonly commitsByAttempt = new Map<string, Witnessed[]>();
 
   /**
    * A venue carries an identity, because §C2b reads a grade "at its witnessed
@@ -375,6 +396,36 @@ export class LocalVenue implements Venue {
     const log = this.revocationsByObligor.get(key);
     if (log === undefined) this.revocationsByObligor.set(key, [{ bytes, at: this.height }]);
     else log.push({ bytes, at: this.height });
+  }
+
+  /**
+   * Record a commit of one attempt.
+   *
+   * **Unchecked, like a published operation and unlike a revocation.** A
+   * revocation has its whole effect the moment it is recorded, so an unsigned one
+   * would freeze a backer's issuance for the price of a publication. A commit
+   * has no effect here at all: it settles nothing until a sequencer matches it
+   * against a lock IT accepted, and the law checks the signature against that
+   * lock's own holder. Anyone may publish noise under any attempt id, and it
+   * reaches nothing.
+   */
+  publishCommit(commit: Commit): void {
+    let bytes: Uint8Array;
+    try {
+      bytes = encodeCommit(commit);
+    } catch (cause) {
+      throw new VenueError(`published commit does not encode: ${String(cause)}`);
+    }
+    const key = bytesToHex(commit.attemptId);
+    const log = this.commitsByAttempt.get(key);
+    if (log === undefined) this.commitsByAttempt.set(key, [{ bytes, at: this.height }]);
+    else log.push({ bytes, at: this.height });
+  }
+
+  /** Every commit published for this attempt, as copies, in witnessed order. */
+  commitsFor(attemptId: Uint8Array): WitnessedCommit[] {
+    const log = this.commitsByAttempt.get(bytesToHex(attemptId)) ?? [];
+    return log.map((w) => ({ commit: decodeCommit(w.bytes), at: w.at }));
   }
 
   /** Every revocation published against this key, as copies, in order. */

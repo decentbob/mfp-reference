@@ -415,6 +415,24 @@ export class ErgoVenue implements Venue {
     throw new VenueError("this venue reads the chain; publishing is the backer's wallet");
   }
 
+  publishCommit(): void {
+    throw new VenueError("this venue reads the chain; publishing is the holder's wallet");
+  }
+
+  /**
+   * Commits are not synced, and this refuses rather than answering empty.
+   *
+   * A commit is read to settle an atomic bundle, and no commits reads as "the
+   * attempt did not commit" — which frees a reservation that may in fact have
+   * settled elsewhere, splitting the bundle. That is the direction this venue
+   * guards against everywhere else, so it guards here by not pretending: a
+   * cross-operator bundle over an Ergo venue needs the box layout for a commit,
+   * which is the write path this module deliberately does not build.
+   */
+  commitsFor(): never {
+    throw new VenueError("this view does not sync commits");
+  }
+
   /**
    * Every revocation this key published here, in witnessed order.
    *
