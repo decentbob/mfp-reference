@@ -16,6 +16,79 @@ Format:
 
 ---
 
+## 2026-08-21 - Slice 24a: the lock timeout, and the gap path it exposed
+
+**Question:** §C3's fourth step, the only one slice 22 left out. "**Abort.** The
+lock timeout the holder declared in the prepare, itself a witnessed index,
+unlocks everywhere, and expired locks unlock unilaterally. It is not the demand's
+deadline: the timeout ends the atomic attempt, the deadline governs evidence, and
+a demand outlives its locks." Taken on its own, ahead of the cross-operator work,
+because it needs no decision venue and de-risks what follows.
+
+Slice 22 deliberately left the field out on the grounds that nothing would read
+it. Something does now, so it stopped being the inert machinery this repo keeps
+deleting.
+
+**Decisions (Bob):**
+
+- **The timeout gates the release and never the balances**, which is the whole
+  design decision. Every TIME rule in this ledger refuses an action and none
+  moves units, because `applyEntry`'s clock is `undefined` on a replay: a lock
+  that silently freed its units on expiry would leave an operator that correctly
+  accepted a later transfer with a log **no verifier could replay**, and
+  `stateIsAuthentic` would call an honest history unlawful. The demand deadline
+  already works exactly this way — a demand past its deadline holds its units
+  until a withdrawal ends it.
+
+  So "expired locks unlock unilaterally" reads as: past the timeout the set can
+  no longer settle, so the holder's exit needs nobody's cooperation. Withdrawal
+  was already that, which is why the exit itself needed nothing new.
+
+- **At the timeout is inside it, one past is not** — §C3's own predicate, "was a
+  valid release witnessed at or before the lock timeout?"
+
+- **A lock whose timeout has already passed is refused at creation**, since it
+  would reserve units nothing could ever settle.
+
+**Found while building, and it was a smell noted in slice 22 and not acted on.**
+That slice built the leg operations with `as PublishedOp` casts. The cast
+suppresses the exhaustiveness that catches a field added to a kind and forgotten
+— and the lock's new `timeout` was forgotten in exactly that spot, surfacing as a
+BigInt error from `w.u64(undefined)` rather than as a compile failure. Built field
+by field now, and the casts are gone, so the compiler carries the next one.
+
+**Found regression-reviewing the slice, and it reaches back into slice 22.** That
+slice removed `applyEntry`'s refusal of a demand on a reliant backing — correctly,
+since the legs live in other states — and made the sequencer enforce the set
+instead. But `adopt` applies gap publications **straight to the ledger**, so
+§C2b's gap path inherited the relaxed law with nothing in its place. A holder
+published demand, acceptance and release at the venue while the operator was
+dark, and on its return settled 40 units to the backer with **none** of the 80
+that must accompany them, keeping the lot. Invariant 13 through the back door.
+Demonstrated in `review-gap-unaccompanied.mjs`.
+
+`adopt` refuses a demand on a backing with reliance now, and refusing is §C2b's
+own posture: claims "go illiquid rather than dead" while the operator is away.
+Settling a set locked BEFORE the gap is untouched, since each leg's own release is
+an ordinary gap leg; and a backing with no reliance settles through the gap
+exactly as it did, which a second test pins so the guard is no wider than its
+reason.
+
+**The cause underneath, and it is the shape again.** `isLeg` was an allow-list
+with no exhaustiveness, so slice 22's new operation kind was silently not a leg
+and nobody had to decide anything. It is a switch ending in `unknownOpKind` now,
+with an explicit case for `lock` saying why a lock is not a gap leg — the same net
+every other dispatch over `PublishedOp` already had. **An allow-list is where a
+new kind goes to be forgotten**; a switch with a `never` default is where it has
+to be decided.
+
+**Not built, and it is 24b:** the decision venue, `submitLock` as a real method,
+and a sequencer refusing to prepare where it does not watch the named venue. The
+fork recorded for it is how a leg's settlement is recorded when the release is
+"one object" — see the session note.
+
+**Spec change:** none needed.
+
 ## 2026-08-21 - Slice 23: a backer can read whether a demand is accompanied
 
 **Question:** slice 22 pinned an `OPEN:` test — a served log can carry a demand
