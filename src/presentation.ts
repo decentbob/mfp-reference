@@ -118,6 +118,10 @@ export interface LockOp {
    * outlives its locks." So an expired attempt is a retry rather than a lost
    * demand, and the holder chooses the window because the holder bears the
    * lock-up — the same reason §C3 makes the deadline theirs.
+   *
+   * And the floor under withdrawal as much as the ceiling over the commit: a
+   * lock is withdrawable only past it (24c) — exactly one exit open at every
+   * index, as for a demand on its acceptance.
    */
   readonly timeout: bigint;
   /**

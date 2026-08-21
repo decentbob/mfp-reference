@@ -11,7 +11,7 @@ import {
 } from "../src/presentation.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
 import { LocalVenue } from "../src/venue.js";
-import { KEYS, SECRETS } from "./support.js";
+import { advanceWitnessedIndex, KEYS, SECRETS } from "./support.js";
 
 // §C3's prepare-decide-commit, generalised to any multi-sequencer transfer.
 //
@@ -118,6 +118,12 @@ function prepare(venue: LocalVenue, one: Sequencer, two: Sequencer, eur: Backing
   return { eurLock, goldLock };
 }
 
+/** The holder frees its own reservation under `attempt` at that sequencer. */
+function withdrawLock(sequencer: Sequencer, backing: Backing, attempt: Uint8Array) {
+  const op = { backing, demandHash: attempt, nonce: sequencer.nextNonce(KEYS.alice, backing) };
+  return sequencer.submitWithdrawal(op, ed25519.sign(encodeWithdrawal(op), SECRETS.alice));
+}
+
 describe("§C3: prepare reserves without moving", () => {
   it("locks at each sequencer, and neither has moved anything", () => {
     const { venue, one, two, eur, gold } = setup();
@@ -214,8 +220,7 @@ describe("§C3: abort, and what each side can do alone", () => {
     const { venue, one, two, eur, gold } = setup();
     prepare(venue, one, two, eur, gold);
     venue.advance(TIMEOUT + 1n);
-    const abort = { backing: eur, demandHash: ATTEMPT, nonce: one.nextNonce(KEYS.alice, eur) };
-    one.submitWithdrawal(abort, ed25519.sign(encodeWithdrawal(abort), SECRETS.alice));
+    withdrawLock(one, eur, ATTEMPT);
     expect(one.availableBalance(eur, KEYS.alice)).toBe(200n);
     expect(one.balance(eur, KEYS.bob)).toBe(0n);
   });
@@ -224,8 +229,7 @@ describe("§C3: abort, and what each side can do alone", () => {
     const { venue, one, two, eur, gold } = setup();
     prepare(venue, one, two, eur, gold);
     venue.advance(TIMEOUT + 1n);
-    const abort = { backing: eur, demandHash: ATTEMPT, nonce: one.nextNonce(KEYS.alice, eur) };
-    one.submitWithdrawal(abort, ed25519.sign(encodeWithdrawal(abort), SECRETS.alice));
+    withdrawLock(one, eur, ATTEMPT);
     venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
     expect(() => one.settle(eur, ATTEMPT)).toThrow();
   });
@@ -289,6 +293,23 @@ describe("§C3: half a bundle is still not a bundle", () => {
     expect(again.opHash).toEqual(first.opHash);
     expect(one.balance(eur, KEYS.bob)).toBe(40n);
   });
+
+  it("repeating an accepted lock after its commit is witnessed returns the prior receipt", () => {
+    // Invariant 26 reaches the gate that refuses a lock under a committed
+    // attempt: a lock this operator already co-signed is answered as every
+    // repeat is, whatever the record shows since — partition recovery simply
+    // repeats the request. Found regression-reviewing the gate, which sat
+    // before the idempotency lookup.
+    const { venue, one, eur } = setup();
+    const lock = lockFor(one, eur, venue, 40n);
+    const signature = ed25519.sign(encodeLock(lock), SECRETS.alice);
+    const first = one.submitLock(lock, signature);
+    venue.advance(2n);
+    venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
+    expect(one.submitLock(lock, signature)).toEqual(first);
+    one.settle(eur, ATTEMPT);
+    expect(one.submitLock(lock, signature)).toEqual(first);
+  });
 });
 
 describe("§C3: what an attempt id is and is not", () => {
@@ -328,25 +349,132 @@ describe("§C3: what an attempt id is and is not", () => {
     expect(one.balance(eur, KEYS.bob)).toBe(40n);
   });
 
-  it("a commit witnessed before the lock still settles it, and that is the holder's affair", () => {
-    // Both signatures are the holder's, so committing before preparing is them
-    // choosing the order. It does not let anyone else force a partial bundle:
-    // only the holder's signature commits, and only their own locks move.
-    //
-    // **The receiver's discipline is the same as the backer's**: check every
-    // half is reserved before parting with value, exactly as accompanimentOf
-    // has a backer check the legs before it signs an acceptance. A bundle is
-    // whole because the receiver looked, not because the protocol could stop a
-    // holder locking only one half.
+  it("a lock under an attempt the venue already shows committed is refused", () => {
+    // 24b let a commit witnessed before the lock settle it, as "the holder
+    // choosing the order of their own two signatures". Retired in 24c's review:
+    // a lock under a committed attempt would settle on a commit adjudicated for
+    // an earlier lock — answered by that lock's receipt, so never applied — and
+    // could never be withdrawn, since the record shows it committed in time. An
+    // attempt the record shows committed is not one a lock can still reserve for;
+    // the holder picks a fresh id. Both doors, the same refusal.
     const { venue, one, two, eur, gold } = setup();
     venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
     venue.advance(5n);
-    const lock = lockFor(one, eur, venue, 40n);
-    one.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice));
+    const early = lockFor(one, eur, venue, 40n);
+    expect(() => one.submitLock(early, ed25519.sign(encodeLock(early), SECRETS.alice))).toThrow(
+      /already committed/,
+    );
+    expect(two.balance(gold, KEYS.bob)).toBe(0n);
+  });
+
+  it("and a relock under a settled attempt is refused by the same rule", () => {
+    const { venue, one, two, eur, gold } = setup();
+    prepare(venue, one, two, eur, gold);
+    venue.advance(3n);
+    venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
+    one.settle(eur, ATTEMPT);
+    const again = lockFor(one, eur, venue, 10n, ATTEMPT, 200n);
+    expect(() => one.submitLock(again, ed25519.sign(encodeLock(again), SECRETS.alice))).toThrow(
+      /already committed/,
+    );
+  });
+});
+
+describe("§C3: a half the record committed cannot be taken back", () => {
+  it("a withdrawal before the timeout is refused, so one object settles at every sequencer", () => {
+    // Found reviewing 24b. With withdrawal open at any index, Alice could let
+    // O2 settle against the witnessed commit, then free her EUR lock at O1 one
+    // message ahead of Bob's settle — one witnessed object, two verdicts, and a
+    // log that replays as lawful. "Effective on witnessing" has to mean the
+    // holder's own lock is past taking back once a commit can still reach it.
+    const { venue, one, two, eur, gold } = setup();
+    prepare(venue, one, two, eur, gold);
+    venue.advance(10n);
+    venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
+    two.settle(gold, ATTEMPT);
+    venue.advance(1n);
+    expect(() => withdrawLock(one, eur, ATTEMPT)).toThrow(/committed in time/);
     one.settle(eur, ATTEMPT);
     expect(one.balance(eur, KEYS.bob)).toBe(40n);
-    // And the half that was never reserved is untouched, which is what the
-    // receiver would have seen before handing anything over.
-    expect(two.balance(gold, KEYS.bob)).toBe(0n);
+    expect(two.balance(gold, KEYS.bob)).toBe(90n);
+  });
+
+  it("exactly one exit is open at every index, for a lock as for a demand", () => {
+    // invariant-27 pins this for a demand on the acceptance; a lock has the
+    // same shape on its timeout. Commit and withdrawal are complements: at or
+    // before the timeout the commit settles and the withdrawal is refused, one
+    // past it the reverse. Never both open, never neither — and each refusal
+    // is checked to be THE refusal, not any throw. One world, two fresh locks
+    // per probed index, all reserved at index 0: what is under test is the
+    // exits, not the fixture.
+    const { venue, one, eur } = setup();
+    const probes = [TIMEOUT - 1n, TIMEOUT, TIMEOUT + 1n];
+    const ids = probes.map((_, i) => ({
+      settle: new Uint8Array(32).fill(0x10 + i),
+      walk: new Uint8Array(32).fill(0x20 + i),
+    }));
+    for (const pair of ids) {
+      for (const id of [pair.settle, pair.walk]) {
+        const lock = lockFor(one, eur, venue, 10n, id);
+        one.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice));
+      }
+    }
+    probes.forEach((at, i) => {
+      const pair = ids[i] as { settle: Uint8Array; walk: Uint8Array };
+      advanceWitnessedIndex(venue, at);
+      venue.publishCommit(signCommit(SECRETS.alice, pair.settle));
+      let committed: string | true = true;
+      try {
+        one.settle(eur, pair.settle);
+      } catch (e) {
+        committed = (e as Error).message;
+      }
+      let withdrew: string | true = true;
+      try {
+        withdrawLock(one, eur, pair.walk);
+      } catch (e) {
+        withdrew = (e as Error).message;
+      }
+      expect({ at, committed, withdrew }).toEqual({
+        at,
+        committed: at <= TIMEOUT ? true : expect.stringMatching(/past the lock timeout/),
+        withdrew: at > TIMEOUT ? true : expect.stringMatching(/expired/),
+      });
+    });
+  });
+
+  it("a commit witnessed in time is not undone by a withdrawal past the timeout", () => {
+    // The other side of the same hole, found reviewing this slice: the law
+    // accepts a withdrawal past the timeout, and a commit witnessed in time
+    // settles at any later index — so with the law alone both exits stood
+    // open at T+1 and execution order decided. The sequencer reads the record
+    // before it co-signs a withdrawal: the holder's claim that nothing
+    // committed is checked, not taken.
+    const { venue, one, two, eur, gold } = setup();
+    prepare(venue, one, two, eur, gold);
+    advanceWitnessedIndex(venue, TIMEOUT);
+    venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
+    two.settle(gold, ATTEMPT);
+    venue.advance(1n);
+    expect(() => withdrawLock(one, eur, ATTEMPT)).toThrow(/committed in time/);
+    one.settle(eur, ATTEMPT);
+    expect(one.balance(eur, KEYS.bob)).toBe(40n);
+    expect(two.balance(gold, KEYS.bob)).toBe(90n);
+  });
+});
+
+describe("§C3: settle names what is missing", () => {
+  // "No commit is witnessed" and "no lock is held here" are two answers, and
+  // merging them is the shape this codebase keeps removing: a caller told the
+  // commit is missing goes looking at the venue for an object that is there.
+  it("no lock held here", () => {
+    const { one, eur } = setup();
+    expect(() => one.settle(eur, ATTEMPT)).toThrow(/no lock/);
+  });
+
+  it("no commit witnessed", () => {
+    const { venue, one, two, eur, gold } = setup();
+    prepare(venue, one, two, eur, gold);
+    expect(() => one.settle(eur, ATTEMPT)).toThrow(/witnessed/);
   });
 });

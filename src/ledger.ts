@@ -155,6 +155,19 @@ export interface LockRecord {
   readonly nonce: bigint;
 }
 
+/**
+ * §C3's lock predicate: "was a valid release witnessed **at or before** the lock
+ * timeout?" At the timeout is inside; one past is not. Commit and release read
+ * it, withdrawal reads its complement — three sites, one definition, so exactly
+ * one exit is open at every index, as release and withdrawal are complements on
+ * `acceptanceIsLive` for a demand. Creation asks a different question, that the
+ * timeout be strictly ahead, and keeps its own inequality. Three hand-written
+ * inequalities agreed until the withdrawal's was forgotten (24b, found in 24c).
+ */
+export function lockIsLive(lock: { readonly timeout: bigint }, atWitnessedIndex: bigint): boolean {
+  return atWitnessedIndex <= lock.timeout;
+}
+
 export interface LedgerState {
   /** Units held, by holder key hex. A holder at zero is absent. */
   readonly balances: Map<string, bigint>;
@@ -441,6 +454,10 @@ export function applyEntry(
         throw new LedgerError("insufficient balance");
       }
       const hash = sha256(message);
+      // The other door of the same rule: the hash is the demand's alone here.
+      if (state.locks.has(bytesToHex(hash))) {
+        throw new LedgerError("a lock already stands under this demand's hash on this backing");
+      }
       state.demands.set(bytesToHex(hash), {
         hash,
         holder: copyBytes(entry.holder),
@@ -459,6 +476,14 @@ export function applyEntry(
       // or neither, and a verifier holding the served state can read both.
       if (state.locks.has(bytesToHex(entry.attemptId))) {
         throw new LedgerError("this attempt already has a lock on this backing");
+      }
+      // A lock and a demand never share a hash on one backing. signerOf resolves
+      // a release or withdrawal lock-first, so a stranger's one-unit lock under a
+      // standing demand's hash would hijack the head's own exits (found reviewing
+      // 24c). Legs live on OTHER backings; on the demanded one the hash is the
+      // demand's alone.
+      if (state.demands.has(bytesToHex(entry.attemptId))) {
+        throw new LedgerError("a lock may not name a standing demand's hash on the demanded backing");
       }
       if (spendable(state, entry.holder) < entry.quantity) {
         throw new LedgerError("insufficient balance");
@@ -488,7 +513,7 @@ export function applyEntry(
       // timeout?" The clock passed here is the index the VENUE witnessed the
       // commit at, never the index this operator happens to be applying it —
       // which is the rule adoption already follows for a gap publication.
-      if (clock !== undefined && clock > lock.timeout) {
+      if (clock !== undefined && !lockIsLive(lock, clock)) {
         throw new LedgerError("the commit was witnessed past the lock timeout");
       }
       if (heldBy(state, bytesToHex(lock.beneficiary)) + lock.quantity >= MAX_QUANTITY_EXCLUSIVE) {
@@ -548,8 +573,8 @@ export function applyEntry(
         // A refusal and never a balance, which is what keeps a replay exact: the
         // clock is undefined on a replay, so a lock that freed its own units on
         // expiry would make an operator's correct history unreplayable.
-        if (clock !== undefined && clock > leg.timeout) {
-          throw new LedgerError("the lock timeout has passed: withdraw the set instead");
+        if (clock !== undefined && !lockIsLive(leg, clock)) {
+          throw new LedgerError("the lock timeout has passed: the set can no longer settle on this lock");
         }
         if (heldBy(state, bytesToHex(leg.beneficiary)) + leg.quantity >= MAX_QUANTITY_EXCLUSIVE) {
           throw new LedgerError("settlement would push a balance beyond the quantity bound");
@@ -593,11 +618,19 @@ export function applyEntry(
       break;
     }
     case "withdrawal": {
-      // The other exit, on a leg: the reservation ends and the units are the
-      // holder's again. No clock, because the rule a withdrawal reads — whether
-      // a live acceptance stands — is the demanded backing's record, and the
-      // sequencer withdraws the set together.
-      if (state.locks.delete(bytesToHex(entry.demandHash))) break;
+      // The other exit, on a leg, and the complement of the commit on one
+      // predicate: §C3's "**expired** locks unlock unilaterally". TIME, a refusal
+      // and never a balance, like every rule here. Why a live lock cannot be
+      // taken back, and why the far side needs the sequencer too: 24c in
+      // DECISIONS.md.
+      const leg = state.locks.get(bytesToHex(entry.demandHash));
+      if (leg !== undefined) {
+        if (clock !== undefined && lockIsLive(leg, clock)) {
+          throw new LedgerError("the lock has not expired: the attempt settles or times out");
+        }
+        state.locks.delete(bytesToHex(entry.demandHash));
+        break;
+      }
       const record = standingDemand(state, entry.demandHash);
       // TIME. A live acceptance holds the claims: the holder has an answer to
       // release against. Once it expires they are the holder's again, or a
@@ -794,19 +827,6 @@ export class TransparentLedger {
   }
 
   /**
-   * The holder whose units this backing has reserved for that attempt, or
-   * undefined if it has reserved none.
-   *
-   * Exposed because a sequencer reading the venue has to know whose signature
-   * makes a published commit its own — the law would refuse a stranger's anyway,
-   * but the sequencer would otherwise have to try applying one to find out.
-   */
-  lockHolder(backing: Backing, attemptId: Uint8Array): Uint8Array | undefined {
-    const record = this.stateOf(backing).state.locks.get(bytesToHex(attemptId));
-    return record === undefined ? undefined : copyBytes(record.holder);
-  }
-
-  /**
    * Whether this backing holds a reliance lock against that demand — that is,
    * whether it is a LEG of the demand rather than the backing demanded.
    *
@@ -821,6 +841,18 @@ export class TransparentLedger {
   /** The standing demand record (invariant 23), as copies. */
   openDemands(backing: Backing): DemandRecord[] {
     return [...this.stateOf(backing).state.demands.values()].map(copyDemand);
+  }
+
+  /** One standing demand, as a copy, or undefined if none stands under that hash. */
+  demandOf(backing: Backing, hash: Uint8Array): DemandRecord | undefined {
+    const record = this.stateOf(backing).state.demands.get(bytesToHex(hash));
+    return record === undefined ? undefined : copyDemand(record);
+  }
+
+  /** One standing lock, as a copy, or undefined if none stands under that attempt. */
+  lockOf(backing: Backing, attemptId: Uint8Array): LockRecord | undefined {
+    const record = this.stateOf(backing).state.locks.get(bytesToHex(attemptId));
+    return record === undefined ? undefined : copyLock(record);
   }
 
   /** Units this holder can still spend: held minus committed by open demands. */
