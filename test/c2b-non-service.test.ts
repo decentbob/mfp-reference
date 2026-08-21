@@ -50,7 +50,7 @@ function setup(nonService: typeof NON_SERVICE | undefined = NON_SERVICE) {
 }
 
 /** Alice's signed request to move `quantity` to Bob at her nonce `nonce`. */
-function request(backing: Backing, quantity: bigint, nonce: bigint): PublishedOp {
+function request(backing: Backing, quantity: bigint, nonce: bigint): Extract<PublishedOp, { kind: "transfer" }> {
   return {
     kind: "transfer",
     from: KEYS.alice,

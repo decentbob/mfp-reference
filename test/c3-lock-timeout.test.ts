@@ -92,6 +92,7 @@ function file(
     quantity: quantity * 2n,
     timeout,
     decisionVenue: venue.id,
+    parties: [KEYS.alice],
     nonce: sequencer.nextNonce(KEYS.alice, gold),
   };
   sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice), [
@@ -455,6 +456,7 @@ function lockAndCommit(f: ReturnType<typeof gapGold>, attempt: Uint8Array) {
     quantity: 90n,
     timeout: 100n,
     decisionVenue: f.venue.id,
+    parties: [KEYS.alice],
     nonce: f.sequencer.nextNonce(KEYS.alice, f.gold),
   };
   f.sequencer.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice));

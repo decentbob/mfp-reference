@@ -72,7 +72,7 @@ import { opHashOfEntry } from "./oplog.js";
 import { operatorAt, operatorIn, successionOf, type Succession } from "./replacement.js";
 import { revokedAt } from "./revocation.js";
 import { answering, venueIsDeclared, Venue, type WitnessedCommit, type WitnessedOp } from "./venue.js";
-import { isSignedCommit } from "./presentation.js";
+import { commitSatisfies } from "./presentation.js";
 
 export type { ServedState };
 
@@ -634,20 +634,20 @@ interface Settlement {
  * not a corrupt log.
  */
 /**
- * The commit a lock would settle on: the earliest witnessed one signed by the
- * lock's holder. Anyone may publish anything under any attempt id, so the holder
- * who reserved is what picks a sequencer's own commit out of the noise, and
+ * The commit a lock would settle on: the earliest witnessed one signed by every
+ * party the lock names. Anyone may publish anything under any attempt id, so the set
+ * the lock names is what picks a sequencer's own commit out of the noise, and
  * earliest witnessing wins: a commit republished later cannot un-commit an
  * attempt the record already showed.
  */
 export function witnessedCommitFor(
   venue: Venue,
-  lock: { readonly attemptId: Uint8Array; readonly holder: Uint8Array },
+  lock: { readonly attemptId: Uint8Array; readonly parties: readonly Uint8Array[] },
 ): WitnessedCommit | undefined {
   return venue
     .commitsFor(lock.attemptId)
     .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
-    .find((w) => isSignedCommit(w.commit, lock.holder));
+    .find((w) => commitSatisfies(w.commit, lock.parties));
 }
 
 /**

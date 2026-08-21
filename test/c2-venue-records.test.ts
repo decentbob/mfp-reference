@@ -40,7 +40,9 @@ import { KEYS, makeTransparentBacking, SECRETS } from "./support.js";
 
 const backing = makeTransparentBacking(SECRETS.backer);
 
-function transferOp(quantity = 40n, nonce = 0n): PublishedOp {
+type TransferOp = Extract<PublishedOp, { kind: "transfer" }>;
+
+function transferOp(quantity = 40n, nonce = 0n): TransferOp {
   return {
     kind: "transfer",
     from: KEYS.alice,
@@ -147,13 +149,13 @@ describe("holding bytes makes copy-in copy-out structural", () => {
     const op = transferOp();
     venue.publishOp(backing.name, op);
     op.signature.fill(0xff);
-    expect(venue.publishedOpsFor(backing.name)[0]!.op.signature).toEqual(transferOp().signature);
+    expect((venue.publishedOpsFor(backing.name)[0]!.op as TransferOp).signature).toEqual(transferOp().signature);
   });
 
   it("does not let one reader poison the record for the next", () => {
     const venue = new LocalVenue();
     venue.publishOp(backing.name, transferOp());
-    venue.publishedOpsFor(backing.name)[0]!.op.signature.fill(0xff);
-    expect(venue.publishedOpsFor(backing.name)[0]!.op.signature).toEqual(transferOp().signature);
+    (venue.publishedOpsFor(backing.name)[0]!.op as TransferOp).signature.fill(0xff);
+    expect((venue.publishedOpsFor(backing.name)[0]!.op as TransferOp).signature).toEqual(transferOp().signature);
   });
 });

@@ -105,6 +105,7 @@ function lockFor(
     quantity,
     timeout,
     decisionVenue: venue.id,
+    parties: [KEYS.alice],
     nonce: sequencer.nextNonce(KEYS.alice, backing),
   };
 }
@@ -171,7 +172,9 @@ describe("§C3: one witnessed object commits the whole bundle", () => {
     // in every log in the set, which is what makes it one object rather than n.
     const commit = signCommit(SECRETS.alice, ATTEMPT);
     expect(encodeCommit(commit)).toEqual(encodeCommit(signCommit(SECRETS.alice, ATTEMPT)));
-    expect(encodeCommit(commit)).toHaveLength(32 + 64);
+    // Attempt, count, then each signer with its signature: one party here, and
+    // 96 bytes more for each further party to the exchange (slice 25).
+    expect(encodeCommit(commit)).toHaveLength(32 + 1 + 32 + 64);
   });
 
   it("refuses to settle before the commit is witnessed", () => {
@@ -323,6 +326,7 @@ describe("§C3: what an attempt id is and is not", () => {
     const theirs: LockOp = {
       ...lockFor(two, gold, venue, 90n),
       holder: KEYS.mallory,
+      parties: [KEYS.mallory],
       nonce: two.nextNonce(KEYS.mallory, gold),
     };
     two.submitLock(theirs, ed25519.sign(encodeLock(theirs), SECRETS.mallory));
