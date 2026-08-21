@@ -70,7 +70,13 @@ the rule still stands.
   lowers the count.
 - **Presentability** (inv 13–15, 18): a holding is presentable at *b* for *q*
   iff it contains *q* units of *b* and *q·cᵢ* units of each *(bᵢ, cᵢ)* in
-  R(b). Units, never claims. One level, no traversal. Quantities are whole
+  R(b). Units, never claims. One level, no traversal. **A demand reserves each
+  leg with a `lock` in that leg's own log**, so every backing stays replayable
+  alone, and the sequencer takes the demand and its locks as one act or none
+  (§C3's single-phase, "the whole set and the paying leg inside one operator").
+  Two-phase across operators is not built. What a verifier cannot yet check is
+  that a demand's legs were locked at all — the law is per backing; an OPEN test
+  in `invariant-13.reliance-legs` pins it. Quantities are whole
   numbers of the backing's declared unit; counts in R are whole. Reliance is
   a conjunction over a fixed list with constant counts — no disjunction, no
   computed membership. Reliance names backings and chain assets only.
@@ -84,8 +90,7 @@ the rule still stands.
   answer is checked against the name it was asked for; that check is also what
   makes the walk terminate without the cycle detection inv 5 forbids. **A direct
   count is a floor, not a second contribution** — see [[DECISIONS.md]] for why the
-  other reading cannot be right. Presentation still refuses a demand on a backing
-  with reliance; moving a leg is §C3's prepare-decide-commit and is not built.
+  other reading cannot be right.
 - **An unaccompanied claim is inert, never invalid, and still transferable**
   (inv 17).
 - **Time is a witnessed index, never a clock** (inv 21, 24). Every instant a

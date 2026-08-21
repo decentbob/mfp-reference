@@ -16,6 +16,102 @@ Format:
 
 ---
 
+## 2026-08-21 - Slice 22: a demand reserves its reliance legs
+
+**Question:** §C3's prepare-decide-commit is the last structural gap, and closure
+(slice 21) was its prerequisite. §C3 licenses single-phase "wherever every lock in
+the set can be taken in one atomically signed decision: R empty and the payout
+settling outside the claim layer, **or the whole set and the paying leg inside one
+operator**" - so the single-operator case is the piece that needs no decision
+venue and no lock timeout, and it is what invariant 13's other half has been
+waiting for since slice 1.
+
+**The fact that shaped it.** The ledger is per backing: `LedgerState` holds one
+backing's balances, demands and log. Presenting *b* for *q* means handing over
+*q·cᵢ* units of each target (invariant 13), and those units live in **other
+states**, which `applyEntry` cannot see. So the reservation had to go somewhere,
+and where decided everything else.
+
+**Decisions (Bob), and one of them reverses a plan he had already approved.**
+
+- **A leg is reserved by a `lock` in the LEG's own log**, signed by the holder
+  whose units it commits. The plan first proposed this, then working through the
+  encoding showed §C3's letter points the other way for a single operator: "one
+  atomically signed decision" means the demand itself authorises the set, since
+  R(b) and q determine the legs. Put to Bob as a fork rather than taken silently:
+
+  - **A**, per-leg signed locks: every backing stays replayable on its own.
+  - **B**, §C3's letter: one signature, but leg *x*'s own log no longer says its
+    units are reserved - that fact lives in *b*'s log plus R(b) - so the law and
+    every verifier become cross-backing and **no backing can be checked alone**.
+
+  Bob took **A**. B's saving is signatures; its cost is the thing `provesHolding`,
+  the redemption walk, `committedOutstanding` and the whole slice 18/20 line rest
+  on. A is also exactly the machinery the cross-operator slice needs, so nothing
+  is thrown away, where B would have to be rebuilt into A the moment a set spans
+  operators.
+
+- **The beneficiary is the DEMANDED backing's obligor**, signed into the lock. The
+  backer of *b* takes in the whole set and may then present at *bᵢ* itself, which
+  is what reliance is for. Signed rather than supplied at release, or the operator
+  would choose where the accompaniment goes.
+
+- **One new operation kind, not three.** Release and withdrawal were already "the
+  two exits, exactly one open at every index", and a leg is a third thing exited
+  by the same two acts - so they reach a lock as well as a demand, and no new law
+  sits beside them.
+
+- **The lock carries no timeout.** Inside one operator the demand's own deadline
+  governs and withdrawal is the exit; §C3's timeout is the cross-operator abort.
+  A field nothing reads is the inert machinery this repo keeps deleting, and
+  slice 12 showed retiring a tag is cheap.
+
+- **Atomicity is the sequencer's**, and `applyAll` establishes the whole set on
+  copies before applying any of it - takeOver's rule, in the one other place that
+  applies many. A demand standing without its accompaniment committed would hand
+  a backer a claim it cannot unwind.
+
+**Consolidated while here, because the slice would otherwise have added a second
+path.** The six `submit*` adapters each built their operation through a closure
+over a different encoder; `opMessageOfEntry` already produces exactly those bytes,
+so they now build a `PublishedOp` and go through one `submit` that takes a set.
+One mechanism, and the leg path is not a second one beside it.
+
+**Found reviewing the implementation.** A release submitted on a **leg alone** was
+accepted, settling the accompaniment to the backer with no demand settled and no
+acceptance needed - the whole of what taking the set together prevents. The law
+cannot tell a head from a leg: a release names a demand hash and each backing
+answers for whatever record it holds under it, so the leg resolved its lock. The
+sequencer's leg-count check passed because that backing has no reliance of its
+own, so the set it "headed" was empty. Which backing heads a set is the shape of
+the set, so the sequencer asks whether this backing holds a **lock** for that
+demand and refuses if it does. Demonstrated in `review-leg-adjacent.mjs`.
+
+Regression-reviewed, and the guard is precise rather than wide: a leg can still
+be demanded and released **in its own right** with the units the lock does not
+reach, and its lock survives that settlement - both stand at once
+(`review-leg-also-demanded.mjs`). Two further paths probed and holding: a release
+with no live acceptance refuses the whole set with nothing leaking, and a
+withdrawal against a live acceptance leaves every leg reserved.
+
+**OPEN, and pinned by a test:** a served log can carry a demand whose legs were
+never locked. The law is per backing and cannot see them, so the set is enforced
+by the sequencer alone and `stateIsAuthentic` - which folds one backing - says
+yes. Closing it means replaying the legs beside the demand, and a served state
+**does** carry them, so it is reachable: it is the same "read it across the served
+state" answer this codebase has landed on three times. Not done here because it
+widens `stateIsAuthentic`, which is a decision rather than a review fix. The
+exposure is bounded meanwhile: the party who loses by it is the backer, and the
+backer signs the acceptance, so it can check before answering.
+
+**Not built, and it is the next thing:** prepare-decide-commit across operators -
+the decision venue, the lock timeout, and a release "effective on witnessing
+rather than delivery". Everything here is the shape it needs.
+
+**Spec change:** none needed. §C3 licenses this case explicitly; taking the locks
+explicitly rather than deriving them is permitted rather than required, and the
+reason for choosing it is an implementation property the paper does not speak to.
+
 ## 2026-08-21 - Slice 21: closure(S), and the reading its one example does not settle
 
 **Question:** what to continue with. §C3's prepare-decide-commit is the last
