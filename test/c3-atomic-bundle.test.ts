@@ -293,6 +293,23 @@ describe("§C3: half a bundle is still not a bundle", () => {
     expect(again.opHash).toEqual(first.opHash);
     expect(one.balance(eur, KEYS.bob)).toBe(40n);
   });
+
+  it("repeating an accepted lock after its commit is witnessed returns the prior receipt", () => {
+    // Invariant 26 reaches the gate that refuses a lock under a committed
+    // attempt: a lock this operator already co-signed is answered as every
+    // repeat is, whatever the record shows since — partition recovery simply
+    // repeats the request. Found regression-reviewing the gate, which sat
+    // before the idempotency lookup.
+    const { venue, one, eur } = setup();
+    const lock = lockFor(one, eur, venue, 40n);
+    const signature = ed25519.sign(encodeLock(lock), SECRETS.alice);
+    const first = one.submitLock(lock, signature);
+    venue.advance(2n);
+    venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
+    expect(one.submitLock(lock, signature)).toEqual(first);
+    one.settle(eur, ATTEMPT);
+    expect(one.submitLock(lock, signature)).toEqual(first);
+  });
 });
 
 describe("§C3: what an attempt id is and is not", () => {

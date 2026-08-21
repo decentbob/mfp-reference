@@ -57,10 +57,12 @@
 import { type Backing } from "./backing.js";
 import {
   applyEntry,
+  lockIsLive,
   copyState,
   replayLog,
   type DemandRecord,
   type LedgerState,
+  type LockRecord,
 } from "./ledger.js";
 import { compareBytes, copyBytes, isValidQuantity } from "./bytes.js";
 import { unknownOpKind, type PublishedOp } from "./oplog.js";
@@ -71,7 +73,6 @@ import { operatorAt, operatorIn, successionOf, type Succession } from "./replace
 import { revokedAt } from "./revocation.js";
 import { answering, venueIsDeclared, Venue, type WitnessedCommit, type WitnessedOp } from "./venue.js";
 import { isSignedCommit } from "./presentation.js";
-import { lockIsLive, type LockRecord } from "./ledger.js";
 
 export type { ServedState };
 

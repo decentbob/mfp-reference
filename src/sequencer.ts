@@ -472,9 +472,6 @@ export class Sequencer {
    */
   submitLock(op: LockOp, signature: Uint8Array): Receipt {
     const backing = this.served(op.backing);
-    if (compareBytes(op.decisionVenue, this.venue.id) !== 0) {
-      throw new SequencerError("this sequencer does not watch that decision venue");
-    }
     const lock: PublishedOp = {
       kind: "lock",
       attemptId: op.attemptId,
@@ -806,21 +803,28 @@ export class Sequencer {
     items: readonly { readonly backing: Backing; readonly op: PublishedOp }[],
     at: bigint = this.witnessedIndex(),
   ): Receipt {
-    // **A lock is prepared only where it can later be read, and only once.** Each
-    // lock item — prepared alone or as a leg of a set, this is the one gate —
-    // asks the venue for commits under its attempt: a venue that cannot serve
-    // them refuses here (VenueError), which is §C3's "a sequencer unwilling to
-    // watch it refuses to prepare", and a holder-signed commit already witnessed
-    // refuses the lock, because a lock under a committed attempt would settle on
-    // a commit adjudicated for an earlier lock — and answered by its receipt
-    // — and could never be withdrawn. That retires 24b's "commit before
-    // prepare": an attempt the record shows committed is not one a lock can
-    // still reserve for.
-    for (const item of items) {
-      if (item.op.kind === "lock" && witnessedCommitFor(this.venue, item.op) !== undefined) {
+    const hashes = items.map((item) => opHashOfEntry(item.backing.name, item.op));
+    // **A lock is prepared only where it can later be read, on the clock it
+    // names, and only once.** Each lock item — prepared alone or as a leg of a
+    // set, this is the one gate — must name this venue as its decision venue
+    // (§C3: "a sequencer unwilling to watch it refuses to prepare, which is an
+    // abort rather than a fork"; reading the timeout on a clock nobody else
+    // reads is the fork), must find a venue that serves commits (one that does
+    // not refuses here, VenueError), and must name an attempt the record does
+    // not already show committed by this holder: a lock under a committed
+    // attempt would settle on a commit adjudicated for an earlier lock — and
+    // answered by its receipt — and could never be withdrawn. That retires
+    // 24b's "commit before prepare". A lock already co-signed here is answered
+    // as every repeat is (invariant 26), whatever the record shows since.
+    items.forEach((item, i) => {
+      if (item.op.kind !== "lock" || this.receipts.has(bytesToHex(hashes[i] as Uint8Array))) return;
+      if (compareBytes(item.op.decisionVenue, this.venue.id) !== 0) {
+        throw new SequencerError("this sequencer does not watch that decision venue");
+      }
+      if (witnessedCommitFor(this.venue, item.op) !== undefined) {
         throw new SequencerError("that attempt is already committed at this venue: a lock needs a fresh id");
       }
-    }
+    });
     // §C2: "Until then the predecessor's last commitment governs, no new
     // co-signatures issue." A successor that has taken over the state but not
     // yet committed it is not the operator yet, and a receipt from it would be
@@ -836,7 +840,6 @@ export class Sequencer {
     // be serving a history the record has already moved past.
     for (const item of items) this.adopt(item.backing);
 
-    const hashes = items.map((item) => opHashOfEntry(item.backing.name, item.op));
     // Keyed on the FIRST operation, which is the one the caller asked for: a
     // demand and its locks are one act, so a replay of the demand answers for
     // the set exactly as it was accepted (invariant 26).

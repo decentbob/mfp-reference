@@ -526,3 +526,22 @@ describe("§C3: a stranger's lock under a demand's hash is a squat, not a leg", 
     expect(sequencer.availableBalance(gold, KEYS.mallory)).toBe(4n);
   });
 });
+
+describe("§C3: a leg is prepared at the same gate as any lock", () => {
+  it("a leg naming another decision venue is refused, as a bare lock would be", () => {
+    // "A cross-operator prepare names a decision venue... A sequencer unwilling
+    // to watch it refuses to prepare." The check lived on submitLock alone and
+    // legSet copied the field through (found regression-reviewing 24c); every
+    // lock item now passes one gate in submit.
+    const { venue, sequencer, eur, gold } = setup();
+    const p = present(sequencer, venue, eur, gold, 40n);
+    const elsewhere: LockOp = { ...p.lock, decisionVenue: new Uint8Array(32).fill(9) };
+    expect(() =>
+      sequencer.submitDemand(p.demand, p.signature, [
+        { op: elsewhere, signature: ed25519.sign(encodeLock(elsewhere), SECRETS.alice) },
+      ]),
+    ).toThrow(/decision venue/);
+    expect(sequencer.openDemands(eur)).toHaveLength(0);
+    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(200n);
+  });
+});
