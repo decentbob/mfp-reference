@@ -508,7 +508,13 @@ export class Sequencer {
             this.receipts.has(bytesToHex(opHashOfEntry(held.name, asOp(w.commit)))),
           );
     if (witnessed === undefined) {
-      throw new SequencerError("no commit for that attempt is witnessed at this venue");
+      // Two answers, not one: a caller told the commit is missing would go to
+      // the venue for an object that is there.
+      throw new SequencerError(
+        holder === undefined
+          ? "no lock for that attempt is held here"
+          : "no commit for that attempt is witnessed at this venue",
+      );
     }
     return this.submit([{ backing: held, op: asOp(witnessed.commit) }], witnessed.at);
   }
@@ -562,6 +568,7 @@ export class Sequencer {
     // frees their own reservation without anybody's cooperation — which for a
     // bundle spread over operators is the only exit there is. Freeing a
     // reservation gives nothing away, so nothing needs holding together.
+    // "Expired" is the law's to read: a lock is withdrawable only past its timeout.
     if (kind === "release" && this.ledger.hasLock(backing, op.demandHash)) {
       throw new SequencerError("that backing is a leg of this demand, not the demand it accompanies");
     }

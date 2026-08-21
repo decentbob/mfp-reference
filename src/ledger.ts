@@ -593,11 +593,25 @@ export function applyEntry(
       break;
     }
     case "withdrawal": {
-      // The other exit, on a leg: the reservation ends and the units are the
-      // holder's again. No clock, because the rule a withdrawal reads — whether
-      // a live acceptance stands — is the demanded backing's record, and the
-      // sequencer withdraws the set together.
-      if (state.locks.delete(bytesToHex(entry.demandHash))) break;
+      // The other exit, on a leg — and the complement of the commit on one
+      // predicate, as withdrawal and release are complements on the acceptance
+      // for a demand. §C3: "**expired** locks unlock unilaterally." Expired:
+      // at or before the timeout a commit can still be witnessed, and a lock that
+      // could be taken back meanwhile let one witnessed object settle at one
+      // sequencer and not another (found reviewing 24b: a holder freed its half
+      // one message ahead of the receiver's settle, lawfully). So exactly one
+      // exit is open at every index — commit or release inside the timeout,
+      // withdrawal past it — and the rule is TIME, a refusal and never a
+      // balance, as every rule here: a replay with no clock accepts the history
+      // either way, and applyEntry marks exactly where.
+      const leg = state.locks.get(bytesToHex(entry.demandHash));
+      if (leg !== undefined) {
+        if (clock !== undefined && clock <= leg.timeout) {
+          throw new LedgerError("the lock has not expired: the attempt settles or times out");
+        }
+        state.locks.delete(bytesToHex(entry.demandHash));
+        break;
+      }
       const record = standingDemand(state, entry.demandHash);
       // TIME. A live acceptance holds the claims: the holder has an answer to
       // release against. Once it expires they are the holder's again, or a

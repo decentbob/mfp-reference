@@ -10,6 +10,7 @@ import {
   encodeLock,
   encodeRelease,
   encodeWithdrawal,
+  signCommit,
   type DemandOp,
   type LockOp,
 } from "../src/presentation.js";
@@ -34,8 +35,11 @@ import { KEYS, SECRETS } from "./support.js";
 // deadline still holds its units until a withdrawal ends it.
 //
 // So "unlocks unilaterally" is read as: past the timeout the set can no longer
-// settle, so the holder's exit needs nobody's cooperation. Withdrawal was
-// already that, and it is why nothing new was needed for the exit itself.
+// settle, so the holder's exit needs nobody's cooperation. Withdrawal is that
+// exit -- and since 24c it opens ONLY past the timeout. Before it the lock is
+// the holder's own declared commitment, and an exit open there let a holder
+// take back one half of a bundle the record had already committed (the last
+// block below, and c3-atomic-bundle).
 
 const TIMEOUT = 40n;
 
@@ -378,5 +382,92 @@ describe("§C2b: the gap path cannot open a reliant presentation", () => {
     sequencer.commit();
 
     expect(sequencer.balance(gold, KEYS.backer)).toBe(40n);
+  });
+});
+
+describe("§C3: a lock is withdrawable only past its timeout", () => {
+  // Found reviewing 24b. Slice 22 let a set be withdrawn at any index, and the
+  // bundle inherited it: a holder freed a lock BEFORE its own timeout, after the
+  // commit was witnessed, and one witnessed object then settled at one
+  // sequencer and not the other. §C3's abort is "**expired** locks unlock
+  // unilaterally". Before that the two exits are complements on the timeout,
+  // exactly as release and withdrawal are complements on the acceptance for a
+  // demand: at or before it, commit or release; past it, withdrawal; never
+  // both, never neither.
+  it("refuses a withdrawal at the timeout, which is inside it", () => {
+    const { venue, sequencer, eur, gold } = setup();
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
+    venue.advance(TIMEOUT);
+    expect(() => withdrawSet(sequencer, eur, gold, hash)).toThrow(/expired/);
+    // And the whole set stood, the demand with its leg: all or none.
+    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(120n);
+    expect(sequencer.openDemands(eur)).toHaveLength(1);
+  });
+
+  it("and allows it one index past", () => {
+    const { venue, sequencer, eur, gold } = setup();
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
+    venue.advance(TIMEOUT + 1n);
+    withdrawSet(sequencer, eur, gold, hash);
+    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(200n);
+    expect(sequencer.openDemands(eur)).toHaveLength(0);
+  });
+
+  it("and the gap path inherits it, because the rule is the law's", () => {
+    // 24a's lesson: `adopt` applies gap publications straight to the law, so a
+    // rule that lived in the sequencer would be bypassed by going dark. A
+    // withdrawal published at the venue before the timeout is refused at the
+    // index the venue stamped it with, and the lock stands for the commit.
+    const ATTEMPT = new Uint8Array(32).fill(0xc3);
+    const venue = new LocalVenue();
+    const gold = makeBacking({
+      obligor: KEYS.backer,
+      payout: { thing: "GOLD", quantumExponent: -2, perUnit: 100n },
+      reliance: [],
+      evidence: {
+        setting: "transparent",
+        operator: KEYS.operator,
+        silence: { noCommitmentDuration: 10n, challengeWindow: 5n },
+        witnessing: { venue: venue.id, interval: 5n },
+      },
+    });
+    const sequencer = new Sequencer(SECRETS.operator, venue);
+    sequencer.register(gold, signBacking(SECRETS.backer, gold));
+    const issue = sequencer.nextNonce(KEYS.backer, gold);
+    sequencer.submitIssue(
+      { backing: gold, recipient: KEYS.alice, quantity: 200n, nonce: issue },
+      ed25519.sign(encodeIssuanceMessage(gold.name, KEYS.alice, 200n, issue), SECRETS.backer),
+    );
+    const lock: LockOp = {
+      backing: gold,
+      attemptId: ATTEMPT,
+      holder: KEYS.alice,
+      beneficiary: KEYS.bob,
+      quantity: 90n,
+      timeout: 100n,
+      decisionVenue: venue.id,
+      nonce: sequencer.nextNonce(KEYS.alice, gold),
+    };
+    sequencer.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice));
+    sequencer.commit();
+
+    // Dark past the silence duration; Alice publishes a withdrawal at index 30,
+    // seventy indices before her own timeout.
+    venue.advance(30n);
+    const early = { backing: gold, demandHash: ATTEMPT, nonce: lock.nonce + 1n };
+    venue.publishOp(gold.name, {
+      kind: "withdrawal",
+      demandHash: ATTEMPT,
+      nonce: early.nonce,
+      signature: ed25519.sign(encodeWithdrawal(early), SECRETS.alice),
+    });
+    venue.advance(1n);
+    sequencer.commit();
+    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(110n);
+
+    // And the commit witnessed in time settles the half she tried to take back.
+    venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
+    sequencer.settle(gold, ATTEMPT);
+    expect(sequencer.balance(gold, KEYS.bob)).toBe(90n);
   });
 });

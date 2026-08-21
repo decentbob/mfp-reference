@@ -218,6 +218,9 @@ describe("§C3: the set settles together, or ends together", () => {
   it("withdrawal frees the accompaniment and moves nothing", () => {
     const { venue, sequencer, eur, gold } = setup();
     const { hash } = file(sequencer, venue, eur, gold, 40n);
+    // Since 24c a lock is withdrawable only past its timeout (c3-lock-timeout):
+    // before it, the reservation is the holder's own declared commitment.
+    venue.advance(91n);
     const head = { backing: eur, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, eur) };
     const leg = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
     sequencer.submitWithdrawal(head, ed25519.sign(encodeWithdrawal(head), SECRETS.alice), [
@@ -234,6 +237,9 @@ describe("§C3: the set settles together, or ends together", () => {
     const second = file(sequencer, venue, eur, gold, 20n);
     expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(200n - 60n - 40n);
 
+    // Since 24c a lock is withdrawable only past its timeout (c3-lock-timeout):
+    // before it, the reservation is the holder's own declared commitment.
+    venue.advance(91n);
     const head = {
       backing: eur,
       demandHash: first.hash,
