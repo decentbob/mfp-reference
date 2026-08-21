@@ -721,6 +721,18 @@ export class TransparentLedger {
     return this.apply(op.backing, entry, atWitnessedIndex);
   }
 
+  /**
+   * Whether this backing holds a reliance lock against that demand — that is,
+   * whether it is a LEG of the demand rather than the backing demanded.
+   *
+   * The law cannot tell the two apart: a release names a demand hash, and this
+   * state resolves whichever record it has for it. Which backing heads a set is
+   * the shape of the set, and that is the sequencer's to know.
+   */
+  hasLock(backing: Backing, demandHash: Uint8Array): boolean {
+    return this.stateOf(backing).state.locks.has(bytesToHex(demandHash));
+  }
+
   /** The standing demand record (invariant 23), as copies. */
   openDemands(backing: Backing): DemandRecord[] {
     return [...this.stateOf(backing).state.demands.values()].map(copyDemand);

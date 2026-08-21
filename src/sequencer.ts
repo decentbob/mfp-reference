@@ -441,6 +441,16 @@ export class Sequencer {
     legs: readonly { readonly op: ReleaseOp | WithdrawalOp; readonly signature: Uint8Array }[],
   ): Receipt {
     const backing = this.served(op.backing);
+    // **The head of the set, not one of its legs.** A leg's own state resolves a
+    // release by the lock it holds, and the law cannot tell a head from a leg —
+    // a release names a demand hash and each backing answers for whatever record
+    // it has under it. So a leg submitted on its own would settle its
+    // accompaniment to the backer with no demand settled and no acceptance
+    // needed, which is the whole of what taking the set together prevents.
+    // Found reviewing the slice; review-leg-adjacent.
+    if (this.ledger.hasLock(backing, op.demandHash)) {
+      throw new SequencerError("that backing is a leg of this demand, not the demand it accompanies");
+    }
     const items = [
       { backing, op: { kind, demandHash: op.demandHash, nonce: op.nonce, signature } as PublishedOp },
     ];

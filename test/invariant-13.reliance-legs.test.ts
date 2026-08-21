@@ -375,3 +375,69 @@ describe("what a verifier still cannot check", () => {
     expect(() => sequencer.submitDemand(op, entry.signature)).toThrow(SequencerError);
   });
 });
+
+describe("a leg is not a head", () => {
+  it("refuses a release submitted on a leg alone", () => {
+    // Found reviewing the slice. A leg's own state resolves a release by the
+    // lock it holds, and the law cannot tell a head from a leg — a release names
+    // a demand hash and each backing answers for whatever record it has under
+    // it. GOLD has no reliance of its own, so the set it "heads" is empty and
+    // the check on leg count passed. The accompaniment settled to the backer
+    // with no demand settled and no acceptance needed, which is the whole of
+    // what taking the set together prevents.
+    const { sequencer, eur, gold } = setup();
+    const hash = file(sequencer, eur, gold, 40n).hash;
+    accept(sequencer, eur, hash);
+    const leg = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
+    expect(() =>
+      sequencer.submitRelease(leg, ed25519.sign(encodeRelease(leg), SECRETS.alice)),
+    ).toThrow(SequencerError);
+    expect(sequencer.balance(gold, KEYS.backer)).toBe(0n);
+  });
+
+  it("and a withdrawal submitted on a leg alone", () => {
+    const { sequencer, eur, gold } = setup();
+    const hash = file(sequencer, eur, gold, 40n).hash;
+    const leg = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
+    expect(() =>
+      sequencer.submitWithdrawal(leg, ed25519.sign(encodeWithdrawal(leg), SECRETS.alice)),
+    ).toThrow(SequencerError);
+    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(120n);
+  });
+
+  it("but the head is still submittable when its own legs come with it", () => {
+    const { sequencer, eur, gold } = setup();
+    const hash = file(sequencer, eur, gold, 40n).hash;
+    accept(sequencer, eur, hash);
+    release(sequencer, eur, gold, hash);
+    expect(sequencer.balance(gold, KEYS.backer)).toBe(80n);
+  });
+
+  it("and a leg can still be presented in its own right, lock intact", () => {
+    // The adjacent case the guard must not catch: GOLD is a leg of a EUR
+    // demand AND a backing Alice may present with the units the lock does not
+    // reach. Both stand at once, and settling one leaves the other reserved.
+    const { sequencer, eur, gold } = setup();
+    file(sequencer, eur, gold, 40n);
+    const own: DemandOp = {
+      backing: gold,
+      holder: KEYS.alice,
+      quantity: 100n,
+      instant: 0n,
+      deadline: DEADLINE,
+      nonce: sequencer.nextNonce(KEYS.alice, gold),
+    };
+    sequencer.submitDemand(own, ed25519.sign(encodeDemand(own), SECRETS.alice));
+    accept(sequencer, gold, demandHash(own));
+    const settle = {
+      backing: gold,
+      demandHash: demandHash(own),
+      nonce: sequencer.nextNonce(KEYS.alice, gold),
+    };
+    sequencer.submitRelease(settle, ed25519.sign(encodeRelease(settle), SECRETS.alice));
+
+    expect(sequencer.balance(gold, KEYS.backer)).toBe(100n);
+    // 200 held, 100 settled away, 80 still locked for the EUR demand.
+    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(20n);
+  });
+});
