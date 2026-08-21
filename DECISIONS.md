@@ -33,7 +33,8 @@ withdrawal; never both open, never neither, **per record**. §C3's own words:
 own declared commitment. A TIME rule in `applyEntry`, a refusal and never a
 balance, like every other — which is what makes the gap path inherit it for
 free. `lockIsLive` is the one definition, beside `acceptanceIsLive`, and the
-law's four timeout sites read it rather than four hand-written inequalities.
+law's three timeout sites read it rather than three hand-written inequalities
+(creation asks a different question, strictly ahead, and keeps its own).
 
 **It reverses a slice-22 behaviour Bob had approved**, and was put to him as
 such: a single-operator set can no longer be withdrawn before its legs' timeout.
@@ -60,7 +61,7 @@ committed log, and that predicate is **open** (below).
 **And a sequencer that cannot read its venue's commits now refuses to
 prepare.** `ErgoVenue.commitsFor` refuses by design (24b), so an Ergo-backed
 sequencer could take a lock it could never settle and — with the guard — never
-release either. `submitLock` probes the venue first; its refusal is §C3's "a
+withdraw either. The gate on `submit` probes the venue first; its refusal is §C3's "a
 sequencer unwilling to watch it refuses to prepare, which is an abort rather
 than a fork". The probe is the capability check; no interface grew.
 
@@ -135,6 +136,21 @@ The shape again, each time: one door guarded, the other not.
 - **The creation boundary had moved.** Reusing `lockIsLive` at lock creation
   accepted a timeout equal to the current index; creation asks a different
   question (strictly ahead) and keeps its own inequality. Pinned.
+
+**Round four, from regression-reviewing round three: the gate sat before the
+invariant-26 lookup**, so a holder repeating an accepted lock after publishing
+the commit was refused instead of answered with the prior receipt; and the
+decision-venue check was still `submitLock`'s alone, `legSet` copying the field
+through. One gate on `submit` now, for every lock item, honouring the repeat
+first. Two residuals recorded rather than patched: a stranger who predicts a
+demand's hash can pre-lock one unit under it on the demanded backing and have
+the demand refused (a delay bounded by re-filing; the (attempt, holder) key
+would end it); and `walkGap`'s read of the venue can be triggered by unsigned
+noise naming a standing lock, which on a view that cannot serve commits
+propagates as every refusal does — unreachable while the gate refuses such
+locks. The hash-sharing rule is a law change: a log carrying a lock and a
+demand under one hash on one backing was lawful before and does not replay now;
+this reference has no persisted logs, and the rule says why it should not.
 
 **Open:** (1) `unservedRequests` counts only transfer requests, though §C3 says
 "a lock request left unserved is §C2b's non-service object" — slice 26, with
@@ -245,6 +261,8 @@ holder; noise published first under the same id does not win, because it is the
 earliest **valid** commit rather than the earliest publication; and a commit
 witnessed before the lock still settles it, which is the holder choosing the
 order of their own two signatures and lets nobody else force a partial bundle.
+*[Superseded 2026-08-21 in 24c round three: a lock under an attempt the venue already shows
+committed is refused; the holder picks a fresh id.]*
 
 **What makes a bundle whole is the receiver, not the protocol.** A holder can
 always lock only one half. The receiver checks every half is reserved before
