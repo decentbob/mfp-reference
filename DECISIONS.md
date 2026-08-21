@@ -16,6 +16,62 @@ Format:
 
 ---
 
+## 2026-08-21 - Slice 25: the n-party exchange, one object signed by all
+
+**Question:** §C1's swap. "The n-party atomic exchange is first-class, and the
+paper quietly needs it: bilateral netting (a gift if either burns first),
+clearing a cycle, set-for-set reassembly trades, atomic multi-hop routing. It is
+presentation's machinery. Every participant locks what it gives, all sign,
+commit converts every lock at once, any refusal to prepare aborts, and the
+timeout unlocks everywhere. The fully signed exchange object is the release,
+publishable by any participant." 24b built the one-holder bundle; with different
+holders each publishing their own commit, whoever commits second can decline —
+the hole §C1 names, and §C5 step 6 ("matching from day one... closing loops")
+needs the exchange.
+
+**Decisions (Bob, on my recommendation, and the fork laid out rather than taken):**
+
+- **The lock names its parties** — a sorted set of 1..16 keys, the holder among
+  them (the law: a lock whose holder is not a party would hand units over on
+  others' signatures alone). `[holder]` is 24b's bundle, and a presentation's
+  legs carry exactly that; one mechanism, one more field.
+- **The list, not a hash of it.** The lock is what a sequencer reads; who must
+  have signed is legible there without a second object, and a verifier replaying
+  one backing alone checks the commit against the lock without the commit
+  carrying keys. 32 bytes per party per lock, trivial at the 2..3-party rings
+  §C1's uses have; the hash variant saves bytes only at a size nothing here has.
+- **One object, n signatures over the same bytes**: `attemptId, count, (signer,
+  signature)xn`, sorted by signer. Each party signs `commitMessage(attemptId)`
+  unchanged, so the object is assembled in any order by anyone and a party's
+  signature is the same in every copy — which is exactly right, because the
+  SET of required signers lives in the lock: a partial object fails at every
+  sequencer alike, a superset is harmless, a stranger's signature is noise.
+  24b's two departures stay the only two; the commit grew a count.
+- **The law verifies the commit against its own lock's parties**, so a backing's
+  log still replays alone: the entry carries every signature, the lock it
+  settled says which had to be there. `commitSatisfies` is the one verifier,
+  used by the law, the sequencer's gate and settle, and `walkGap`'s reader.
+
+**Found building, a 24b latent bug.** The sequencer keyed its receipts by
+operation hash alone. For every operation but the commit the backing name is
+inside the signed message, so that was per backing already; a commit names no
+backing — deliberately — so under ONE operator serving three backings of a
+ring, the second and third `settle` were answered with the first's receipt and
+applied nothing. 24b's bundle spanned two operators and never met it; §C5's
+shared operator would have met it on the first ring. Receipts are keyed by
+(backing, hash) now, one helper, four sites. The ring test pins it.
+
+**Not built, and next on this line:** §C3's "a payout paying in claims settles
+as a swap inside the settlement" — the backer locks its paying claims under the
+demand's attempt and the release is the exchange object; same mechanism, but it
+touches the acceptance (which must then name the paying lock), so it is its own
+slice. Also untouched: `accompanimentOf` reads legs without regard to their
+parties (a presentation's legs are `[holder]`; a leg naming more is the holder's
+own affair and the law's to refuse at the commit).
+
+**Spec change:** none needed. §C1 says "all sign" and "the fully signed
+exchange object is the release"; the implementation now reads both literally.
+
 ## 2026-08-21 - Slice 24c: the exits of a lock, on both sides of its timeout
 
 **Question:** found reviewing 24b by tabulating, per operation kind, which exits
