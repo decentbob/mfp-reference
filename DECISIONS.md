@@ -91,7 +91,10 @@ the demand's hash cannot hold both the holder's leg and the backer's payout; the
   demand's hash before the backer answered and make the acceptance impossible —
   a manufactured dishonour. A lock naming a venue under a standing demand's hash
   is refused at the gate: a demand's hash is its set's. (The 24c junk-relock and
-  leg-slot squat tests now end at that gate.)
+  leg-slot squat tests now end at that gate.) And the bare door: `submitLock`
+  refuses a lock naming no decision venue, since a set leg comes only with its
+  set — found regression-reviewing the fixes, where a bare leg-shaped lock slipped
+  past the gate's skip for legs and squatted the slot.
 - The "paying backing is a reliance leg" refusal the entry promised is in the
   code; `legMismatch`'s messages were written for the holder's legs and read
   backwards for the backer's lock, so they name the set's parties neutrally;

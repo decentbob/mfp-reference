@@ -490,6 +490,13 @@ export class Sequencer {
    */
   submitLock(op: LockOp, signature: Uint8Array): Receipt {
     const backing = this.served(op.backing);
+    // A set leg comes only with its set (a demand's legs, an acceptance's paying
+    // lock): a bare lock naming no decision venue would be a leg of nothing — and,
+    // under a standing demand's hash, a squat the gate would not see (found
+    // regression-reviewing slice 26's fixes).
+    if (compareBytes(op.decisionVenue, NO_DECISION_VENUE) === 0) {
+      throw new SequencerError("a bare lock names a decision venue: set legs come with their set");
+    }
     return this.submit([{ backing, op: lockEntry(op, signature) }]);
   }
 

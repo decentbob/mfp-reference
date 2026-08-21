@@ -369,3 +369,26 @@ describe("§C3: the other doors to the payout, closed", () => {
     expect(snapshotRedemptions(f.venue, f.eur, served)).toEqual([]);
   });
 });
+
+describe("§C3: set legs come only with their set", () => {
+  it("a bare lock naming no decision venue is refused, so nobody squats the paying slot that way either", () => {
+    const f = setup();
+    const { hash } = file(f, 40n);
+    const bare: LockOp = {
+      backing: f.gold,
+      attemptId: hash,
+      holder: KEYS.backer,
+      beneficiary: KEYS.backer,
+      quantity: 1n,
+      timeout: 10_000n,
+      decisionVenue: NO_DECISION_VENUE,
+      parties: [KEYS.backer],
+      nonce: f.sequencer.nextNonce(KEYS.backer, f.gold),
+    };
+    expect(() => f.sequencer.submitLock(bare, ed25519.sign(encodeLock(bare), SECRETS.backer))).toThrow(
+      /set legs come with their set/,
+    );
+    accept(f, hash, 40n);
+    expect(f.sequencer.availableBalance(f.gold, KEYS.backer)).toBe(420n);
+  });
+});
