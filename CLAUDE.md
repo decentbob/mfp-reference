@@ -74,7 +74,13 @@ the rule still stands.
   leg with a `lock` in that leg's own log**, so every backing stays replayable
   alone, and the sequencer takes the demand and its locks as one act or none
   (§C3's single-phase, "the whole set and the paying leg inside one operator").
-  Two-phase across operators is not built. The law stays per backing, so whether
+  **Two-phase across operators is `submitLock` + `settle`** (§C3's
+  prepare-decide-commit, generalised to any bundle): the holder reserves at each
+  sequencer, then publishes ONE commit at a decision venue, and each sequencer
+  settles its own half against that witnessed object without hearing from the
+  others. Which branch a trade uses is the parties' choice — §C2's other honest
+  answer, partial-and-retry, is the ordinary transfer path and covers every trade
+  where both sides have recourse. The law stays per backing, so whether
   a demand's legs were locked is read across the served state by
   `accompanimentOf`, which the backer asks before it signs an acceptance. **A
   lock carries §C3's timeout**, and past it the set can no longer settle, so the
@@ -111,6 +117,14 @@ the rule still stands.
   spent set, running totals and the standing demand record (inv 23). The root
   must be injective, or one signature covers two states and equivocation is
   unprovable.
+- **Every operation is signed by the party the law names, over that backing's
+  own message, at that signer's next nonce — except the commit.** §C3's commit
+  names no backing and carries no nonce, because one signature has to be valid in
+  every log of a bundle at once and a nonce is per (signer, backing). Those are
+  the only two departures in the system, they are what "one object" costs, and
+  they are safe only here: a repeat is a no-op because the lock it settles is
+  gone, and it can only reach an attempt its own holder named in a lock. Do not
+  add a third without the same kind of reason. See [[DECISIONS.md]].
 - **Swaps and presentation are idempotent** (inv 26). A repeated request
   returns the identical prior response. A crash must lose nothing. The
   sequencer is where this holds: it returns the identical prior receipt for any
