@@ -2,7 +2,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
 import { makeBacking, signBacking, type Backing } from "../src/backing.js";
 import { signCommitment, stateRoot, type ServedState } from "../src/commitment.js";
-import { type Terms } from "../src/closure.js";
+import { closureStatus, type Terms } from "../src/closure.js";
 import { encodeIssuanceMessage } from "../src/messages.js";
 import { accompanimentOf } from "../src/presentability.js";
 import {
@@ -285,5 +285,71 @@ describe("invariant 13: a lock that does not match its demand is not accompanime
       { backing: gold, op: bobs },
     ]);
     expect(accompanimentOf(eur, venue, terms, state, hash)).toBe("unaccompanied");
+  });
+});
+
+describe("one level, no traversal — and what covers the rest", () => {
+  it("checks R(b) only, so a leg's own reliance is the leg's problem", () => {
+    // Invariant 13 is one level by construction: "a reliance target's own
+    // reliance is that target's presentation problem". So this must NOT walk
+    // down — a future reader tempted to make it traverse would be changing the
+    // invariant, not fixing a gap.
+    //
+    // What covers the rest is closure, one layer earlier: R(b) written as
+    // closure(S) already names everything under it, and closureStatus tells a
+    // holder whether it was. The two are complementary — closureStatus says the
+    // TERMS are fully unwindable, accompanimentOf says this DEMAND honours them
+    // — and neither does the other's job.
+    const venue = new LocalVenue();
+    const mk = (thing: string, reliance: { target: Uint8Array; count: bigint }[] = []) =>
+      makeBacking({
+        obligor: KEYS.backer,
+        payout: { thing, quantumExponent: -2, perUnit: 100n },
+        reliance,
+        evidence: { setting: "transparent", operator: KEYS.operator },
+      });
+    const iron = mk("IRON");
+    const gold = mk("GOLD", [{ target: iron.name, count: 1n }]);
+    // R(EUR) names GOLD and not IRON: an unclosed requirement, which §8b makes
+    // readable rather than invalid.
+    const eur = mk("EUR", [{ target: gold.name, count: 2n }]);
+    const sequencer = new Sequencer(SECRETS.operator, venue);
+    for (const backing of [iron, gold, eur]) {
+      sequencer.register(backing, signBacking(SECRETS.backer, backing));
+      const nonce = sequencer.nextNonce(KEYS.backer, backing);
+      sequencer.submitIssue(
+        { backing, recipient: KEYS.alice, quantity: 500n, nonce },
+        ed25519.sign(encodeIssuanceMessage(backing.name, KEYS.alice, 500n, nonce), SECRETS.backer),
+      );
+    }
+    const terms: Terms = (name) =>
+      [iron, gold, eur].find((b) => Buffer.from(b.name).equals(Buffer.from(name)));
+
+    const demand: DemandOp = {
+      backing: eur,
+      holder: KEYS.alice,
+      quantity: 10n,
+      instant: 0n,
+      deadline: 100n,
+      nonce: sequencer.nextNonce(KEYS.alice, eur),
+    };
+    const hash = demandHash(demand);
+    const lock: LockOp = {
+      backing: gold,
+      demandHash: hash,
+      holder: KEYS.alice,
+      beneficiary: KEYS.backer,
+      quantity: 20n,
+      nonce: sequencer.nextNonce(KEYS.alice, gold),
+    };
+    sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice), [
+      { op: lock, signature: ed25519.sign(encodeLock(lock), SECRETS.alice) },
+    ]);
+
+    // R(EUR) is honoured in full, and no IRON is reserved, and both are correct.
+    expect(accompanimentOf(eur, venue, terms, served(sequencer), hash)).toBe("accompanied");
+    // The gap is in the TERMS, and that is the question closure answers.
+    expect(closureStatus(terms, eur)).toBe("unclosed");
+    expect(closureStatus(terms, gold)).toBe("closed");
   });
 });

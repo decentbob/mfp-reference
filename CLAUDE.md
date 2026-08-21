@@ -74,9 +74,9 @@ the rule still stands.
   leg with a `lock` in that leg's own log**, so every backing stays replayable
   alone, and the sequencer takes the demand and its locks as one act or none
   (§C3's single-phase, "the whole set and the paying leg inside one operator").
-  Two-phase across operators is not built. What a verifier cannot yet check is
-  that a demand's legs were locked at all — the law is per backing; an OPEN test
-  in `invariant-13.reliance-legs` pins it. Quantities are whole
+  Two-phase across operators is not built. The law stays per backing, so whether
+  a demand's legs were locked is read across the served state by
+  `accompanimentOf`, which the backer asks before it signs an acceptance. Quantities are whole
   numbers of the backing's declared unit; counts in R are whole. Reliance is
   a conjunction over a fixed list with constant counts — no disjunction, no
   computed membership. Reliance names backings and chain assets only.
