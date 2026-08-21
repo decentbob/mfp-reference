@@ -16,6 +16,7 @@
 //   mfp/acceptance/v1          a backer answering a demand
 //   mfp/release/v1             a holder settling an accepted demand
 //   mfp/withdrawal/v1          a holder ending an unanswered demand
+//   mfp/lock/v1                a holder reserving a reliance leg for a demand
 //   mfp/replacement/v1         E's rule naming a successor operator
 //   mfp/revocation/v1          K withdrawing its own authority to issue
 
@@ -32,6 +33,7 @@ export const DEMAND_CONTEXT = tag("mfp/demand/v1");
 export const ACCEPTANCE_CONTEXT = tag("mfp/acceptance/v1");
 export const RELEASE_CONTEXT = tag("mfp/release/v1");
 export const WITHDRAWAL_CONTEXT = tag("mfp/withdrawal/v1");
+export const LOCK_CONTEXT = tag("mfp/lock/v1");
 export const REPLACEMENT_CONTEXT = tag("mfp/replacement/v1");
 export const REVOCATION_CONTEXT = tag("mfp/revocation/v1");
 
@@ -57,6 +59,7 @@ const ALL_CONTEXTS = [
   ACCEPTANCE_CONTEXT,
   RELEASE_CONTEXT,
   WITHDRAWAL_CONTEXT,
+  LOCK_CONTEXT,
   REPLACEMENT_CONTEXT,
   REVOCATION_CONTEXT,
 ];

@@ -67,12 +67,10 @@ import {
 } from "./messages.js";
 import { opHashOfEntry, type OpLogEntry, type PublishedOp } from "./oplog.js";
 import {
-  encodeAcceptance,
-  encodeDemand,
-  encodeRelease,
-  encodeWithdrawal,
+  demandHash,
   type AcceptanceOp,
   type DemandOp,
+  type LockOp,
   type ReleaseOp,
   type WithdrawalOp,
 } from "./presentation.js";
@@ -345,58 +343,183 @@ export class Sequencer {
    * the backing unable to prove anything at all.
    */
   submitIssue(op: IssuanceOp, signature: Uint8Array): Receipt {
-    this.requireServed(op.backing);
-    const held = this.backings.get(op.backing.nameHex) as Backing;
-    if (revokedAt(this.venue, held) !== undefined) {
+    const backing = this.served(op.backing);
+    if (revokedAt(this.venue, backing) !== undefined) {
       throw new SequencerError("this backing's obligor key is revoked: no further issuance");
     }
-    return this.submit(op.backing, encodeIssuance(op), () => this.ledger.issue(op, signature));
+    const { recipient, quantity, nonce } = op;
+    return this.submit([
+      { backing, op: { kind: "issue", recipient, quantity, nonce, signature } },
+    ]);
   }
 
   submitTransfer(op: TransferOp, signature: Uint8Array): Receipt {
-    this.requireServed(op.backing);
-    return this.submit(op.backing, encodeTransfer(op), () => this.ledger.transfer(op, signature));
+    const backing = this.served(op.backing);
+    const { from, to, quantity, nonce } = op;
+    return this.submit([
+      { backing, op: { kind: "transfer", from, to, quantity, nonce, signature } },
+    ]);
   }
 
   submitBurn(op: BurnOp, signature: Uint8Array): Receipt {
-    this.requireServed(op.backing);
-    return this.submit(op.backing, encodeBurn(op), () => this.ledger.burn(op, signature));
+    const backing = this.served(op.backing);
+    const { holder, quantity, nonce } = op;
+    return this.submit([{ backing, op: { kind: "burn", holder, quantity, nonce, signature } }]);
   }
 
   /**
-   * Presentation (§C3), through the same path. Each of the four takes the
-   * witnessed index from this operator's latest commitment — read inside the
-   * apply thunk, so a replay is answered from the receipt store without
-   * consulting the clock at all. That is what invariant 26 requires of a
-   * partition recovery: repeating the request cannot change the answer, even if
-   * the deadline it turned on has since passed.
+   * File a demand, and reserve its reliance legs in the same act.
+   *
+   * §C3: "Single-phase wherever every lock in the set can be taken in one
+   * atomically signed decision... the whole set and the paying leg inside one
+   * operator." This operator serves the whole set, so it takes the demand and
+   * every lock together or refuses the lot.
+   *
+   * **The locks are the holder's to sign, and this only checks they are the
+   * right ones**: exactly one per entry in R(b), each for q·cᵢ units (invariant
+   * 13), each naming this demand and paying the demanded backing's obligor.
+   * Building them here instead would be co-signing a commitment of somebody's
+   * units they never authorised, which is the path invariant 8 forbids.
    */
-  submitDemand(op: DemandOp, signature: Uint8Array): Receipt {
-    this.requireServed(op.backing);
-    return this.submit(op.backing, encodeDemand(op), () =>
-      this.ledger.demand(op, signature, this.witnessedIndex()),
-    );
+  submitDemand(
+    op: DemandOp,
+    signature: Uint8Array,
+    legs: readonly { readonly op: LockOp; readonly signature: Uint8Array }[] = [],
+  ): Receipt {
+    const backing = this.served(op.backing);
+    const { holder, quantity, instant, deadline, nonce } = op;
+    const demand: PublishedOp = {
+      kind: "demand",
+      holder,
+      quantity,
+      instant,
+      deadline,
+      nonce,
+      signature,
+    };
+    return this.submit([
+      { backing, op: demand },
+      ...this.legSet(backing, demandHash(op), op.holder, op.quantity, legs),
+    ]);
   }
 
   submitAcceptance(op: AcceptanceOp, signature: Uint8Array): Receipt {
-    this.requireServed(op.backing);
-    return this.submit(op.backing, encodeAcceptance(op), () =>
-      this.ledger.accept(op, signature, this.witnessedIndex()),
-    );
+    const backing = this.served(op.backing);
+    const { demandHash: hash, instant, deadline, nonce } = op;
+    return this.submit([
+      { backing, op: { kind: "acceptance", demandHash: hash, instant, deadline, nonce, signature } },
+    ]);
   }
 
-  submitRelease(op: ReleaseOp, signature: Uint8Array): Receipt {
-    this.requireServed(op.backing);
-    return this.submit(op.backing, encodeRelease(op), () =>
-      this.ledger.release(op, signature, this.witnessedIndex()),
-    );
+  /**
+   * Settle, set and all. §C3 settles on one release, so every backing in the set
+   * resolves its own part: the demanded backing moves the claims, each leg moves
+   * the accompaniment to the beneficiary its lock names. All or none, for the
+   * reason the demand and its locks were taken that way.
+   */
+  submitRelease(
+    op: ReleaseOp,
+    signature: Uint8Array,
+    legs: readonly { readonly op: ReleaseOp; readonly signature: Uint8Array }[] = [],
+  ): Receipt {
+    return this.endDemand("release", op, signature, legs);
   }
 
-  submitWithdrawal(op: WithdrawalOp, signature: Uint8Array): Receipt {
-    this.requireServed(op.backing);
-    return this.submit(op.backing, encodeWithdrawal(op), () =>
-      this.ledger.withdraw(op, signature, this.witnessedIndex()),
-    );
+  /** The other exit, on the same terms: the demand ends and every lock frees. */
+  submitWithdrawal(
+    op: WithdrawalOp,
+    signature: Uint8Array,
+    legs: readonly { readonly op: WithdrawalOp; readonly signature: Uint8Array }[] = [],
+  ): Receipt {
+    return this.endDemand("withdrawal", op, signature, legs);
+  }
+
+  private endDemand(
+    kind: "release" | "withdrawal",
+    op: ReleaseOp | WithdrawalOp,
+    signature: Uint8Array,
+    legs: readonly { readonly op: ReleaseOp | WithdrawalOp; readonly signature: Uint8Array }[],
+  ): Receipt {
+    const backing = this.served(op.backing);
+    const items = [
+      { backing, op: { kind, demandHash: op.demandHash, nonce: op.nonce, signature } as PublishedOp },
+    ];
+    // Exactly the backings this demand has locks on, and no others: a leg the
+    // set does not name would be resolving somebody else's reservation.
+    const expected = new Set(backing.reliance.map((entry) => bytesToHex(entry.target)));
+    if (legs.length !== expected.size) {
+      throw new SequencerError("the set must name every reliance leg, and only those");
+    }
+    for (const leg of legs) {
+      const legBacking = this.served(leg.op.backing);
+      if (!expected.delete(legBacking.nameHex)) {
+        throw new SequencerError("that backing is not a reliance leg of this demand");
+      }
+      if (compareBytes(leg.op.demandHash, op.demandHash) !== 0) {
+        throw new SequencerError("a leg must name the demand being settled");
+      }
+      items.push({
+        backing: legBacking,
+        op: {
+          kind,
+          demandHash: leg.op.demandHash,
+          nonce: leg.op.nonce,
+          signature: leg.signature,
+        } as PublishedOp,
+      });
+    }
+    return this.submit(items);
+  }
+
+  /**
+   * The locks a demand on this backing must carry, checked against R(b) rather
+   * than taken on the caller's word.
+   */
+  private legSet(
+    backing: Backing,
+    hash: Uint8Array,
+    holder: Uint8Array,
+    quantity: bigint,
+    legs: readonly { readonly op: LockOp; readonly signature: Uint8Array }[],
+  ): { backing: Backing; op: PublishedOp }[] {
+    if (legs.length !== backing.reliance.length) {
+      throw new SequencerError("a demand must lock every reliance leg, and only those");
+    }
+    return backing.reliance.map((entry) => {
+      const supplied = legs.find(
+        (leg) => compareBytes(leg.op.backing.name, entry.target) === 0,
+      );
+      if (supplied === undefined) throw new SequencerError("a reliance leg is not locked");
+      const legBacking = this.served(supplied.op.backing);
+      // Invariant 13's arithmetic, and the only place it is applied: q units of
+      // the claim need q·cᵢ of each target.
+      if (supplied.op.quantity !== quantity * entry.count) {
+        throw new SequencerError("a lock does not cover q·c units of its leg");
+      }
+      if (compareBytes(supplied.op.demandHash, hash) !== 0) {
+        throw new SequencerError("a lock must name the demand it accompanies");
+      }
+      if (compareBytes(supplied.op.holder, holder) !== 0) {
+        throw new SequencerError("a lock must commit the demanding holder's units");
+      }
+      // Where the accompaniment goes: the DEMANDED backing's obligor, who takes
+      // in the set and may then present at this leg itself.
+      if (compareBytes(supplied.op.beneficiary, backing.obligor) !== 0) {
+        throw new SequencerError("a lock must pay the demanded backing's obligor");
+      }
+      return {
+        backing: legBacking,
+        op: {
+          kind: "lock",
+          demandHash: supplied.op.demandHash,
+          holder: supplied.op.holder,
+          beneficiary: supplied.op.beneficiary,
+          quantity: supplied.op.quantity,
+          nonce: supplied.op.nonce,
+          signature: supplied.signature,
+        } as PublishedOp,
+      };
+    });
   }
 
   /**
@@ -410,6 +533,16 @@ export class Sequencer {
     if (!this.ledger.has(backing)) {
       throw new SequencerError("backing not served by this sequencer");
     }
+  }
+
+  /**
+   * Routing and the sequencer's own copy in one step. The copy matters: terms
+   * reached through it are the ones this operator registered, not whatever the
+   * caller handed in beside a matching name.
+   */
+  private served(backing: Backing): Backing {
+    this.requireServed(backing);
+    return this.backings.get(backing.nameHex) as Backing;
   }
 
   /**
@@ -483,29 +616,46 @@ export class Sequencer {
    * rejected operation records nothing, so a later valid operation at that
    * nonce still succeeds.
    */
-  private submit(backing: Backing, opMessage: Uint8Array, apply: () => OpLogEntry): Receipt {
+  private submit(items: readonly { readonly backing: Backing; readonly op: PublishedOp }[]): Receipt {
     // §C2: "Until then the predecessor's last commitment governs, no new
     // co-signatures issue." A successor that has taken over the state but not
     // yet committed it is not the operator yet, and a receipt from it would be
-    // a co-signature nobody's chain accounts for.
-    if (!this.isInForce(backing)) {
-      throw new SequencerError("this sequencer is not yet in force for that backing");
+    // a co-signature nobody's chain accounts for. Asked of every backing in the
+    // set before any of it is applied.
+    for (const item of items) {
+      if (!this.isInForce(item.backing)) {
+        throw new SequencerError("this sequencer is not yet in force for that backing");
+      }
     }
     // Before anything is co-signed, and before an idempotent replay is answered:
     // what the venue witnessed during a gap comes first, or this operator would
     // be serving a history the record has already moved past.
-    this.adopt(backing);
-    const opHash = sha256(opMessage);
-    const key = bytesToHex(opHash);
+    for (const item of items) this.adopt(item.backing);
+
+    const hashes = items.map((item) => opHashOfEntry(item.backing.name, item.op));
+    // Keyed on the FIRST operation, which is the one the caller asked for: a
+    // demand and its locks are one act, so a replay of the demand answers for
+    // the set exactly as it was accepted (invariant 26).
+    const key = bytesToHex(hashes[0] as Uint8Array);
     const existing = this.receipts.get(key);
     // A copy on both paths: the stored receipt is the operator's record of what
     // it co-signed, and a caller that could reach into it would decide what
     // every later replay is answered with.
     if (existing !== undefined) return copyReceipt(existing);
 
-    const entry = apply();
-    const receipt = signReceipt(this.operatorSecret, backing.name, opHash, BigInt(entry.position));
-    this.receipts.set(key, receipt);
-    return copyReceipt(receipt);
+    const entries = this.ledger.applyAll(items, this.witnessedIndex());
+    const receipts = entries.map((entry, i) =>
+      signReceipt(
+        this.operatorSecret,
+        (items[i] as { readonly backing: Backing }).backing.name,
+        hashes[i] as Uint8Array,
+        BigInt(entry.position),
+      ),
+    );
+    // Every accepted operation is co-signed, legs included: an operator cannot
+    // deny having taken one, and the holder's reservation is as attributable as
+    // the demand it accompanies.
+    receipts.forEach((receipt, i) => this.receipts.set(bytesToHex(hashes[i] as Uint8Array), receipt));
+    return copyReceipt(receipts[0] as Receipt);
   }
 }

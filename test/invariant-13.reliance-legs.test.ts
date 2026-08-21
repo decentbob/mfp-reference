@@ -1,0 +1,377 @@
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { describe, expect, it } from "vitest";
+import { makeBacking, signBacking, type Backing } from "../src/backing.js";
+import { replayLog } from "../src/ledger.js";
+import { encodeIssuanceMessage, encodeTransferMessage } from "../src/messages.js";
+import {
+  demandHash,
+  encodeAcceptance,
+  encodeDemand,
+  encodeLock,
+  encodeRelease,
+  encodeWithdrawal,
+  type DemandOp,
+  type LockOp,
+} from "../src/presentation.js";
+import { Sequencer, SequencerError } from "../src/sequencer.js";
+import { LocalVenue } from "../src/venue.js";
+import { KEYS, SECRETS } from "./support.js";
+
+// Invariant 13's other half, and the first presentation that moves a leg.
+//
+//   "A holding is presentable at *b* for *q* if and only if it contains *q*
+//   units of *b* and *q·cᵢ* units of each *(bᵢ, cᵢ)* in R(b)."
+//
+// §C3 licenses doing it in one act here: "Single-phase wherever every lock in
+// the set can be taken in one atomically signed decision: R empty and the payout
+// settling outside the claim layer, **or the whole set and the paying leg inside
+// one operator**." So this operator takes the demand and every lock together, or
+// refuses the lot. Two-phase — a decision venue and a lock timeout — is what a
+// set spanning operators needs, and is not built.
+//
+// **A leg is reserved in the leg's own log**, signed by the holder whose units
+// it commits, because those units are that backing's and every backing has to
+// stay replayable on its own — which provesHolding, the redemption walk and
+// committedOutstanding all rest on. Deriving the leg locks from the demand plus
+// R(b) instead would mean no backing could be checked alone.
+//
+// **The beneficiary is the DEMANDED backing's obligor**, not the leg's: the
+// backer of *b* takes in the whole set and may then present at *bᵢ* itself,
+// which is what reliance is for. Signed into the lock rather than supplied at
+// release, or the operator would choose where the accompaniment goes.
+
+const DEADLINE = 100n;
+
+function setup() {
+  const venue = new LocalVenue();
+  const mk = (thing: string, reliance: { target: Uint8Array; count: bigint }[] = []) =>
+    makeBacking({
+      obligor: KEYS.backer,
+      payout: { thing, quantumExponent: -2, perUnit: 100n },
+      reliance,
+      evidence: { setting: "transparent", operator: KEYS.operator },
+    });
+  const gold = mk("GOLD");
+  const eur = mk("EUR", [{ target: gold.name, count: 2n }]);
+  const sequencer = new Sequencer(SECRETS.operator, venue);
+  for (const backing of [gold, eur]) {
+    sequencer.register(backing, signBacking(SECRETS.backer, backing));
+  }
+  const issue = (backing: Backing, quantity: bigint) => {
+    const nonce = sequencer.nextNonce(KEYS.backer, backing);
+    sequencer.submitIssue(
+      { backing, recipient: KEYS.alice, quantity, nonce },
+      ed25519.sign(encodeIssuanceMessage(backing.name, KEYS.alice, quantity, nonce), SECRETS.backer),
+    );
+  };
+  issue(eur, 100n);
+  issue(gold, 200n);
+  return { venue, sequencer, eur, gold };
+}
+
+/** Alice's demand for `quantity` of eur, and the lock its one leg needs. */
+function present(sequencer: Sequencer, eur: Backing, gold: Backing, quantity: bigint) {
+  const demand: DemandOp = {
+    backing: eur,
+    holder: KEYS.alice,
+    quantity,
+    instant: 0n,
+    deadline: DEADLINE,
+    nonce: sequencer.nextNonce(KEYS.alice, eur),
+  };
+  const hash = demandHash(demand);
+  const lock: LockOp = {
+    backing: gold,
+    demandHash: hash,
+    holder: KEYS.alice,
+    beneficiary: KEYS.backer,
+    quantity: quantity * 2n,
+    nonce: sequencer.nextNonce(KEYS.alice, gold),
+  };
+  return {
+    demand,
+    hash,
+    lock,
+    signature: ed25519.sign(encodeDemand(demand), SECRETS.alice),
+    legSignature: ed25519.sign(encodeLock(lock), SECRETS.alice),
+  };
+}
+
+/** File it, legs and all. */
+function file(sequencer: Sequencer, eur: Backing, gold: Backing, quantity: bigint) {
+  const p = present(sequencer, eur, gold, quantity);
+  const receipt = sequencer.submitDemand(p.demand, p.signature, [
+    { op: p.lock, signature: p.legSignature },
+  ]);
+  return { ...p, receipt };
+}
+
+/** The backer answers, so a release has something to settle against. */
+function accept(sequencer: Sequencer, eur: Backing, hash: Uint8Array, deadline = 50n) {
+  const op = {
+    backing: eur,
+    demandHash: hash,
+    instant: 0n,
+    deadline,
+    nonce: sequencer.nextNonce(KEYS.backer, eur),
+  };
+  return sequencer.submitAcceptance(op, ed25519.sign(encodeAcceptance(op), SECRETS.backer));
+}
+
+/** The holder's release, on the demand and on its one leg. */
+function release(sequencer: Sequencer, eur: Backing, gold: Backing, hash: Uint8Array) {
+  const head = { backing: eur, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, eur) };
+  const leg = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
+  return sequencer.submitRelease(head, ed25519.sign(encodeRelease(head), SECRETS.alice), [
+    { op: leg, signature: ed25519.sign(encodeRelease(leg), SECRETS.alice) },
+  ]);
+}
+
+describe("invariant 13: a demand reserves q·cᵢ of every leg", () => {
+  it("locks the leg in the leg's own ledger", () => {
+    const { sequencer, eur, gold } = setup();
+    file(sequencer, eur, gold, 40n);
+    // 40 EUR demanded, c = 2, so 80 GOLD are spoken for. Held, not moved:
+    // presentation destroys nothing and the set has not settled.
+    expect(sequencer.balance(gold, KEYS.alice)).toBe(200n);
+    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(120n);
+    expect(sequencer.availableBalance(eur, KEYS.alice)).toBe(60n);
+  });
+
+  it("and the lock is an entry in that leg's log, so the leg replays alone", () => {
+    const { sequencer, eur, gold } = setup();
+    const { hash } = file(sequencer, eur, gold, 40n);
+    const log = sequencer.opLog(gold);
+    const lock = log[log.length - 1];
+    expect(lock?.kind).toBe("lock");
+    expect(replayLog(gold, log)).toBeDefined();
+    if (lock?.kind === "lock") {
+      expect(lock.demandHash).toEqual(hash);
+      expect(lock.quantity).toBe(80n);
+      expect(lock.beneficiary).toEqual(KEYS.backer);
+    }
+  });
+
+  it("the locked units cannot be spent while the demand stands", () => {
+    const { sequencer, eur, gold } = setup();
+    file(sequencer, eur, gold, 40n);
+    const nonce = sequencer.nextNonce(KEYS.alice, gold);
+    const move = { backing: gold, from: KEYS.alice, to: KEYS.bob, quantity: 130n, nonce };
+    expect(() =>
+      sequencer.submitTransfer(
+        move,
+        ed25519.sign(
+          encodeTransferMessage(gold.name, KEYS.alice, KEYS.bob, 130n, nonce),
+          SECRETS.alice,
+        ),
+      ),
+    ).toThrow(/insufficient/);
+  });
+
+  it("but the units the lock does not reach still move", () => {
+    const { sequencer, eur, gold } = setup();
+    file(sequencer, eur, gold, 40n);
+    const nonce = sequencer.nextNonce(KEYS.alice, gold);
+    const move = { backing: gold, from: KEYS.alice, to: KEYS.bob, quantity: 120n, nonce };
+    sequencer.submitTransfer(
+      move,
+      ed25519.sign(
+        encodeTransferMessage(gold.name, KEYS.alice, KEYS.bob, 120n, nonce),
+        SECRETS.alice,
+      ),
+    );
+    expect(sequencer.balance(gold, KEYS.bob)).toBe(120n);
+  });
+});
+
+describe("§C3: the set settles together, or ends together", () => {
+  it("release moves the claims and the accompaniment to the same obligor", () => {
+    const { sequencer, eur, gold } = setup();
+    const { hash } = file(sequencer, eur, gold, 40n);
+    accept(sequencer, eur, hash);
+    release(sequencer, eur, gold, hash);
+
+    // The backer of EUR took in the set: 40 EUR and the 80 GOLD that must
+    // accompany them. Presentation destroys nothing (invariant 10).
+    expect(sequencer.balance(eur, KEYS.backer)).toBe(40n);
+    expect(sequencer.balance(gold, KEYS.backer)).toBe(80n);
+    expect(sequencer.balance(eur, KEYS.alice)).toBe(60n);
+    expect(sequencer.balance(gold, KEYS.alice)).toBe(120n);
+    expect(sequencer.outstanding(eur)).toBe(100n);
+    expect(sequencer.outstanding(gold)).toBe(200n);
+  });
+
+  it("withdrawal frees the accompaniment and moves nothing", () => {
+    const { sequencer, eur, gold } = setup();
+    const { hash } = file(sequencer, eur, gold, 40n);
+    const head = { backing: eur, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, eur) };
+    const leg = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
+    sequencer.submitWithdrawal(head, ed25519.sign(encodeWithdrawal(head), SECRETS.alice), [
+      { op: leg, signature: ed25519.sign(encodeWithdrawal(leg), SECRETS.alice) },
+    ]);
+    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(200n);
+    expect(sequencer.availableBalance(eur, KEYS.alice)).toBe(100n);
+    expect(sequencer.balance(gold, KEYS.backer)).toBe(0n);
+  });
+
+  it("two demands lock cumulatively, and each frees its own", () => {
+    const { sequencer, eur, gold } = setup();
+    const first = file(sequencer, eur, gold, 30n);
+    const second = file(sequencer, eur, gold, 20n);
+    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(200n - 60n - 40n);
+
+    const head = {
+      backing: eur,
+      demandHash: first.hash,
+      nonce: sequencer.nextNonce(KEYS.alice, eur),
+    };
+    const leg = {
+      backing: gold,
+      demandHash: first.hash,
+      nonce: sequencer.nextNonce(KEYS.alice, gold),
+    };
+    sequencer.submitWithdrawal(head, ed25519.sign(encodeWithdrawal(head), SECRETS.alice), [
+      { op: leg, signature: ed25519.sign(encodeWithdrawal(leg), SECRETS.alice) },
+    ]);
+    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(200n - 40n);
+    expect(second.hash).not.toEqual(first.hash);
+  });
+});
+
+describe("§C3: one atomically signed decision, or none of it", () => {
+  it("a holder short on the leg files nothing at all", () => {
+    // The whole point of taking the set together. A demand standing without its
+    // accompaniment committed would hand a backer a claim it cannot unwind.
+    const { sequencer, eur, gold } = setup();
+    // Move the gold away first, so 40 EUR cannot be accompanied.
+    const nonce = sequencer.nextNonce(KEYS.alice, gold);
+    sequencer.submitTransfer(
+      { backing: gold, from: KEYS.alice, to: KEYS.bob, quantity: 150n, nonce },
+      ed25519.sign(
+        encodeTransferMessage(gold.name, KEYS.alice, KEYS.bob, 150n, nonce),
+        SECRETS.alice,
+      ),
+    );
+    const p = present(sequencer, eur, gold, 40n);
+    expect(() =>
+      sequencer.submitDemand(p.demand, p.signature, [{ op: p.lock, signature: p.legSignature }]),
+    ).toThrow(/insufficient/);
+    expect(sequencer.openDemands(eur)).toHaveLength(0);
+    expect(sequencer.availableBalance(eur, KEYS.alice)).toBe(100n);
+    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(50n);
+  });
+
+  it("refuses a demand whose legs are not supplied", () => {
+    const { sequencer, eur, gold } = setup();
+    const p = present(sequencer, eur, gold, 40n);
+    expect(() => sequencer.submitDemand(p.demand, p.signature)).toThrow(SequencerError);
+    expect(sequencer.openDemands(eur)).toHaveLength(0);
+  });
+
+  it("refuses a lock that does not cover q·c units", () => {
+    const { sequencer, eur, gold } = setup();
+    const p = present(sequencer, eur, gold, 40n);
+    const short: LockOp = { ...p.lock, quantity: 79n };
+    expect(() =>
+      sequencer.submitDemand(p.demand, p.signature, [
+        { op: short, signature: ed25519.sign(encodeLock(short), SECRETS.alice) },
+      ]),
+    ).toThrow(/q·c/);
+  });
+
+  it("refuses a lock that pays anyone but the demanded backing's obligor", () => {
+    // Otherwise the accompaniment goes somewhere the backer of EUR cannot
+    // present it, and the set is worthless to the party taking it in.
+    const { sequencer, eur, gold } = setup();
+    const p = present(sequencer, eur, gold, 40n);
+    const elsewhere: LockOp = { ...p.lock, beneficiary: KEYS.mallory };
+    expect(() =>
+      sequencer.submitDemand(p.demand, p.signature, [
+        { op: elsewhere, signature: ed25519.sign(encodeLock(elsewhere), SECRETS.alice) },
+      ]),
+    ).toThrow(/obligor/);
+  });
+
+  it("refuses a lock naming another demand", () => {
+    const { sequencer, eur, gold } = setup();
+    const p = present(sequencer, eur, gold, 40n);
+    const other: LockOp = { ...p.lock, demandHash: new Uint8Array(32).fill(9) };
+    expect(() =>
+      sequencer.submitDemand(p.demand, p.signature, [
+        { op: other, signature: ed25519.sign(encodeLock(other), SECRETS.alice) },
+      ]),
+    ).toThrow(/name the demand/);
+  });
+
+  it("refuses a lock committing somebody else's units", () => {
+    const { sequencer, eur, gold } = setup();
+    const p = present(sequencer, eur, gold, 40n);
+    const bobs: LockOp = { ...p.lock, holder: KEYS.bob };
+    expect(() =>
+      sequencer.submitDemand(p.demand, p.signature, [
+        { op: bobs, signature: ed25519.sign(encodeLock(bobs), SECRETS.bob) },
+      ]),
+    ).toThrow(/demanding holder/);
+  });
+
+  it("refuses a lock on a backing that is not a leg", () => {
+    const { sequencer, eur, gold } = setup();
+    const p = present(sequencer, eur, gold, 40n);
+    const wrong: LockOp = { ...p.lock, backing: eur };
+    expect(() =>
+      sequencer.submitDemand(p.demand, p.signature, [
+        { op: wrong, signature: ed25519.sign(encodeLock(wrong), SECRETS.alice) },
+      ]),
+    ).toThrow(SequencerError);
+  });
+
+  it("a backing with no reliance still takes a demand with no legs", () => {
+    const { sequencer, gold } = setup();
+    const op: DemandOp = {
+      backing: gold,
+      holder: KEYS.alice,
+      quantity: 10n,
+      instant: 0n,
+      deadline: DEADLINE,
+      nonce: sequencer.nextNonce(KEYS.alice, gold),
+    };
+    sequencer.submitDemand(op, ed25519.sign(encodeDemand(op), SECRETS.alice));
+    expect(sequencer.openDemands(gold)).toHaveLength(1);
+  });
+});
+
+describe("what a verifier still cannot check", () => {
+  it("OPEN: a served state can carry a demand whose legs were never locked", () => {
+    // Pinning a gap, not a property. The set is the SEQUENCER's rule, because
+    // the law is per backing and invariant 13's q·cᵢ live in other states. So a
+    // log carrying an unaccompanied demand replays lawfully, and
+    // stateIsAuthentic — which folds one backing — says yes.
+    //
+    // Closing it means replaying the legs beside the demand, and a served state
+    // does carry them, so it is reachable: it is the same shape as every other
+    // "read it across the served state" answer this codebase has landed on. Not
+    // done here because it widens stateIsAuthentic, which is a decision rather
+    // than a review fix. The exposure is bounded meanwhile: the party who would
+    // lose by it is the backer, and the backer signs the acceptance, so it can
+    // check before answering.
+    const { sequencer, eur } = setup();
+    const op: DemandOp = {
+      backing: eur,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: 0n,
+      deadline: DEADLINE,
+      nonce: sequencer.nextNonce(KEYS.alice, eur),
+    };
+    const entry = {
+      ...op,
+      kind: "demand" as const,
+      position: sequencer.opLog(eur).length,
+      signature: ed25519.sign(encodeDemand(op), SECRETS.alice),
+    };
+    // The law takes it: nothing here can see GOLD.
+    expect(replayLog(eur, [...sequencer.opLog(eur), entry])).toBeDefined();
+    // And the sequencer does not, which is what actually holds the line today.
+    expect(() => sequencer.submitDemand(op, entry.signature)).toThrow(SequencerError);
+  });
+});

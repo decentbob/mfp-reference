@@ -85,7 +85,7 @@ describe("invariant 13: presentability is unit arithmetic over one level", () =>
 // everything else, because invariant 17 keeps an unaccompanied claim inert
 // rather than invalid.
 
-describe("§C3: single-phase presentation applies where R is empty", () => {
+describe("§C3: presentation, and where a reliance leg is reserved", () => {
   const TARGET = new Uint8Array(32).fill(0x33);
 
   function withReliance(reliance: readonly RelianceEntry[]) {
@@ -108,15 +108,18 @@ describe("§C3: single-phase presentation applies where R is empty", () => {
     return ledger.demand(op, ed25519.sign(encodeDemand(op), SECRETS.alice), 0n);
   };
 
-  it("refuses a demand on a backing that relies on another", () => {
+  it("takes a demand on a backing that relies on another, and says nothing about the legs", () => {
+    // This refused until slice 22. The ledger is per backing and invariant 13's
+    // q·cᵢ units live in other backings' states, so THIS state cannot check them
+    // and no longer pretends to: each leg is reserved by a lock in its own log,
+    // and the sequencer takes the demand and every lock as one set or none.
     const { ledger, backing } = withReliance([{ target: TARGET, count: 2n }]);
-    expect(demandOn(ledger, backing)).toThrow(/reliance/);
-    expect(ledger.openDemands(backing)).toHaveLength(0);
+    expect(demandOn(ledger, backing)()).toMatchObject({ kind: "demand", quantity: 40n });
+    expect(ledger.openDemands(backing)).toHaveLength(1);
   });
 
-  it("but the claim is still inert rather than invalid (invariant 17)", () => {
-    // Everything else about a backing with reliance keeps working; only the
-    // presentation it cannot complete is refused.
+  it("and the claim was inert rather than invalid throughout (invariant 17)", () => {
+    // True while the presentation was refused, and still true now.
     const { ledger, backing } = withReliance([{ target: TARGET, count: 2n }]);
     const move = {
       backing,
@@ -142,9 +145,10 @@ describe("§C3: single-phase presentation applies where R is empty", () => {
     expect(demandOn(ledger, backing)()).toMatchObject({ kind: "demand", quantity: 40n });
   });
 
-  it("a served log carrying such a demand does not replay", () => {
-    // The same rule on the other input: a log an operator serves must be a
-    // history the law could have produced.
+  it("and such a log replays, because the leg is another backing's record", () => {
+    // The mirror of the above on the other input. A verifier folding THIS
+    // backing's log sees a lawful demand; whether its legs were locked is read
+    // across the served state, where the leg backings' own logs are.
     const { ledger, backing } = withReliance([{ target: TARGET, count: 2n }]);
     const op = {
       backing,
@@ -164,6 +168,6 @@ describe("§C3: single-phase presentation applies where R is empty", () => {
       nonce: 0n,
       signature: ed25519.sign(encodeDemand(op), SECRETS.alice),
     };
-    expect(replayLog(backing, [...ledger.opLog(backing), entry])).toBeUndefined();
+    expect(replayLog(backing, [...ledger.opLog(backing), entry])).toBeDefined();
   });
 });

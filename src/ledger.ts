@@ -132,11 +132,32 @@ export function isDishonoured(record: DemandRecord, atWitnessedIndex: bigint): b
  * The state a log folds to, and the ledger's own book — one shape, because they
  * are the same thing reached two ways.
  */
+/**
+ * One reliance leg reserved against a demand (§C3's prepare, invariant 13).
+ *
+ * It lives in the LEG's state, not the demanded backing's, because those units
+ * are the leg's and every backing has to stay replayable on its own. What it
+ * cannot see is the demand itself — that record is in another backing's state —
+ * so this holds everything the leg needs to resolve without looking: whose units,
+ * how many, and where they go if the demand settles.
+ */
+export interface LockRecord {
+  /** The demand this accompanies, and this record's key. */
+  readonly demandHash: Uint8Array;
+  readonly holder: Uint8Array;
+  /** The DEMANDED backing's obligor, signed by the holder in the lock. */
+  readonly beneficiary: Uint8Array;
+  readonly quantity: bigint;
+  readonly nonce: bigint;
+}
+
 export interface LedgerState {
   /** Units held, by holder key hex. A holder at zero is absent. */
   readonly balances: Map<string, bigint>;
   /** Open demands, by demand hash hex. Settlement and withdrawal remove them. */
   readonly demands: Map<string, DemandRecord>;
+  /** Reliance legs reserved against a demand elsewhere, by demand hash hex. */
+  readonly locks: Map<string, LockRecord>;
   /** The nonce each signer's next operation must carry, by signer key hex. */
   readonly nonces: Map<string, bigint>;
   issued: bigint;
@@ -144,7 +165,14 @@ export interface LedgerState {
 }
 
 export function emptyState(): LedgerState {
-  return { balances: new Map(), demands: new Map(), nonces: new Map(), issued: 0n, burned: 0n };
+  return {
+    balances: new Map(),
+    demands: new Map(),
+    locks: new Map(),
+    nonces: new Map(),
+    issued: 0n,
+    burned: 0n,
+  };
 }
 
 /**
@@ -157,6 +185,7 @@ export function copyState(state: LedgerState): LedgerState {
   return {
     balances: new Map(state.balances),
     demands: new Map([...state.demands].map(([key, record]) => [key, copyDemand(record)])),
+    locks: new Map([...state.locks].map(([key, record]) => [key, copyLock(record)])),
     nonces: new Map(state.nonces),
     issued: state.issued,
     burned: state.burned,
@@ -165,6 +194,15 @@ export function copyState(state: LedgerState): LedgerState {
 
 function copyDemand(record: DemandRecord): DemandRecord {
   return { ...record, hash: copyBytes(record.hash), holder: copyBytes(record.holder) };
+}
+
+function copyLock(record: LockRecord): LockRecord {
+  return {
+    ...record,
+    demandHash: copyBytes(record.demandHash),
+    holder: copyBytes(record.holder),
+    beneficiary: copyBytes(record.beneficiary),
+  };
 }
 
 function heldBy(state: LedgerState, hex: string): bigint {
@@ -181,6 +219,12 @@ function spendable(state: LedgerState, key: Uint8Array): bigint {
   const hex = bytesToHex(key);
   let locked = 0n;
   for (const record of state.demands.values()) {
+    if (compareBytes(record.holder, key) === 0) locked += record.quantity;
+  }
+  // A reliance leg committed to a demand elsewhere is spoken for exactly as a
+  // demand's own units are: the whole point of the lock is that the holder
+  // cannot present the set and spend its accompaniment.
+  for (const record of state.locks.values()) {
     if (compareBytes(record.holder, key) === 0) locked += record.quantity;
   }
   return heldBy(state, hex) - locked;
@@ -224,6 +268,7 @@ export function signerFromTerms(backing: Backing, entry: PublishedOp): Uint8Arra
       return entry.from;
     case "burn":
     case "demand":
+    case "lock":
       return entry.holder;
     case "release":
     case "withdrawal":
@@ -247,6 +292,10 @@ export function signerFromTerms(backing: Backing, entry: PublishedOp): Uint8Arra
  */
 function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uint8Array {
   if (entry.kind === "release" || entry.kind === "withdrawal") {
+    // In this backing's own state one of the two exists, never both: a demand
+    // where this IS the demanded backing, a lock where it is one of its legs.
+    const lock = state.locks.get(bytesToHex(entry.demandHash));
+    if (lock !== undefined) return copyBytes(lock.holder);
     return standingDemand(state, entry.demandHash).holder;
   }
   const fromTerms = signerFromTerms(backing, entry);
@@ -262,6 +311,7 @@ const SIGNATURE_REFUSAL: Record<PublishedOp["kind"], string> = {
   acceptance: "acceptance signature invalid: only the obligor answers",
   release: "release signature invalid: only the holder releases",
   withdrawal: "withdrawal signature invalid: only the holder withdraws",
+  lock: "lock signature invalid: only the holder commits a leg",
 };
 
 const ACCEPTANCE_WINDOW =
@@ -350,17 +400,11 @@ export function applyEntry(
       break;
     }
     case "demand": {
-      // §C3 licenses single-phase presentation "wherever every lock in the set
-      // can be taken in one atomically signed decision: R empty and the payout
-      // settling outside the claim layer". Presenting a backing with reliance
-      // means handing over q·cᵢ units of each target too (invariant 13), and
-      // nothing here moves those legs — so the presentation it cannot complete
-      // is refused rather than handing a backer a claim without its
-      // accompaniment. Invariant 17 leaves the claim itself inert, never
-      // invalid, and still transferable.
-      if (backing.reliance.length > 0) {
-        throw new LedgerError("a backing with reliance cannot be presented: its legs are not moved");
-      }
+      // The legs are NOT checked here, and cannot be: invariant 13 asks for q·cᵢ
+      // units of each target, and those live in other backings' states which
+      // this function cannot see. Each leg is reserved by a lock in its own log,
+      // and the sequencer takes the demand and every lock as one set or none —
+      // §C3's "one atomically signed decision".
       // TIME. Invariant 24: the instant is "no later than the latest witnessed
       // index at signing", so a payout is never evaluated at an index nobody has
       // witnessed. The acceptance repeats this exact value, which carries the
@@ -380,6 +424,26 @@ export function applyEntry(
         deadline: entry.deadline,
         nonce: entry.nonce,
         acceptedDeadline: undefined,
+      });
+      break;
+    }
+    case "lock": {
+      // §C3's prepare, for a leg: reserve without consuming. It says nothing
+      // about the demand it names, because the demand is another backing's
+      // record — what makes the pair coherent is that one operator applies both
+      // or neither, and a verifier holding the served state can read both.
+      if (state.locks.has(bytesToHex(entry.demandHash))) {
+        throw new LedgerError("this demand already has a lock on this backing");
+      }
+      if (spendable(state, entry.holder) < entry.quantity) {
+        throw new LedgerError("insufficient balance");
+      }
+      state.locks.set(bytesToHex(entry.demandHash), {
+        demandHash: copyBytes(entry.demandHash),
+        holder: copyBytes(entry.holder),
+        beneficiary: copyBytes(entry.beneficiary),
+        quantity: entry.quantity,
+        nonce: entry.nonce,
       });
       break;
     }
@@ -405,6 +469,31 @@ export function applyEntry(
       break;
     }
     case "release": {
+      // **On a leg, the same act with a different record.** §C3 settles the
+      // whole set on one release, so each backing in it resolves its own part:
+      // the demanded backing moves the claims, each leg moves the accompaniment
+      // to the beneficiary the holder signed into the lock.
+      //
+      // A leg cannot check the acceptance — that record is in the demanded
+      // backing's state — so the pairing is the sequencer's to apply atomically
+      // and a verifier's to read across the served state. What the leg does
+      // enforce is the whole of what its own units need: the holder signed this
+      // release, and the beneficiary was fixed when the units were committed.
+      const leg = state.locks.get(bytesToHex(entry.demandHash));
+      if (leg !== undefined) {
+        if (heldBy(state, bytesToHex(leg.beneficiary)) + leg.quantity >= MAX_QUANTITY_EXCLUSIVE) {
+          throw new LedgerError("settlement would push a balance beyond the quantity bound");
+        }
+        if (heldBy(state, bytesToHex(leg.holder)) < leg.quantity) {
+          throw new LedgerError("debit exceeds the holding");
+        }
+        // Drop the lock first, for the reason the demand is dropped first: the
+        // settling transfer must not be blocked by its own reservation.
+        state.locks.delete(bytesToHex(entry.demandHash));
+        move(state, leg.holder, -leg.quantity);
+        move(state, leg.beneficiary, leg.quantity);
+        break;
+      }
       const record = standingDemand(state, entry.demandHash);
       // Invariant 27: settlement takes two signatures, the backer's acceptance
       // and the holder's release. Never answered, and answered-then-expired,
@@ -434,6 +523,11 @@ export function applyEntry(
       break;
     }
     case "withdrawal": {
+      // The other exit, on a leg: the reservation ends and the units are the
+      // holder's again. No clock, because the rule a withdrawal reads — whether
+      // a live acceptance stands — is the demanded backing's record, and the
+      // sequencer withdraws the set together.
+      if (state.locks.delete(bytesToHex(entry.demandHash))) break;
       const record = standingDemand(state, entry.demandHash);
       // TIME. A live acceptance holds the claims: the holder has an answer to
       // release against. Once it expires they are the holder's again, or a
@@ -536,6 +630,31 @@ export class TransparentLedger {
     applyEntry(held.state, held.backing, entry, atWitnessedIndex);
     held.opLog.push(entry);
     return copyOpEntry(entry);
+  }
+
+  /**
+   * Apply a set of operations across several backings, **all or nothing**.
+   *
+   * §C3's single-phase presentation is "one atomically signed decision": a
+   * demand and the locks on its reliance legs are one act, and applying part of
+   * it would leave a demand whose accompaniment is not committed, or units
+   * reserved for a demand that was refused. The ledger is atomic per operation
+   * by design; this is the second place after takeOver that applies many, and
+   * for the same reason it establishes the whole set first.
+   *
+   * Established on copies, then applied for real. Each backing appears at most
+   * once — a backing cannot be its own reliance target, since its name is a hash
+   * over R — so no entry in the set can invalidate another's dry run.
+   */
+  applyAll(
+    ops: readonly { readonly backing: Backing; readonly op: PublishedOp }[],
+    atWitnessedIndex: bigint | undefined,
+  ): OpLogEntry[] {
+    for (const { backing, op } of ops) {
+      const held = this.stateOf(backing);
+      applyEntry(copyState(held.state), held.backing, op, atWitnessedIndex);
+    }
+    return ops.map(({ backing, op }) => this.apply(backing, op, atWitnessedIndex));
   }
 
   /** Issuance: backer-signed, raises issued and the recipient's balance. */
