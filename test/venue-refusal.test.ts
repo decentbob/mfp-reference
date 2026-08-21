@@ -7,6 +7,7 @@ import { isDoubleAcceptance, isDoublePosition, isRewrittenHistory } from "../src
 import { encodeTransferMessage } from "../src/messages.js";
 import { isOperatorReceipt, receiptStatus, type Receipt } from "../src/receipt.js";
 import {
+  committedInTime,
   committedOutstanding,
   gapLegsFor,
   quietFor,
@@ -20,6 +21,7 @@ import {
   standingOutstanding,
   stateIsAuthentic,
   unservedRequests,
+  witnessedCommitFor,
 } from "../src/recovery.js";
 import {
   isAnOperator,
@@ -70,6 +72,9 @@ class RefusesEverything extends LocalVenue {
   }
   override witnessedAtFor(): never {
     throw new VenueError("this view was not synced for that operator");
+  }
+  override commitsFor(): never {
+    throw new VenueError("this view does not sync commits");
   }
   override firstCommitmentFor(): never {
     throw new VenueError("this view was not synced for that operator");
@@ -164,6 +169,20 @@ function surface() {
     ["gapLegsFor", () => gapLegsFor(refusing, backing)],
     ["quietFor", () => quietFor(refusing, KEYS.operator)],
     ["replayServedState", () => replayServedState(backing, refusing, served)],
+    ["witnessedCommitFor", () => witnessedCommitFor(refusing, { attemptId: new Uint8Array(32), holder: KEYS.alice })],
+    [
+      "committedInTime",
+      () =>
+        committedInTime(refusing, {
+          attemptId: new Uint8Array(32),
+          holder: KEYS.alice,
+          beneficiary: KEYS.bob,
+          quantity: 1n,
+          timeout: 10n,
+          decisionVenue: refusing.id,
+          nonce: 0n,
+        }),
+    ],
     [
       "accompanimentOf",
       () => accompanimentOf(backing, refusing, () => backing, served, new Uint8Array(32)),

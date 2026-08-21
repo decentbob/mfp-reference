@@ -69,7 +69,9 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { opHashOfEntry } from "./oplog.js";
 import { operatorAt, operatorIn, successionOf, type Succession } from "./replacement.js";
 import { revokedAt } from "./revocation.js";
-import { answering, venueIsDeclared, Venue, type WitnessedOp } from "./venue.js";
+import { answering, venueIsDeclared, Venue, type WitnessedCommit, type WitnessedOp } from "./venue.js";
+import { isSignedCommit } from "./presentation.js";
+import { lockIsLive, type LockRecord } from "./ledger.js";
 
 export type { ServedState };
 
@@ -630,6 +632,37 @@ interface Settlement {
  * anything at the venue, so a publication nobody could have accepted is noise,
  * not a corrupt log.
  */
+/**
+ * The commit a lock would settle on: the earliest witnessed one signed by the
+ * lock's holder. Anyone may publish anything under any attempt id, so the holder
+ * who reserved is what picks a sequencer's own commit out of the noise, and
+ * earliest witnessing wins: a commit republished later cannot un-commit an
+ * attempt the record already showed.
+ */
+export function witnessedCommitFor(
+  venue: Venue,
+  lock: { readonly attemptId: Uint8Array; readonly holder: Uint8Array },
+): WitnessedCommit | undefined {
+  return venue
+    .commitsFor(lock.attemptId)
+    .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
+    .find((w) => isSignedCommit(w.commit, lock.holder));
+}
+
+/**
+ * Whether the record already shows this lock's half of an attempt committed: a
+ * valid commit witnessed while the lock was live. §C3's one predicate, read
+ * against the venue because the law cannot see it. The sequencer asks before it
+ * co-signs a withdrawal of a lock, on its submit path and its gap path alike, and
+ * walkGap asks before it folds one — so a verifier's view of a gap and the
+ * operator's adoption of it agree (found reviewing 24c: they did not). A venue's
+ * refusal propagates, as everywhere.
+ */
+export function committedInTime(venue: Venue, lock: LockRecord): boolean {
+  const witnessed = witnessedCommitFor(venue, lock);
+  return witnessed !== undefined && lockIsLive(lock, witnessed.at);
+}
+
 function walkGap(
   venue: Venue,
   backing: Backing,
@@ -647,6 +680,14 @@ function walkGap(
     if (!isLatestAt(venue, backing, chain, served, witnessed.at)) continue;
     // A release settles the demand and drops it, so the record has to be read
     // before the law applies the leg that removes it.
+    // The refusal the sequencer applies on adoption: a withdrawal of a lock the
+    // record already shows committed is not a leg that happened, and a verifier
+    // that folded it would free what the operator, reading the same record,
+    // keeps reserved.
+    if (witnessed.op.kind === "withdrawal") {
+      const lock = state.locks.get(bytesToHex(witnessed.op.demandHash));
+      if (lock !== undefined && committedInTime(venue, lock)) continue;
+    }
     const settling =
       witnessed.op.kind === "release"
         ? state.demands.get(bytesToHex(witnessed.op.demandHash))

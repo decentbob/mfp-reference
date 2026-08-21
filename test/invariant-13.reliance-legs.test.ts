@@ -458,3 +458,71 @@ describe("§C3: the set's shape is read where it settles, not only where it is f
     expect(sequencer.availableBalance(eur, KEYS.alice)).toBe(100n);
   });
 });
+
+describe("§C3: a stranger's lock under a demand's hash is a squat, not a leg", () => {
+  // Found reviewing 24c, twice. Locks are keyed by attempt id alone, and the law
+  // resolved a release or withdrawal lock-first, so one unit locked under a
+  // standing demand's hash by anyone could hijack the head's own exits.
+  it("on the demanded backing the law refuses it: a lock and a demand never share a hash", () => {
+    const { venue, sequencer, eur, gold } = setup();
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
+    const mallory = sequencer.nextNonce(KEYS.backer, eur);
+    sequencer.submitIssue(
+      { backing: eur, recipient: KEYS.mallory, quantity: 5n, nonce: mallory },
+      ed25519.sign(encodeIssuanceMessage(eur.name, KEYS.mallory, 5n, mallory), SECRETS.backer),
+    );
+    const squat: LockOp = {
+      backing: eur,
+      attemptId: hash,
+      holder: KEYS.mallory,
+      beneficiary: KEYS.mallory,
+      quantity: 1n,
+      timeout: 10_000n,
+      decisionVenue: venue.id,
+      nonce: sequencer.nextNonce(KEYS.mallory, eur),
+    };
+    expect(() => sequencer.submitLock(squat, ed25519.sign(encodeLock(squat), SECRETS.mallory))).toThrow(
+      /standing demand's hash/,
+    );
+    // And the head's exits are its own: the set still withdraws.
+    venue.advance(LOCK_TIMEOUT + 1n);
+    const head = { backing: eur, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, eur) };
+    const leg = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
+    sequencer.submitWithdrawal(head, ed25519.sign(encodeWithdrawal(head), SECRETS.alice), [
+      { op: leg, signature: ed25519.sign(encodeWithdrawal(leg), SECRETS.alice) },
+    ]);
+    expect(sequencer.openDemands(eur)).toHaveLength(0);
+  });
+
+  it("on a leg's backing it does not count as a leg: the head still withdraws alone", () => {
+    // After the holder withdrew her expired leg, a stranger locks one unit under
+    // the hash there. Standing legs are the DEMAND HOLDER'S, so the head's
+    // withdrawal names none; the squat stays the stranger's own reservation.
+    const { venue, sequencer, eur, gold } = setup();
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
+    venue.advance(LOCK_TIMEOUT + 1n);
+    const legOut = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
+    sequencer.submitWithdrawal(legOut, ed25519.sign(encodeWithdrawal(legOut), SECRETS.alice));
+    const mallory = sequencer.nextNonce(KEYS.backer, gold);
+    sequencer.submitIssue(
+      { backing: gold, recipient: KEYS.mallory, quantity: 5n, nonce: mallory },
+      ed25519.sign(encodeIssuanceMessage(gold.name, KEYS.mallory, 5n, mallory), SECRETS.backer),
+    );
+    const squat: LockOp = {
+      backing: gold,
+      attemptId: hash,
+      holder: KEYS.mallory,
+      beneficiary: KEYS.mallory,
+      quantity: 1n,
+      timeout: 10_000n,
+      decisionVenue: venue.id,
+      nonce: sequencer.nextNonce(KEYS.mallory, gold),
+    };
+    sequencer.submitLock(squat, ed25519.sign(encodeLock(squat), SECRETS.mallory));
+    const head = { backing: eur, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, eur) };
+    sequencer.submitWithdrawal(head, ed25519.sign(encodeWithdrawal(head), SECRETS.alice));
+    expect(sequencer.openDemands(eur)).toHaveLength(0);
+    expect(sequencer.availableBalance(eur, KEYS.alice)).toBe(100n);
+    expect(sequencer.availableBalance(gold, KEYS.mallory)).toBe(4n);
+  });
+});

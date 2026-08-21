@@ -62,9 +62,7 @@ import {
   replayLog,
   TransparentLedger,
   type BackingSnapshot,
-  lockIsLive,
   type DemandRecord,
-  type LockRecord,
 } from "./ledger.js";
 import {
   encodeBurn,
@@ -87,10 +85,9 @@ import {
 import { copyReceipt, signReceipt, type Receipt } from "./receipt.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
 import { isNamedSuccessor, operatorAt } from "./replacement.js";
-import { gapLegsFor, venueIsDeclared } from "./recovery.js";
+import { committedInTime, gapLegsFor, venueIsDeclared, witnessedCommitFor } from "./recovery.js";
 import { revokedAt } from "./revocation.js";
-import { isSignedCommit } from "./presentation.js";
-import { type Venue, type WitnessedCommit } from "./venue.js";
+import { type Venue } from "./venue.js";
 
 /**
  * What one leg of a set must carry: q*c units of the target (invariant 13),
@@ -367,7 +364,8 @@ export class Sequencer {
     if (this.receipts.has(key)) return;
     // Skipped for the reason submit refuses it: the record shows this half
     // committed, and a gap is not a way around the record.
-    if (op.kind === "withdrawal" && this.committedInTime(backing, op.demandHash)) return;
+    const lock = op.kind === "withdrawal" ? this.ledger.lockOf(backing, op.demandHash) : undefined;
+    if (lock !== undefined && committedInTime(this.venue, lock)) return;
     let entry: OpLogEntry;
     try {
       entry = this.ledger.apply(backing, op, at);
@@ -477,11 +475,6 @@ export class Sequencer {
     if (compareBytes(op.decisionVenue, this.venue.id) !== 0) {
       throw new SequencerError("this sequencer does not watch that decision venue");
     }
-    // And it must be able to READ that venue's commits, or it would hold a
-    // reservation it can neither settle nor, once committed, safely release. A
-    // venue that does not serve them refuses here (VenueError), which is the
-    // refusal to prepare §C3 asks for.
-    this.venue.commitsFor(op.attemptId);
     const lock: PublishedOp = {
       kind: "lock",
       attemptId: op.attemptId,
@@ -524,7 +517,7 @@ export class Sequencer {
     const lock = this.ledger.lockOf(held, attemptId);
     const witnessed =
       lock !== undefined
-        ? this.witnessedCommitFor(lock)
+        ? witnessedCommitFor(this.venue, lock)
         : // No lock stands, so this attempt has already resolved here — or never
           // existed. Invariant 26 wants a repeat answered with the identical
           // prior receipt rather than refused, so the one already co-signed is
@@ -542,40 +535,6 @@ export class Sequencer {
       );
     }
     return this.submit([{ backing: held, op: asOp(witnessed.commit) }], witnessed.at);
-  }
-
-  /**
-   * The commit this lock would settle on: the earliest witnessed one signed by
-   * the lock's holder. Anyone may publish anything under any attempt id, so the
-   * holder who reserved here is what picks this operator's own commit out of
-   * the noise — and **earliest witnessing wins**: a commit republished later
-   * cannot un-commit an attempt the record already showed.
-   */
-  private witnessedCommitFor(lock: LockRecord): WitnessedCommit | undefined {
-    return this.venue
-      .commitsFor(lock.attemptId)
-      .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
-      .find((w) => isSignedCommit(w.commit, lock.holder));
-  }
-
-  /**
-   * Whether the record already shows this backing's half of an attempt
-   * committed: a valid commit witnessed while the lock was live. §C3's one
-   * predicate, read by the sequencer because the law cannot see the venue.
-   *
-   * Asked before any withdrawal of a lock is co-signed, on the submit path and
-   * the gap path alike. The law refuses a withdrawal while the lock is live and
-   * accepts one past the timeout — but a commit witnessed in time settles at
-   * any later index, so past the timeout both exits would otherwise stand open
-   * and a holder could free its half one message ahead of the receiver's
-   * settle (found reviewing 24c). A withdrawal asserts that nothing committed;
-   * the record, not the holder, says whether that is so.
-   */
-  private committedInTime(backing: Backing, attemptId: Uint8Array): boolean {
-    const lock = this.ledger.lockOf(backing, attemptId);
-    if (lock === undefined) return false;
-    const witnessed = this.witnessedCommitFor(lock);
-    return witnessed !== undefined && lockIsLive(lock, witnessed.at);
   }
 
   submitAcceptance(op: AcceptanceOp, signature: Uint8Array): Receipt {
@@ -645,9 +604,14 @@ export class Sequencer {
     const demand = this.ledger.demandOf(backing, op.demandHash);
     const terms =
       demand === undefined ? undefined : this.legTerms(backing, demand.holder, demand.quantity);
+    // Standing means the DEMAND HOLDER'S lock under the hash: a stranger's lock
+    // there is a squat, not a leg (found reviewing 24c), and a head that is a
+    // bundle lock has no legs at all.
+    const owner = demand?.holder;
     const standing = (hex: string): boolean => {
       const leg = this.backings.get(hex);
-      return leg !== undefined && this.ledger.hasLock(leg, op.demandHash);
+      const lock = leg === undefined ? undefined : this.ledger.lockOf(leg, op.demandHash);
+      return owner !== undefined && lock !== undefined && compareBytes(lock.holder, owner) === 0;
     };
     const targets = backing.reliance.map((entry) => bytesToHex(entry.target));
     const expected = new Set(kind === "release" ? targets : targets.filter(standing));
@@ -668,9 +632,12 @@ export class Sequencer {
       }
       if (kind === "release" && terms !== undefined) {
         const lock = this.ledger.lockOf(legBacking, op.demandHash);
-        if (lock === undefined) throw new SequencerError("a reliance leg is not locked");
-        const why = legMismatch(lock, terms.get(legBacking.nameHex) as LegTerms);
-        if (why !== undefined) throw new SequencerError(why);
+        // No lock: the law refuses the leg itself, and relabelling that here is
+        // the pre-check CLAUDE.md forbids.
+        if (lock !== undefined) {
+          const why = legMismatch(lock, terms.get(legBacking.nameHex) as LegTerms);
+          if (why !== undefined) throw new SequencerError(why);
+        }
       }
       const legOp: PublishedOp = {
         kind,
@@ -839,6 +806,21 @@ export class Sequencer {
     items: readonly { readonly backing: Backing; readonly op: PublishedOp }[],
     at: bigint = this.witnessedIndex(),
   ): Receipt {
+    // **A lock is prepared only where it can later be read, and only once.** Each
+    // lock item — prepared alone or as a leg of a set, this is the one gate —
+    // asks the venue for commits under its attempt: a venue that cannot serve
+    // them refuses here (VenueError), which is §C3's "a sequencer unwilling to
+    // watch it refuses to prepare", and a holder-signed commit already witnessed
+    // refuses the lock, because a lock under a committed attempt would settle on
+    // a commit adjudicated for an earlier lock — and answered by its receipt
+    // — and could never be withdrawn. That retires 24b's "commit before
+    // prepare": an attempt the record shows committed is not one a lock can
+    // still reserve for.
+    for (const item of items) {
+      if (item.op.kind === "lock" && witnessedCommitFor(this.venue, item.op) !== undefined) {
+        throw new SequencerError("that attempt is already committed at this venue: a lock needs a fresh id");
+      }
+    }
     // §C2: "Until then the predecessor's last commitment governs, no new
     // co-signatures issue." A successor that has taken over the state but not
     // yet committed it is not the operator yet, and a receipt from it would be
@@ -868,7 +850,8 @@ export class Sequencer {
     // A withdrawal of a lock asserts that its attempt did not commit. The record
     // decides that, not the holder: see committedInTime.
     for (const item of items) {
-      if (item.op.kind === "withdrawal" && this.committedInTime(item.backing, item.op.demandHash)) {
+      const lock = item.op.kind === "withdrawal" ? this.ledger.lockOf(item.backing, item.op.demandHash) : undefined;
+      if (lock !== undefined && committedInTime(this.venue, lock)) {
         throw new SequencerError("the attempt committed in time: settle it");
       }
     }

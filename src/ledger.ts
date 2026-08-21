@@ -158,11 +158,11 @@ export interface LockRecord {
 /**
  * §C3's lock predicate: "was a valid release witnessed **at or before** the lock
  * timeout?" At the timeout is inside; one past is not. Commit and release read
- * it, withdrawal reads its complement, and a lock is refused at creation unless
- * it is live then — so exactly one exit is open at every index, as release and
- * withdrawal are complements on `acceptanceIsLive` for a demand. One definition,
- * because the complement is the property: four hand-written inequalities agreed
- * until the withdrawal's was forgotten (24b, found in 24c's review).
+ * it, withdrawal reads its complement — three sites, one definition, so exactly
+ * one exit is open at every index, as release and withdrawal are complements on
+ * `acceptanceIsLive` for a demand. Creation asks a different question, that the
+ * timeout be strictly ahead, and keeps its own inequality. Three hand-written
+ * inequalities agreed until the withdrawal's was forgotten (24b, found in 24c).
  */
 export function lockIsLive(lock: { readonly timeout: bigint }, atWitnessedIndex: bigint): boolean {
   return atWitnessedIndex <= lock.timeout;
@@ -454,6 +454,10 @@ export function applyEntry(
         throw new LedgerError("insufficient balance");
       }
       const hash = sha256(message);
+      // The other door of the same rule: the hash is the demand's alone here.
+      if (state.locks.has(bytesToHex(hash))) {
+        throw new LedgerError("a lock already stands under this demand's hash on this backing");
+      }
       state.demands.set(bytesToHex(hash), {
         hash,
         holder: copyBytes(entry.holder),
@@ -473,12 +477,20 @@ export function applyEntry(
       if (state.locks.has(bytesToHex(entry.attemptId))) {
         throw new LedgerError("this attempt already has a lock on this backing");
       }
+      // A lock and a demand never share a hash on one backing. signerOf resolves
+      // a release or withdrawal lock-first, so a stranger's one-unit lock under a
+      // standing demand's hash would hijack the head's own exits (found reviewing
+      // 24c). Legs live on OTHER backings; on the demanded one the hash is the
+      // demand's alone.
+      if (state.demands.has(bytesToHex(entry.attemptId))) {
+        throw new LedgerError("a lock may not name a standing demand's hash on the demanded backing");
+      }
       if (spendable(state, entry.holder) < entry.quantity) {
         throw new LedgerError("insufficient balance");
       }
       // TIME. A lock whose timeout has already passed is an attempt that is over
       // before it starts, and would reserve units nothing could ever settle.
-      if (clock !== undefined && !lockIsLive(entry, clock)) {
+      if (clock !== undefined && entry.timeout <= clock) {
         throw new LedgerError("lock timeout is not ahead of the witnessed index");
       }
       state.locks.set(bytesToHex(entry.attemptId), {

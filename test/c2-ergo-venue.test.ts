@@ -12,7 +12,7 @@ import {
 } from "../src/ergo.js";
 import { encodePublishedOp } from "../src/oplog.js";
 import { encodeTransferMessage } from "../src/messages.js";
-import { encodeLock, type LockOp } from "../src/presentation.js";
+import { demandHash, encodeDemand, encodeLock, type DemandOp, type LockOp } from "../src/presentation.js";
 import { Sequencer } from "../src/sequencer.js";
 import { isSilent, provesHolding, quietFor } from "../src/recovery.js";
 import { VenueError } from "../src/venue.js";
@@ -407,5 +407,59 @@ describe("a sequencer on this venue refuses to prepare", () => {
     expect(() => sequencer.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice))).toThrow(
       VenueError,
     );
+  });
+});
+
+describe("and not as a leg of a set either", () => {
+  it("a demand whose legs would be locks is refused at the same gate", () => {
+    // The probe sits on submit, the one gate every lock passes — prepared alone
+    // or built by submitDemand as a reliance leg — because a probe on one door
+    // and not the other is the shape every review round here has found.
+    const gold = makeBacking({
+      obligor: KEYS.backer,
+      payout: { thing: "GOLD", quantumExponent: -2, perUnit: 100n },
+      reliance: [],
+      evidence: {
+        setting: "transparent",
+        operator: KEYS.operator,
+        witnessing: { venue: VENUE_ID, interval: 5n },
+      },
+    });
+    const eur = makeBacking({
+      obligor: KEYS.backer,
+      payout: { thing: "EUR", quantumExponent: -2, perUnit: 100n },
+      reliance: [{ target: gold.name, count: 2n }],
+      evidence: {
+        setting: "transparent",
+        operator: KEYS.operator,
+        witnessing: { venue: VENUE_ID, interval: 5n },
+      },
+    });
+    const sequencer = new Sequencer(SECRETS.operator, venue());
+    sequencer.register(gold, signBacking(SECRETS.backer, gold));
+    sequencer.register(eur, signBacking(SECRETS.backer, eur));
+    const demand: DemandOp = {
+      backing: eur,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: 0n,
+      deadline: 100n,
+      nonce: 0n,
+    };
+    const leg: LockOp = {
+      backing: gold,
+      attemptId: demandHash(demand),
+      holder: KEYS.alice,
+      beneficiary: KEYS.backer,
+      quantity: 80n,
+      timeout: 90n,
+      decisionVenue: VENUE_ID,
+      nonce: 0n,
+    };
+    expect(() =>
+      sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice), [
+        { op: leg, signature: ed25519.sign(encodeLock(leg), SECRETS.alice) },
+      ]),
+    ).toThrow(/does not sync commits/);
   });
 });

@@ -332,26 +332,34 @@ describe("§C3: what an attempt id is and is not", () => {
     expect(one.balance(eur, KEYS.bob)).toBe(40n);
   });
 
-  it("a commit witnessed before the lock still settles it, and that is the holder's affair", () => {
-    // Both signatures are the holder's, so committing before preparing is them
-    // choosing the order. It does not let anyone else force a partial bundle:
-    // only the holder's signature commits, and only their own locks move.
-    //
-    // **The receiver's discipline is the same as the backer's**: check every
-    // half is reserved before parting with value, exactly as accompanimentOf
-    // has a backer check the legs before it signs an acceptance. A bundle is
-    // whole because the receiver looked, not because the protocol could stop a
-    // holder locking only one half.
+  it("a lock under an attempt the venue already shows committed is refused", () => {
+    // 24b let a commit witnessed before the lock settle it, as "the holder
+    // choosing the order of their own two signatures". Retired in 24c's review:
+    // a lock under a committed attempt would settle on a commit adjudicated for
+    // an earlier lock — answered by that lock's receipt, so never applied — and
+    // could never be withdrawn, since the record shows it committed in time. An
+    // attempt the record shows committed is not one a lock can still reserve for;
+    // the holder picks a fresh id. Both doors, the same refusal.
     const { venue, one, two, eur, gold } = setup();
     venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
     venue.advance(5n);
-    const lock = lockFor(one, eur, venue, 40n);
-    one.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice));
-    one.settle(eur, ATTEMPT);
-    expect(one.balance(eur, KEYS.bob)).toBe(40n);
-    // And the half that was never reserved is untouched, which is what the
-    // receiver would have seen before handing anything over.
+    const early = lockFor(one, eur, venue, 40n);
+    expect(() => one.submitLock(early, ed25519.sign(encodeLock(early), SECRETS.alice))).toThrow(
+      /already committed/,
+    );
     expect(two.balance(gold, KEYS.bob)).toBe(0n);
+  });
+
+  it("and a relock under a settled attempt is refused by the same rule", () => {
+    const { venue, one, two, eur, gold } = setup();
+    prepare(venue, one, two, eur, gold);
+    venue.advance(3n);
+    venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
+    one.settle(eur, ATTEMPT);
+    const again = lockFor(one, eur, venue, 10n, ATTEMPT, 200n);
+    expect(() => one.submitLock(again, ed25519.sign(encodeLock(again), SECRETS.alice))).toThrow(
+      /already committed/,
+    );
   });
 });
 
