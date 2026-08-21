@@ -102,11 +102,46 @@ near — is part of every review round; "exactly one exit is open at every
 index", extended from demands (invariant-27) to locks (c3-atomic-bundle), is its
 executable form.
 
+**Regression-reviewing round two found five more, and closed them (round three).**
+The shape again, each time: one door guarded, the other not.
+
+- **The probe guarded `submitLock` and not `legSet`**, so a reliant demand at a
+  commits-refusing venue still took a leg that could then be neither settled nor
+  withdrawn. The probe sits on `submit` now, the one gate every lock passes.
+- **A lock under an attempt the venue already shows committed.** A relock under
+  a settled attempt could neither settle (the old commit's receipt answered it)
+  nor withdraw (the guard saw the old in-time commit); and a commit adjudicated
+  late for lock one was resurrected as in-time for a relock under the same id.
+  The same gate refuses a lock whenever a holder-signed commit under its
+  attempt is already witnessed — which **retires 24b's "commit before
+  prepare"**: an attempt the record shows committed is not one a lock can still
+  reserve for, and the holder picks a fresh id. This is "the nonce the commit
+  does not carry, bought otherwise", made true by the record rather than by
+  new state in the law.
+- **The verifier's gap fold applied the withdrawal the sequencer skipped**, so
+  `snapshotRedemptions` and the served state diverged (150 redeemed to one
+  reader, over-spent to the other). `committedInTime` and `witnessedCommitFor`
+  are exported readers in recovery.ts now, used by the sequencer on both its
+  paths and by `walkGap`, and `venue-refusal` holds them both to the rule.
+- **Squats.** Locks are keyed by attempt id alone, and the law resolved a
+  release or withdrawal lock-first, so one unit locked by a stranger under a
+  standing demand's hash ON THE DEMANDED BACKING hijacked the head's own exits;
+  and one locked on a LEG's backing, after the holder withdrew her expired leg,
+  counted as a standing leg and blocked the head. The law now keeps a lock and
+  a demand from ever sharing a hash on one backing; a standing leg is the
+  demand holder's own. The deeper fix — key locks by (attempt, holder) — is
+  recorded as open: the remaining nuisance is a squatted leg slot that makes
+  the holder withdraw and re-file, bounded by one round trip.
+- **The creation boundary had moved.** Reusing `lockIsLive` at lock creation
+  accepted a timeout equal to the current index; creation asks a different
+  question (strictly ahead) and keeps its own inequality. Pinned.
+
 **Open:** (1) `unservedRequests` counts only transfer requests, though §C3 says
 "a lock request left unserved is §C2b's non-service object" — slice 26, with
 the refusal aggregate (m', W'). (2) An operator that co-signs a withdrawal
 where the venue shows an in-time commit: provable from public data, no
-predicate in fault.ts yet. (3) The acceptance-vs-lock-timeout bound above.
+predicate in fault.ts yet. (3) The acceptance-vs-lock-timeout bound above. (4)
+Locks keyed by (attempt, holder), which would end the leg-slot squat.
 
 **Spec change:** none needed. §C3's "expired locks unlock unilaterally" and
 "effective on witnessing rather than delivery" already say it; the

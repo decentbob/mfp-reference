@@ -85,14 +85,19 @@ the rule still stands.
   `accompanimentOf`, which the backer asks before it signs an acceptance. **A
   lock carries §C3's timeout**, and it is the one predicate both exits read
   (`lockIsLive`): at or before it a commit can still settle the set and no
-  withdrawal is accepted; past it no commit reaches it and withdrawal is the exit
-  — exactly one open at every index **per record**, as for a demand on its
-  acceptance (a set of records can have both closed, within the holder's own
-  declared window). The law reads the clock; whether the record already shows a
-  half committed is the sequencer's to read before it co-signs a withdrawal, on
-  the submit path and the gap path alike. Every TIME rule is a refusal and never
-  a balance, because the clock is undefined on a replay and a lock that freed
-  its own units would make an honest history unreplayable. Quantities are whole
+  withdrawal is accepted; a commit witnessed past it does not reach it, and
+  withdrawal is then the exit — unless the record already shows a commit
+  witnessed in time, which every reader asks before freeing anything
+  (`committedInTime`: the sequencer before it co-signs a withdrawal, on the
+  submit path and the gap path alike, and the verifier's gap fold). Exactly one
+  exit is open at every index **per record**, as for a demand on its acceptance
+  (a set of records can have both closed, within the holder's own declared
+  window). A lock and a demand never share a hash on one backing, and a lock is
+  prepared only where the sequencer can read the commits it may settle on and
+  only for an attempt the record does not already show committed. Every TIME
+  rule is a refusal and never a balance, because the clock is undefined on a
+  replay and a lock that freed its own units would make an honest history
+  unreplayable. Quantities are whole
   numbers of the backing's declared unit; counts in R are whole. Reliance is
   a conjunction over a fixed list with constant counts — no disjunction, no
   computed membership. Reliance names backings and chain assets only.
