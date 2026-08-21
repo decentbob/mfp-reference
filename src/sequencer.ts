@@ -41,9 +41,16 @@
 // so adoption is reproducible by anyone holding the same record — the sequencer
 // asserts nothing about when.
 //
-// NOTE (later slices, see DECISIONS.md): dated instruments, multi-sequencer
-// transfers, and prepare–decide–commit (§C3's atomicity across operators) are
-// out of scope.
+// **Two ways to move value, and the parties pick per trade.** §C2: "Two honest
+// answers, pick one. Extend §C3's prepare-decide-commit to any multi-sequencer
+// transfer, at a round trip per payment. Or let payees accept partial-and-retry
+// and price it, as card networks do." `submitTransfer` is the second — one
+// sequencer, final on its co-signature, and what every trade with recourse
+// wants. `submitLock` and `settle` are the first, for a bundle that must move
+// entire or not at all.
+//
+// NOTE (later slices, see DECISIONS.md): dated instruments and the refusal
+// aggregate (m', W') are out of scope.
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
