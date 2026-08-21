@@ -70,7 +70,6 @@ import {
 import {
   decodeCommit,
   encodeCommit,
-  isSignedCommit,
   type Commit,
 } from "./presentation.js";
 import {

@@ -169,7 +169,7 @@ function surface() {
     ["gapLegsFor", () => gapLegsFor(refusing, backing)],
     ["quietFor", () => quietFor(refusing, KEYS.operator)],
     ["replayServedState", () => replayServedState(backing, refusing, served)],
-    ["witnessedCommitFor", () => witnessedCommitFor(refusing, { attemptId: new Uint8Array(32), holder: KEYS.alice })],
+    ["witnessedCommitFor", () => witnessedCommitFor(refusing, { attemptId: new Uint8Array(32), parties: [KEYS.alice] })],
     [
       "committedInTime",
       () =>
@@ -180,6 +180,7 @@ function surface() {
           quantity: 1n,
           timeout: 10n,
           decisionVenue: refusing.id,
+          parties: [KEYS.alice],
           nonce: 0n,
         }),
     ],

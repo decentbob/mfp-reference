@@ -119,6 +119,19 @@ export class Sequencer {
   // eventual commitment has finalized.
   private readonly receipts = new Map<string, Receipt>();
 
+  /**
+   * The receipts map is keyed by BACKING and operation hash. For every operation
+   * but the commit the backing name is inside the signed message, so the hash
+   * alone is per backing already; a commit names no backing, deliberately, and
+   * the same bytes are the same operation in every log of an exchange — so
+   * under one operator serving several of those backings the hash alone would
+   * answer the second backing's settle with the first's receipt and apply
+   * nothing (found building slice 25's three-party ring).
+   */
+  private receiptKey(backing: Backing, opHash: Uint8Array): string {
+    return backing.nameHex + ":" + bytesToHex(opHash);
+  }
+
   // Backing name hex -> this sequencer's own copy. Adoption needs the terms —
   // the silence duration in E is what dates a gap — and `commit` needs to reach
   // every backing it serves without the ledger handing out a Backing object,
@@ -360,7 +373,7 @@ export class Sequencer {
 
   private adoptOne(backing: Backing, op: PublishedOp, at: bigint): void {
     if (!this.mayAdopt(backing, op)) return;
-    const key = bytesToHex(opHashOfEntry(backing.name, op));
+    const key = this.receiptKey(backing, opHashOfEntry(backing.name, op));
     if (this.receipts.has(key)) return;
     // Skipped for the reason submit refuses it: the record shows this half
     // committed, and a gap is not a way around the record.
@@ -480,6 +493,7 @@ export class Sequencer {
       quantity: op.quantity,
       timeout: op.timeout,
       decisionVenue: op.decisionVenue,
+      parties: op.parties,
       nonce: op.nonce,
       signature,
     };
@@ -509,7 +523,7 @@ export class Sequencer {
     const asOp = (commit: Commit): PublishedOp => ({
       kind: "commit",
       attemptId: commit.attemptId,
-      signature: commit.signature,
+      signatures: commit.signatures,
     });
     const lock = this.ledger.lockOf(held, attemptId);
     const witnessed =
@@ -521,7 +535,7 @@ export class Sequencer {
           // what is looked for.
           this.venue
             .commitsFor(attemptId)
-            .find((w) => this.receipts.has(bytesToHex(opHashOfEntry(held.name, asOp(w.commit)))));
+            .find((w) => this.receipts.has(this.receiptKey(held, opHashOfEntry(held.name, asOp(w.commit)))));
     if (witnessed === undefined) {
       // Two answers, not one: a caller told the commit is missing would go to
       // the venue for an object that is there.
@@ -698,6 +712,7 @@ export class Sequencer {
         quantity: supplied.op.quantity,
         timeout: supplied.op.timeout,
         decisionVenue: supplied.op.decisionVenue,
+        parties: supplied.op.parties,
         nonce: supplied.op.nonce,
         signature: supplied.signature,
       };
@@ -817,7 +832,7 @@ export class Sequencer {
     // 24b's "commit before prepare". A lock already co-signed here is answered
     // as every repeat is (invariant 26), whatever the record shows since.
     items.forEach((item, i) => {
-      if (item.op.kind !== "lock" || this.receipts.has(bytesToHex(hashes[i] as Uint8Array))) return;
+      if (item.op.kind !== "lock" || this.receipts.has(this.receiptKey(item.backing, hashes[i] as Uint8Array))) return;
       if (compareBytes(item.op.decisionVenue, this.venue.id) !== 0) {
         throw new SequencerError("this sequencer does not watch that decision venue");
       }
@@ -843,7 +858,7 @@ export class Sequencer {
     // Keyed on the FIRST operation, which is the one the caller asked for: a
     // demand and its locks are one act, so a replay of the demand answers for
     // the set exactly as it was accepted (invariant 26).
-    const key = bytesToHex(hashes[0] as Uint8Array);
+    const key = this.receiptKey((items[0] as { readonly backing: Backing }).backing, hashes[0] as Uint8Array);
     const existing = this.receipts.get(key);
     // A copy on both paths: the stored receipt is the operator's record of what
     // it co-signed, and a caller that could reach into it would decide what
@@ -870,7 +885,12 @@ export class Sequencer {
     // Every accepted operation is co-signed, legs included: an operator cannot
     // deny having taken one, and the holder's reservation is as attributable as
     // the demand it accompanies.
-    receipts.forEach((receipt, i) => this.receipts.set(bytesToHex(hashes[i] as Uint8Array), receipt));
+    receipts.forEach((receipt, i) =>
+      this.receipts.set(
+        this.receiptKey((items[i] as { readonly backing: Backing }).backing, hashes[i] as Uint8Array),
+        receipt,
+      ),
+    );
     return copyReceipt(receipts[0] as Receipt);
   }
 }

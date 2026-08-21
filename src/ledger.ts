@@ -45,6 +45,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { makeBacking, verifyBackingSignature, type Backing } from "./backing.js";
 import { compareBytes, copyBytes, MAX_QUANTITY_EXCLUSIVE } from "./bytes.js";
+import { commitSatisfies } from "./presentation.js";
 import { isValidPublicKey, verifySignatureStrict } from "./keys.js";
 import {
   copyOp,
@@ -152,6 +153,8 @@ export interface LockRecord {
   readonly timeout: bigint;
   /** The venue whose clock the timeout is read on, and where a commit must appear. */
   readonly decisionVenue: Uint8Array;
+  /** The keys whose signatures on the commit convert this lock, the holder among them (C1: "all sign"). */
+  readonly parties: readonly Uint8Array[];
   readonly nonce: bigint;
 }
 
@@ -220,6 +223,7 @@ function copyLock(record: LockRecord): LockRecord {
     holder: copyBytes(record.holder),
     beneficiary: copyBytes(record.beneficiary),
     decisionVenue: copyBytes(record.decisionVenue),
+    parties: record.parties.map(copyBytes),
   };
 }
 
@@ -312,13 +316,6 @@ export function signerFromTerms(backing: Backing, entry: PublishedOp): Uint8Arra
  * applyEntry expects a LedgerError.
  */
 function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uint8Array {
-  if (entry.kind === "commit") {
-    // Whoever reserved these units is the only party who may commit them, and
-    // the lock is where that is written. No lock, nothing to commit.
-    const lock = state.locks.get(bytesToHex(entry.attemptId));
-    if (lock === undefined) throw new LedgerError("no lock on this backing for that attempt");
-    return copyBytes(lock.holder);
-  }
   if (entry.kind === "release" || entry.kind === "withdrawal") {
     // In this backing's own state one of the two exists, never both: a demand
     // where this IS the demanded backing, a lock where it is one of its legs.
@@ -371,16 +368,23 @@ export function applyEntry(
   entry: PublishedOp,
   clock: bigint | undefined,
 ): void {
-  const signer = signerOf(state, backing, entry);
-  const signerHex = bytesToHex(signer);
-  // **A commit carries no nonce, and it is the only operation that does not.**
-  // One signature has to be valid in every backing of a bundle at once, and a
-  // nonce is per (signer, backing) — so there is no single value it could carry.
-  // What a nonce buys is bought otherwise here: a repeat is a no-op because the
-  // lock it settles is gone, and it can only touch an attempt its own holder
-  // named in a lock. See presentation.ts.
+  // **The commit is signed by every party the LOCK names**, and carries no nonce.
+  // One object has to be valid in every log of an exchange at once, and a nonce
+  // is per (signer, backing) — so there is no single signer and no single value
+  // it could carry. What a nonce buys is bought otherwise: a repeat is a no-op
+  // because the lock it settles is gone, and it can only reach an attempt its
+  // own parties named in a lock. See presentation.ts.
+  if (entry.kind === "commit") {
+    const lock = state.locks.get(bytesToHex(entry.attemptId));
+    if (lock === undefined) throw new LedgerError("no lock on this backing for that attempt");
+    if (!commitSatisfies(entry, lock.parties)) {
+      throw new LedgerError("the commit is not signed by every party to this lock");
+    }
+  }
+  const signer = entry.kind === "commit" ? undefined : signerOf(state, backing, entry);
   let expected: bigint | undefined;
-  if (entry.kind !== "commit") {
+  if (entry.kind !== "commit" && signer !== undefined) {
+    const signerHex = bytesToHex(signer);
     expected = state.nonces.get(signerHex) ?? 0n;
     if (entry.nonce !== expected) {
       throw new NonceError(
@@ -396,7 +400,7 @@ export function applyEntry(
   // since verification is strict, so no separate key check is needed for a
   // signer. Keys that sign nothing still need one.
   const message = opMessageOfEntry(backing.name, entry);
-  if (!verifySignatureStrict(entry.signature, message, signer)) {
+  if (signer !== undefined && entry.kind !== "commit" && !verifySignatureStrict(entry.signature, message, signer)) {
     throw new LedgerError(SIGNATURE_REFUSAL[entry.kind]);
   }
 
@@ -493,6 +497,12 @@ export function applyEntry(
       if (clock !== undefined && entry.timeout <= clock) {
         throw new LedgerError("lock timeout is not ahead of the witnessed index");
       }
+      // The holder consents twice, at the lock and on the commit: a lock whose
+      // holder is not among its parties would hand units over on others'
+      // signatures alone.
+      if (!entry.parties.some((party) => compareBytes(party, entry.holder) === 0)) {
+        throw new LedgerError("a lock's holder must be one of its parties");
+      }
       state.locks.set(bytesToHex(entry.attemptId), {
         attemptId: copyBytes(entry.attemptId),
         holder: copyBytes(entry.holder),
@@ -500,6 +510,7 @@ export function applyEntry(
         quantity: entry.quantity,
         timeout: entry.timeout,
         decisionVenue: copyBytes(entry.decisionVenue),
+        parties: entry.parties.map(copyBytes),
         nonce: entry.nonce,
       });
       break;
@@ -644,7 +655,7 @@ export function applyEntry(
   }
   // Advanced for every kind that consumed one, which is every kind but the
   // commit — see above for the one reason it has none.
-  if (expected !== undefined) state.nonces.set(signerHex, expected + 1n);
+  if (expected !== undefined && signer !== undefined) state.nonces.set(bytesToHex(signer), expected + 1n);
 }
 
 /**

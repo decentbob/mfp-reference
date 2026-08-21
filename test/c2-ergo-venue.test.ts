@@ -399,6 +399,7 @@ describe("a sequencer on this venue refuses to prepare", () => {
       quantity: 1n,
       timeout: 100n,
       decisionVenue: VENUE_ID,
+      parties: [KEYS.alice],
       nonce: 0n,
     };
     expect(() => sequencer.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice))).toThrow(
@@ -454,6 +455,7 @@ describe("and not as a leg of a set either", () => {
       quantity: 80n,
       timeout: 90n,
       decisionVenue: VENUE_ID,
+      parties: [KEYS.alice],
       nonce: 0n,
     };
     expect(() =>

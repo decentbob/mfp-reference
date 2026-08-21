@@ -95,6 +95,7 @@ function present(
     quantity: quantity * 2n,
     timeout: LOCK_TIMEOUT,
     decisionVenue: venue.id,
+    parties: [KEYS.alice],
     nonce: sequencer.nextNonce(KEYS.alice, gold),
   };
   return {
@@ -415,6 +416,7 @@ describe("§C3: the set's shape is read where it settles, not only where it is f
       quantity: 1n,
       timeout: 200n,
       decisionVenue: venue.id,
+      parties: [KEYS.alice],
       nonce: sequencer.nextNonce(KEYS.alice, gold),
     };
     sequencer.submitLock(junk, ed25519.sign(encodeLock(junk), SECRETS.alice));
@@ -449,6 +451,7 @@ describe("§C3: the set's shape is read where it settles, not only where it is f
       quantity: 40n,
       timeout: 10n,
       decisionVenue: venue.id,
+      parties: [KEYS.alice],
       nonce: sequencer.nextNonce(KEYS.alice, eur),
     };
     sequencer.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice));
@@ -479,6 +482,7 @@ describe("§C3: a stranger's lock under a demand's hash is a squat, not a leg", 
       quantity: 1n,
       timeout: 10_000n,
       decisionVenue: venue.id,
+      parties: [KEYS.mallory],
       nonce: sequencer.nextNonce(KEYS.mallory, eur),
     };
     expect(() => sequencer.submitLock(squat, ed25519.sign(encodeLock(squat), SECRETS.mallory))).toThrow(
@@ -516,6 +520,7 @@ describe("§C3: a stranger's lock under a demand's hash is a squat, not a leg", 
       quantity: 1n,
       timeout: 10_000n,
       decisionVenue: venue.id,
+      parties: [KEYS.mallory],
       nonce: sequencer.nextNonce(KEYS.mallory, gold),
     };
     sequencer.submitLock(squat, ed25519.sign(encodeLock(squat), SECRETS.mallory));

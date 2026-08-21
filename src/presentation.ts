@@ -35,7 +35,7 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { type Backing } from "./backing.js";
-import { bigintToMinimalBytes, ByteReader, ByteWriter, copyBytes, validateQuantity } from "./bytes.js";
+import { EncodingError, compareBytes, bigintToMinimalBytes, ByteReader, ByteWriter, copyBytes, validateQuantity } from "./bytes.js";
 import { verifySignatureStrict } from "./keys.js";
 import {
   ACCEPTANCE_CONTEXT,
@@ -134,6 +134,14 @@ export interface LockOp {
    * "which is an abort rather than a fork".
    */
   readonly decisionVenue: Uint8Array;
+  /**
+   * §C1's "all sign": the keys whose signatures on the commit convert this
+   * lock. A sorted set of 1..16, the holder among them; `[holder]` alone is 24b's
+   * one-party bundle, and a presentation's legs carry exactly that. Signed into
+   * the lock, so what counts as the whole exchange is fixed when the units are
+   * reserved and a partial object settles nothing anywhere.
+   */
+  readonly parties: readonly Uint8Array[];
   readonly nonce: bigint;
 }
 
@@ -158,9 +166,16 @@ export interface LockOp {
  * named in a lock. Both departures are the price of "one object", and they are
  * the only two.
  */
+/** One party's signature on a commit, with the key that made it. */
+export interface CommitSignature {
+  readonly signer: Uint8Array;
+  readonly signature: Uint8Array;
+}
+
 export interface Commit {
   readonly attemptId: Uint8Array;
-  readonly signature: Uint8Array;
+  /** Sorted by signer, no repeats: the object has one spelling. */
+  readonly signatures: readonly CommitSignature[];
 }
 
 /** A holder ending an unanswered demand — the protection against stalling. */
@@ -246,6 +261,7 @@ export function encodeLockMessage(
   quantity: bigint,
   timeout: bigint,
   decisionVenue: Uint8Array,
+  parties: readonly Uint8Array[],
   nonce: bigint,
 ): Uint8Array {
   validateQuantity(quantity, "lock quantity");
@@ -258,6 +274,7 @@ export function encodeLockMessage(
   w.lengthPrefixed(bigintToMinimalBytes(quantity));
   w.u64(timeout);
   w.key32(decisionVenue, "decision venue");
+  writeKeySet(w, parties, "lock parties");
   w.u64(nonce);
   return w.finish();
 }
@@ -270,19 +287,83 @@ export function commitMessage(attemptId: Uint8Array): Uint8Array {
   return w.finish();
 }
 
-/** Commit an attempt. Idempotent by construction: the bytes never vary. */
-export function signCommit(holderSecret: Uint8Array, attemptId: Uint8Array): Commit {
+/** At most this many keys in a lock's party set or a commit: a bound on framing, not a policy. */
+export const MAX_PARTIES = 16;
+
+/** A sorted set of 1..MAX_PARTIES keys, or an EncodingError: one spelling per set. */
+function validateKeySet(keys: readonly Uint8Array[], what: string): void {
+  if (keys.length === 0 || keys.length > MAX_PARTIES) {
+    throw new EncodingError(`${what}: 1..${MAX_PARTIES} keys`);
+  }
+  keys.forEach((key, i) => {
+    if (i > 0 && compareBytes(keys[i - 1] as Uint8Array, key) >= 0) {
+      throw new EncodingError(`${what}: keys must be strictly ascending`);
+    }
+  });
+}
+
+function writeKeySet(w: ByteWriter, keys: readonly Uint8Array[], what: string): void {
+  validateKeySet(keys, what);
+  for (const key of keys) w.key32(key, what);
+}
+
+/**
+ * The signature list of a commit, as every record of one writes it: count, then
+ * each signer and signature, signers a sorted set. ONE codec for the venue record
+ * (encodeCommit) and the log record (oplog.ts), so the two cannot disagree on
+ * what is canonical.
+ */
+export function writeCommitSignatures(w: ByteWriter, signatures: readonly CommitSignature[]): void {
+  validateKeySet(signatures.map((s) => s.signer), "commit signers");
+  w.u8(signatures.length);
+  for (const s of signatures) {
+    w.key32(s.signer, "commit signer");
+    w.fixed(s.signature, 64, "commit signature");
+  }
+}
+
+/** Strict inverse of writeCommitSignatures. Throws EncodingError on anything else. */
+export function readCommitSignatures(r: ByteReader): CommitSignature[] {
+  const count = r.u8();
+  const signatures: CommitSignature[] = [];
+  for (let i = 0; i < count; i++) signatures.push({ signer: r.raw(32), signature: r.raw(64) });
+  validateKeySet(signatures.map((s) => s.signer), "commit signers");
+  return signatures;
+}
+
+function pubOf(secret: Uint8Array): Uint8Array {
+  return ed25519.getPublicKey(secret);
+}
+
+/** Sign an attempt as one party. The bytes never vary, so a repeat is the same object. */
+export function signCommit(secret: Uint8Array, attemptId: Uint8Array): Commit {
+  const signer = pubOf(secret);
   return {
     attemptId: copyBytes(attemptId),
-    signature: ed25519.sign(commitMessage(attemptId), holderSecret),
+    signatures: [{ signer, signature: ed25519.sign(commitMessage(attemptId), secret) }],
   };
 }
 
-/** A commit as a record, for a venue that stores bytes: attempt, then signature. */
+/**
+ * Add a party's signature to a commit. §C1: "all sign... The fully signed
+ * exchange object is the release, publishable by any participant." Each party
+ * signs the same bytes, so the object is assembled in any order by anyone, and
+ * signing twice changes nothing.
+ */
+export function countersignCommit(commit: Commit, secret: Uint8Array): Commit {
+  const mine = { signer: pubOf(secret), signature: ed25519.sign(commitMessage(commit.attemptId), secret) };
+  const rest = commit.signatures.filter((s) => compareBytes(s.signer, mine.signer) !== 0);
+  return {
+    attemptId: copyBytes(commit.attemptId),
+    signatures: [...rest, mine].sort((a, b) => compareBytes(a.signer, b.signer)),
+  };
+}
+
+/** A commit as a record, for a venue that stores bytes: attempt, then each signer and signature. */
 export function encodeCommit(commit: Commit): Uint8Array {
   const w = new ByteWriter();
   w.key32(commit.attemptId, "attempt id");
-  w.fixed(commit.signature, 64, "signature");
+  writeCommitSignatures(w, commit.signatures);
   return w.finish();
 }
 
@@ -290,15 +371,24 @@ export function encodeCommit(commit: Commit): Uint8Array {
 export function decodeCommit(bytes: Uint8Array): Commit {
   const r = new ByteReader(bytes);
   const attemptId = r.raw(32);
-  const signature = r.raw(64);
+  const signatures = readCommitSignatures(r);
   r.expectEnd();
-  return { attemptId, signature };
+  return { attemptId, signatures };
 }
 
-/** Whether this is a valid commit of that attempt by that key. A verifier. */
-export function isSignedCommit(commit: Commit, holder: Uint8Array): boolean {
+/**
+ * Whether every one of these parties has a valid signature in the commit. A
+ * verifier: never throws, and extra signatures by strangers change nothing.
+ */
+export function commitSatisfies(commit: Commit, parties: readonly Uint8Array[]): boolean {
   try {
-    return verifySignatureStrict(commit.signature, commitMessage(commit.attemptId), holder);
+    // Presence first, across every party, before a single verify: a partial
+    // object is refused for the price of a few compares, not of k-1 verifies,
+    // and it is the shape anyone may publish under any attempt id.
+    const mine = parties.map((party) => commit.signatures.find((s) => compareBytes(s.signer, party) === 0));
+    if (mine.some((s) => s === undefined)) return false;
+    const message = commitMessage(commit.attemptId);
+    return mine.every((s, i) => verifySignatureStrict((s as CommitSignature).signature, message, parties[i] as Uint8Array));
   } catch {
     return false;
   }
@@ -313,6 +403,7 @@ export function encodeLock(op: LockOp): Uint8Array {
     op.quantity,
     op.timeout,
     op.decisionVenue,
+    op.parties,
     op.nonce,
   );
 }

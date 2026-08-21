@@ -78,7 +78,10 @@ the rule still stands.
   prepare-decide-commit, generalised to any bundle): the holder reserves at each
   sequencer, then publishes ONE commit at a decision venue, and each sequencer
   settles its own half against that witnessed object without hearing from the
-  others. Which branch a trade uses is the parties' choice — §C2's other honest
+  others. **§C1's n-party exchange is the same mechanism**: each lock names its
+  parties, one object carries every signature, and a sequencer converts its lock
+  only when every party its lock names has signed — so a partial object settles
+  nothing anywhere, and 24b's bundle is the one-party case. Which branch a trade uses is the parties' choice — §C2's other honest
   answer, partial-and-retry, is the ordinary transfer path and covers every trade
   where both sides have recourse. The law stays per backing, so whether
   a demand's legs were locked is read across the served state by
@@ -130,11 +133,13 @@ the rule still stands.
   unprovable.
 - **Every operation is signed by the party the law names, over that backing's
   own message, at that signer's next nonce — except the commit.** §C3's commit
-  names no backing and carries no nonce, because one signature has to be valid in
-  every log of a bundle at once and a nonce is per (signer, backing). Those are
-  the only two departures in the system, they are what "one object" costs, and
-  they are safe only here: a repeat is a no-op because the lock it settles is
-  gone, and it can only reach an attempt its own holder named in a lock. Do not
+  names no backing, carries no nonce, and is signed by **every party the lock
+  names** (§C1's "all sign") rather than by one signer the law names, because one
+  object has to be valid in every log of an exchange at once and a nonce is per
+  (signer, backing). Those are the only departures in the system, they are what
+  "one object" costs, and they are safe only here: a repeat is a no-op because
+  the lock it settles is gone, and it can only reach an attempt its own parties
+  named in a lock. Do not
   add a third without the same kind of reason. See [[DECISIONS.md]].
 - **Swaps and presentation are idempotent** (inv 26). A repeated request
   returns the identical prior response. A crash must lose nothing. The

@@ -41,6 +41,9 @@ import {
 } from "./messages.js";
 import {
   commitMessage,
+  readCommitSignatures,
+  type CommitSignature,
+  writeCommitSignatures,
   encodeAcceptanceMessage,
   encodeDemandMessage,
   encodeLockMessage,
@@ -128,6 +131,7 @@ export type PublishedOp =
       readonly quantity: bigint;
       readonly timeout: bigint;
       readonly decisionVenue: Uint8Array;
+      readonly parties: readonly Uint8Array[];
       readonly nonce: bigint;
       readonly signature: Uint8Array;
     }
@@ -140,7 +144,8 @@ export type PublishedOp =
        */
       readonly kind: "commit";
       readonly attemptId: Uint8Array;
-      readonly signature: Uint8Array;
+      /** Every signer and signature; the lock it settles says which must be there. */
+      readonly signatures: readonly CommitSignature[];
     };
 
 /**
@@ -212,6 +217,7 @@ export function opMessageOfEntry(backingName: Uint8Array, entry: PublishedOp): U
         entry.quantity,
         entry.timeout,
         entry.decisionVenue,
+        entry.parties,
         entry.nonce,
       );
     // The backing name is not written, and that is the point: the same bytes are
@@ -238,12 +244,22 @@ export function opHashOfEntry(backingName: Uint8Array, entry: PublishedOp): Uint
  * this record is that message with the signature that authorised it.
  *
  * The backing name is inside the message, so a record stands alone: nothing
- * beside it says which backing it belongs to and can disagree.
+ * beside it says which backing it belongs to and can disagree. The one
+ * exception is the commit's record: its message names no backing by design
+ * (the same bytes are this operation in every log of an exchange), so the log
+ * it sits in is what says which backing it belongs to — and decodePublishedOp
+ * hands back no name for it.
  */
 export function encodePublishedOp(backingName: Uint8Array, op: PublishedOp): Uint8Array {
   const w = new ByteWriter();
   w.lengthPrefixed(opMessageOfEntry(backingName, op));
-  w.fixed(op.signature, SIGNATURE_LENGTH, "signature");
+  if (op.kind === "commit") {
+    // The one operation with several signatures, framed as its record at the
+    // venue is: count, then each signer and signature (presentation.ts).
+    writeCommitSignatures(w, op.signatures);
+  } else {
+    w.fixed(op.signature, SIGNATURE_LENGTH, "signature");
+  }
   return w.finish();
 }
 
@@ -272,6 +288,14 @@ function readQuantity(r: ByteReader): bigint {
   return minimalBytesToBigint(r.lengthPrefixed(MAX_QUANTITY_BYTES));
 }
 
+/** A key set as a lock message writes it: count, then keys. Canonical form is the re-encode's to check. */
+function readKeySet(r: ByteReader): Uint8Array[] {
+  const count = r.u8();
+  const keys: Uint8Array[] = [];
+  for (let i = 0; i < count; i++) keys.push(r.raw(32));
+  return keys;
+}
+
 /**
  * Strict inverse of encodePublishedOp: accepts exactly the canonical bytes and
  * nothing else, and hands back the backing name the message names alongside the
@@ -286,13 +310,12 @@ function readQuantity(r: ByteReader): bigint {
  * exactly one spelling.
  */
 export function decodePublishedOp(bytes: Uint8Array): {
-  readonly backingName: Uint8Array;
+  /** The backing the message names — none for a commit, whose message names none by design. */
+  readonly backingName: Uint8Array | undefined;
   readonly op: PublishedOp;
 } {
   const outer = new ByteReader(bytes);
   const message = outer.lengthPrefixed(1 << 16);
-  const signature = outer.raw(SIGNATURE_LENGTH);
-  outer.expectEnd();
 
   const found = OP_CONTEXTS.find(
     ([context]) =>
@@ -301,9 +324,17 @@ export function decodePublishedOp(bytes: Uint8Array): {
   );
   if (found === undefined) throw new EncodingError("no known operation context");
   const [context, kind] = found;
+  // The signature material follows the message and depends on the kind: one
+  // signature for every operation but the commit, which carries each signer.
+  const signature = kind === "commit" ? new Uint8Array(0) : outer.raw(SIGNATURE_LENGTH);
+  const signatures = kind === "commit" ? readCommitSignatures(outer) : [];
+  outer.expectEnd();
 
   const r = new ByteReader(message.subarray(context.length));
-  const backingName = r.raw(32);
+  // Every message but the commit's opens with the backing it is for; a commit's
+  // is the same bytes in every log of an exchange, so the record alone cannot
+  // say which log it belongs to — the log it sits in says that.
+  const backingName = kind === "commit" ? undefined : r.raw(32);
   const op = ((): PublishedOp => {
     switch (kind) {
       case "issue": {
@@ -345,18 +376,20 @@ export function decodePublishedOp(bytes: Uint8Array): {
           quantity,
           timeout,
           decisionVenue: r.raw(32),
+          parties: readKeySet(r),
           nonce: r.u64(),
           signature,
         };
       }
       case "commit":
-        return { kind, attemptId: r.raw(32), signature };
+        return { kind, attemptId: r.raw(32), signatures };
     }
   })();
   r.expectEnd();
   // The message is the only description of the operation, so the round trip is
   // what proves this decoder is its inverse rather than a second reading of it.
-  if (compareBytes(encodePublishedOp(backingName, op), bytes) !== 0) {
+  // (A commit writes no name, so any name re-encodes it; the bytes are what is checked.)
+  if (compareBytes(encodePublishedOp(backingName ?? new Uint8Array(32), op), bytes) !== 0) {
     throw new EncodingError("published operation is not canonical");
   }
   return { backingName, op };
@@ -392,13 +425,14 @@ export function copyOp(entry: PublishedOp): PublishedOp {
         holder: copyBytes(entry.holder),
         beneficiary: copyBytes(entry.beneficiary),
         decisionVenue: copyBytes(entry.decisionVenue),
+        parties: entry.parties.map(copyBytes),
         signature: copyBytes(entry.signature),
       };
     case "commit":
       return {
         ...entry,
         attemptId: copyBytes(entry.attemptId),
-        signature: copyBytes(entry.signature),
+        signatures: entry.signatures.map((s) => ({ signer: copyBytes(s.signer), signature: copyBytes(s.signature) })),
       };
   }
   return unknownOpKind(entry);
