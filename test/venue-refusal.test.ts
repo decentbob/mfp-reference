@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from "node:fs";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
 import { makeBacking } from "../src/backing.js";
@@ -7,6 +8,8 @@ import { encodeTransferMessage } from "../src/messages.js";
 import { isOperatorReceipt, receiptStatus, type Receipt } from "../src/receipt.js";
 import {
   committedOutstanding,
+  gapLegsFor,
+  quietFor,
   isNonServing,
   isOverdue,
   isSilent,
@@ -17,7 +20,13 @@ import {
   stateIsAuthentic,
   unservedRequests,
 } from "../src/recovery.js";
-import { isAnOperator, isNamedSuccessor, operatorAt, operatorsOf } from "../src/replacement.js";
+import {
+  isAnOperator,
+  isNamedSuccessor,
+  operatorAt,
+  operatorsOf,
+  successionOf,
+} from "../src/replacement.js";
 import { revokedAt } from "../src/revocation.js";
 import { LocalVenue, VenueError, type Venue } from "../src/venue.js";
 import { KEYS, SECRETS } from "./support.js";
@@ -149,7 +158,38 @@ function surface() {
     ["standingOutstanding", () => standingOutstanding(backing, refusing, served)],
     ["redemptionIsOpen", () => redemptionIsOpen(refusing, backing, served, KEYS.alice, 1n)],
     ["snapshotRedemptions", () => snapshotRedemptions(refusing, backing, served)],
+    ["successionOf", () => successionOf(backing, refusing)],
+    ["gapLegsFor", () => gapLegsFor(refusing, backing)],
+    ["quietFor", () => quietFor(refusing, KEYS.operator)],
   ] as const;
+}
+
+/**
+ * The exceptions, named rather than omitted: these take a Venue and read nothing
+ * a partial view could be missing, so there is no refusal for them to swallow.
+ */
+const NEVER_REFUSES = new Set(["venueIsDeclared"]);
+
+/**
+ * Every exported function in `src` whose signature takes a Venue, read out of
+ * the source rather than remembered.
+ *
+ * A hand-kept list is the thing this whole slice exists to stop trusting: the
+ * first draft of the list below missed three of twenty-four, which is the same
+ * failure the rule itself keeps having. contexts.ts asserts its tags are
+ * prefix-free rather than assuming it; this asserts the surface is covered.
+ */
+function exportedVenueReaders(): string[] {
+  const dir = new URL("../src/", import.meta.url);
+  const names: string[] = [];
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith(".ts")) continue;
+    const source = readFileSync(new URL(file, dir), "utf8");
+    for (const match of source.matchAll(/export function (\w+)\(([^)]*)\)/gs)) {
+      if ((match[2] as string).includes("Venue")) names.push(match[1] as string);
+    }
+  }
+  return names;
 }
 
 describe("a venue that declines to answer is never a verdict", () => {
@@ -158,6 +198,18 @@ describe("a venue that declines to answer is never a verdict", () => {
       expect(call).toThrow(VenueError);
     });
   }
+});
+
+describe("and the list is the whole surface, checked rather than trusted", () => {
+  it("covers every exported function that takes a Venue", () => {
+    const covered = new Set<string>([...surface().map(([name]) => name), ...NEVER_REFUSES]);
+    const missing = exportedVenueReaders().filter((name) => !covered.has(name));
+    expect(missing).toEqual([]);
+  });
+
+  it("reads a surface at all, so a broken matcher cannot pass vacuously", () => {
+    expect(exportedVenueReaders().length).toBeGreaterThan(20);
+  });
 });
 
 describe("and the refusal is the only thing that escapes", () => {
