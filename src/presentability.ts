@@ -14,6 +14,7 @@
 
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { paysInClaims, backingName, type Backing } from "./backing.js";
+import { legMismatch, soleParty } from "./presentation.js";
 import { compareBytes } from "./bytes.js";
 import { type Terms } from "./closure.js";
 import { type ServedState } from "./commitment.js";
@@ -90,12 +91,10 @@ export function accompanimentOf(
 
       const lock = legState.locks.get(bytesToHex(demandHash));
       if (lock === undefined) return "unaccompanied";
-      // Invariant 13's arithmetic, checked rather than assumed: q units of the
-      // claim need q·cᵢ of this leg.
-      if (lock.quantity !== demand.quantity * entry.count) return "unaccompanied";
-      // The demanding holder's own units, and going where the set goes.
-      if (compareBytes(lock.holder, demand.holder) !== 0) return "unaccompanied";
-      if (compareBytes(lock.beneficiary, backing.obligor) !== 0) return "unaccompanied";
+      // The set's terms for this leg, the one definition the sequencer took it by:
+      // q times c of the target, the demanding holder's own units, to the obligor.
+      const want = { quantity: demand.quantity * entry.count, holder: demand.holder, beneficiary: backing.obligor };
+      if (legMismatch(lock, want) !== undefined) return "unaccompanied";
     }
     return "accompanied";
   }, "unreadable");
@@ -135,12 +134,10 @@ export function payoutOf(
     if (payingState === undefined) return "unreadable";
     const lock = payingState.locks.get(bytesToHex(demandHash));
     if (lock === undefined) return "unreserved";
-    if (lock.quantity !== demand.quantity * backing.payout.perUnit) return "unreserved";
-    if (compareBytes(lock.holder, backing.obligor) !== 0) return "unreserved";
-    if (compareBytes(lock.beneficiary, demand.holder) !== 0) return "unreserved";
-    if (lock.parties.length !== 1 || compareBytes(lock.parties[0] as Uint8Array, demand.holder) !== 0) {
-      return "unreserved";
-    }
+    const want = { quantity: demand.quantity * backing.payout.perUnit, holder: backing.obligor, beneficiary: demand.holder };
+    if (legMismatch(lock, want) !== undefined) return "unreserved";
+    const party = soleParty(lock.parties);
+    if (party === undefined || compareBytes(party, demand.holder) !== 0) return "unreserved";
     return "reserved";
   }, "unreadable");
 }

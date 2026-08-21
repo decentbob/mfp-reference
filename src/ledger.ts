@@ -45,7 +45,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { makeBacking, verifyBackingSignature, type Backing } from "./backing.js";
 import { compareBytes, copyBytes, MAX_QUANTITY_EXCLUSIVE } from "./bytes.js";
-import { commitSatisfies } from "./presentation.js";
+import { commitSatisfies, soleParty } from "./presentation.js";
 import { isValidPublicKey, verifySignatureStrict } from "./keys.js";
 import {
   copyOp,
@@ -328,10 +328,11 @@ function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uin
       // naming several parties converts only on the witnessed object, where every
       // signature is: one release is one signature, and "all sign" is the rule.
       if (entry.kind === "withdrawal") return copyBytes(lock.holder);
-      if (lock.parties.length !== 1) {
+      const party = soleParty(lock.parties);
+      if (party === undefined) {
         throw new LedgerError("a lock naming several parties settles only on the witnessed object");
       }
-      return copyBytes(lock.parties[0] as Uint8Array);
+      return copyBytes(party);
     }
     return standingDemand(state, entry.demandHash).holder;
   }

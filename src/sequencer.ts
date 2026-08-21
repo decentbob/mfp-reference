@@ -75,6 +75,10 @@ import {
 import { opHashOfEntry, type OpLogEntry, type PublishedOp } from "./oplog.js";
 import {
   demandHash,
+  legMismatch,
+  NO_DECISION_VENUE,
+  soleParty,
+  type LegTerms,
   type AcceptanceOp,
   type Commit,
   type DemandOp,
@@ -85,28 +89,28 @@ import {
 import { copyReceipt, signReceipt, type Receipt } from "./receipt.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
 import { isNamedSuccessor, operatorAt } from "./replacement.js";
-import { committedInTime, gapLegsFor, venueIsDeclared, witnessedCommitFor } from "./recovery.js";
+import { admittedInGap, committedInTime, gapLegsFor, venueIsDeclared, witnessedCommitFor } from "./recovery.js";
 import { revokedAt } from "./revocation.js";
 import { type Venue } from "./venue.js";
 
 /**
- * What one leg of a set must carry: q*c units of the target (invariant 13),
- * committed by the demanding holder, paying the DEMANDED backing's obligor.
- * Checked at filing against the lock the holder signs, and at release against
- * the lock that actually stands — the same definition both times.
+ * A lock as the log records it, built field by field rather than cast: a cast
+ * here once suppressed the exhaustiveness that catches a field added to the kind
+ * and forgotten (24a). One builder for the three doors a lock comes in by.
  */
-interface LegTerms {
-  readonly quantity: bigint;
-  readonly holder: Uint8Array;
-  readonly beneficiary: Uint8Array;
-}
-
-/** Why a lock does not carry the set's terms, or undefined if it does. */
-function legMismatch(lock: LegTerms, want: LegTerms): string | undefined {
-  if (lock.quantity !== want.quantity) return "a lock does not cover q·c units of its leg";
-  if (compareBytes(lock.holder, want.holder) !== 0) return "a lock must commit the demanding holder's units";
-  if (compareBytes(lock.beneficiary, want.beneficiary) !== 0) return "a lock must pay the demanded backing's obligor";
-  return undefined;
+function lockEntry(op: LockOp, signature: Uint8Array): PublishedOp {
+  return {
+    kind: "lock",
+    attemptId: op.attemptId,
+    holder: op.holder,
+    beneficiary: op.beneficiary,
+    quantity: op.quantity,
+    timeout: op.timeout,
+    decisionVenue: op.decisionVenue,
+    parties: op.parties,
+    nonce: op.nonce,
+    signature,
+  };
 }
 
 /** This operator declines to serve you. */
@@ -368,15 +372,8 @@ export class Sequencer {
    * illiquid rather than dead" while the operator is away.
    */
   private mayAdopt(backing: Backing, op: PublishedOp): boolean {
-    // A set has legs where R names any, and a payout leg where P pays in claims.
-    // In a gap the venue holds operations one at a time, never a set, so a
-    // presentation with legs neither opens nor settles here (24a refused the
-    // demand; slice 26 refuses the head's release and any leg's, since a paying
-    // lock released alone would hand the holder the payout for nothing).
-    const hasLegs = backing.reliance.length > 0 || paysInClaims(backing.payout);
-    if (op.kind === "demand") return !hasLegs;
-    if (op.kind === "release") return !hasLegs && !this.ledger.hasLock(backing, op.demandHash);
-    return true;
+    // The one predicate the verifier's fold of the same gap reads (recovery.ts).
+    return admittedInGap(backing, op, (hash) => this.ledger.hasLock(backing, hash));
   }
 
   private adoptOne(backing: Backing, op: PublishedOp, at: bigint): void {
@@ -493,19 +490,7 @@ export class Sequencer {
    */
   submitLock(op: LockOp, signature: Uint8Array): Receipt {
     const backing = this.served(op.backing);
-    const lock: PublishedOp = {
-      kind: "lock",
-      attemptId: op.attemptId,
-      holder: op.holder,
-      beneficiary: op.beneficiary,
-      quantity: op.quantity,
-      timeout: op.timeout,
-      decisionVenue: op.decisionVenue,
-      parties: op.parties,
-      nonce: op.nonce,
-      signature,
-    };
-    return this.submit([{ backing, op: lock }]);
+    return this.submit([{ backing, op: lockEntry(op, signature) }]);
   }
 
   /**
@@ -534,6 +519,9 @@ export class Sequencer {
       signatures: commit.signatures,
     });
     const lock = this.ledger.lockOf(held, attemptId);
+    if (lock !== undefined && compareBytes(lock.decisionVenue, NO_DECISION_VENUE) === 0) {
+      throw new SequencerError("a set leg settles with its set on the holder's release, not on a commit");
+    }
     const witnessed =
       lock !== undefined
         ? witnessedCommitFor(this.venue, lock)
@@ -575,14 +563,20 @@ export class Sequencer {
     const { demandHash: hash, instant, deadline, nonce } = op;
     const answer: PublishedOp = { kind: "acceptance", demandHash: hash, instant, deadline, nonce, signature };
     const demand = this.ledger.demandOf(backing, hash);
-    const terms = demand === undefined ? undefined : this.payoutTerms(backing, demand.holder, demand.quantity);
+    // No demand stands: the law says so, in its own words, on the acceptance alone.
+    if (demand === undefined) return this.submit([{ backing, op: answer }]);
+    const terms = this.payoutTerms(backing, demand.holder, demand.quantity);
     if (terms === undefined) {
-      // Nothing to reserve inside the claim layer (or no demand stands, and the
-      // law says so): a paying lock here would be a reservation for nothing.
       if (paying.length !== 0) throw new SequencerError("this backing's payout settles outside the claim layer");
       return this.submit([{ backing, op: answer }]);
     }
     const [target, want] = terms;
+    // Locks are keyed by attempt id per backing: one slot under the demand's hash
+    // cannot hold both the holder's leg and the backer's payout. (The (attempt,
+    // holder) key recorded open in 24c would lift this.)
+    if (backing.reliance.some((entry) => bytesToHex(entry.target) === target)) {
+      throw new SequencerError("the paying backing is a reliance leg of this demand: one lock slot, two locks");
+    }
     const supplied = paying[0];
     if (paying.length !== 1 || supplied === undefined) {
       throw new SequencerError("an acceptance of this backing reserves its payout: exactly one paying lock");
@@ -590,27 +584,19 @@ export class Sequencer {
     const payingBacking = this.served(supplied.op.backing);
     if (payingBacking.nameHex !== target) throw new SequencerError("the paying lock is not on the backing P names");
     if (compareBytes(supplied.op.attemptId, hash) !== 0) throw new SequencerError("the paying lock must name the demand it pays");
+    if (compareBytes(supplied.op.decisionVenue, NO_DECISION_VENUE) !== 0) {
+      throw new SequencerError("a paying lock names no decision venue: it settles with its set");
+    }
     const why = legMismatch(supplied.op, want);
     if (why !== undefined) throw new SequencerError(why);
-    if (supplied.op.parties.length !== 1 || compareBytes(supplied.op.parties[0] as Uint8Array, want.beneficiary) !== 0) {
+    const party = soleParty(supplied.op.parties);
+    if (party === undefined || compareBytes(party, want.beneficiary) !== 0) {
       throw new SequencerError("the paying lock is the demand holder's to convert, and nobody else's");
     }
     if (supplied.op.timeout < deadline) throw new SequencerError("the paying lock must outlast the acceptance");
-    const lock: PublishedOp = {
-      kind: "lock",
-      attemptId: supplied.op.attemptId,
-      holder: supplied.op.holder,
-      beneficiary: supplied.op.beneficiary,
-      quantity: supplied.op.quantity,
-      timeout: supplied.op.timeout,
-      decisionVenue: supplied.op.decisionVenue,
-      parties: supplied.op.parties,
-      nonce: supplied.op.nonce,
-      signature: supplied.signature,
-    };
     return this.submit([
       { backing, op: answer },
-      { backing: payingBacking, op: lock },
+      { backing: payingBacking, op: lockEntry(supplied.op, supplied.signature) },
     ]);
   }
 
@@ -625,6 +611,14 @@ export class Sequencer {
       bytesToHex(backing.payout.backing),
       { quantity: quantity * backing.payout.perUnit, holder: backing.obligor, beneficiary: holder },
     ];
+  }
+
+  /** Whether any backing this sequencer serves has a standing demand under that hash. */
+  private demandStands(hash: Uint8Array): boolean {
+    for (const backing of this.backings.values()) {
+      if (this.ledger.demandOf(backing, hash) !== undefined) return true;
+    }
+    return false;
   }
 
   /**
@@ -775,24 +769,12 @@ export class Sequencer {
       if (compareBytes(supplied.op.attemptId, hash) !== 0) {
         throw new SequencerError("a lock must name the demand it accompanies");
       }
+      if (compareBytes(supplied.op.decisionVenue, NO_DECISION_VENUE) !== 0) {
+        throw new SequencerError("a leg names no decision venue: it settles with its set, never on a commit");
+      }
       const why = legMismatch(supplied.op, terms.get(legBacking.nameHex) as LegTerms);
       if (why !== undefined) throw new SequencerError(why);
-      // Built field by field rather than cast: a cast here suppressed the
-      // exhaustiveness that catches a field added to the kind and forgotten,
-      // and the lock's timeout was forgotten exactly that way.
-      const op: PublishedOp = {
-        kind: "lock",
-        attemptId: supplied.op.attemptId,
-        holder: supplied.op.holder,
-        beneficiary: supplied.op.beneficiary,
-        quantity: supplied.op.quantity,
-        timeout: supplied.op.timeout,
-        decisionVenue: supplied.op.decisionVenue,
-        parties: supplied.op.parties,
-        nonce: supplied.op.nonce,
-        signature: supplied.signature,
-      };
-      return { backing: legBacking, op };
+      return { backing: legBacking, op: lockEntry(supplied.op, supplied.signature) };
     });
   }
 
@@ -909,6 +891,13 @@ export class Sequencer {
     // as every repeat is (invariant 26), whatever the record shows since.
     items.forEach((item, i) => {
       if (item.op.kind !== "lock" || this.receipts.has(this.receiptKey(item.backing, hashes[i] as Uint8Array))) return;
+      // A set leg names no venue and settles with its set: nothing here to read.
+      if (compareBytes(item.op.decisionVenue, NO_DECISION_VENUE) === 0) return;
+      // A demand's hash is its set's: a lock naming a venue under it is a squat on
+      // the slot a leg or the payout must take (found reviewing slice 26).
+      if (this.demandStands(item.op.attemptId)) {
+        throw new SequencerError("that attempt is a standing demand's: only its set locks under it");
+      }
       if (compareBytes(item.op.decisionVenue, this.venue.id) !== 0) {
         throw new SequencerError("this sequencer does not watch that decision venue");
       }

@@ -12,6 +12,7 @@ import {
   encodeWithdrawal,
   type DemandOp,
   type LockOp,
+  NO_DECISION_VENUE,
 } from "../src/presentation.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
 import { LocalVenue } from "../src/venue.js";
@@ -94,7 +95,7 @@ function present(
     beneficiary: KEYS.backer,
     quantity: quantity * 2n,
     timeout: LOCK_TIMEOUT,
-    decisionVenue: venue.id,
+    decisionVenue: NO_DECISION_VENUE,
     parties: [KEYS.alice],
     nonce: sequencer.nextNonce(KEYS.alice, gold),
   };
@@ -298,7 +299,7 @@ describe("§C3: one atomically signed decision, or none of it", () => {
       sequencer.submitDemand(p.demand, p.signature, [
         { op: short, signature: ed25519.sign(encodeLock(short), SECRETS.alice) },
       ]),
-    ).toThrow(/q·c/);
+    ).toThrow(/quantity the set needs/);
   });
 
   it("refuses a lock that pays anyone but the demanded backing's obligor", () => {
@@ -311,7 +312,7 @@ describe("§C3: one atomically signed decision, or none of it", () => {
       sequencer.submitDemand(p.demand, p.signature, [
         { op: elsewhere, signature: ed25519.sign(encodeLock(elsewhere), SECRETS.alice) },
       ]),
-    ).toThrow(/obligor/);
+    ).toThrow(/party the set names/);
   });
 
   it("refuses a lock naming another demand", () => {
@@ -333,7 +334,7 @@ describe("§C3: one atomically signed decision, or none of it", () => {
       sequencer.submitDemand(p.demand, p.signature, [
         { op: bobs, signature: ed25519.sign(encodeLock(bobs), SECRETS.bob) },
       ]),
-    ).toThrow(/demanding holder/);
+    ).toThrow(/party the set names as its holder/);
   });
 
   it("refuses a lock on a backing that is not a leg", () => {
@@ -419,8 +420,11 @@ describe("§C3: the set's shape is read where it settles, not only where it is f
       parties: [KEYS.alice],
       nonce: sequencer.nextNonce(KEYS.alice, gold),
     };
-    sequencer.submitLock(junk, ed25519.sign(encodeLock(junk), SECRETS.alice));
-    expect(() => release(sequencer, eur, gold, hash)).toThrow(/does not cover/);
+    // Since the review of slice 26 the relock itself is refused at the gate: a demand's
+    // hash is its set's, and a lock naming a venue under it is a squat. The release
+    // then has no leg to settle and the set is refused whole.
+    expect(() => sequencer.submitLock(junk, ed25519.sign(encodeLock(junk), SECRETS.alice))).toThrow(/standing demand/);
+    expect(() => release(sequencer, eur, gold, hash)).toThrow();
     expect(sequencer.balance(eur, KEYS.backer)).toBe(0n);
     expect(sequencer.balance(gold, KEYS.mallory)).toBe(0n);
   });
@@ -486,7 +490,7 @@ describe("§C3: a stranger's lock under a demand's hash is a squat, not a leg", 
       nonce: sequencer.nextNonce(KEYS.mallory, eur),
     };
     expect(() => sequencer.submitLock(squat, ed25519.sign(encodeLock(squat), SECRETS.mallory))).toThrow(
-      /standing demand's hash/,
+      /standing demand/,
     );
     // And the head's exits are its own: the set still withdraws.
     venue.advance(LOCK_TIMEOUT + 1n);
@@ -523,12 +527,15 @@ describe("§C3: a stranger's lock under a demand's hash is a squat, not a leg", 
       parties: [KEYS.mallory],
       nonce: sequencer.nextNonce(KEYS.mallory, gold),
     };
-    sequencer.submitLock(squat, ed25519.sign(encodeLock(squat), SECRETS.mallory));
+    // Refused at the gate since the review of slice 26 (a demand's hash is its set's);
+    // and had it stood, standing legs are the demand holder's own, so the head
+    // withdraws alone either way.
+    expect(() => sequencer.submitLock(squat, ed25519.sign(encodeLock(squat), SECRETS.mallory))).toThrow(/standing demand/);
     const head = { backing: eur, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, eur) };
     sequencer.submitWithdrawal(head, ed25519.sign(encodeWithdrawal(head), SECRETS.alice));
     expect(sequencer.openDemands(eur)).toHaveLength(0);
     expect(sequencer.availableBalance(eur, KEYS.alice)).toBe(100n);
-    expect(sequencer.availableBalance(gold, KEYS.mallory)).toBe(4n);
+    expect(sequencer.availableBalance(gold, KEYS.mallory)).toBe(5n);
   });
 });
 

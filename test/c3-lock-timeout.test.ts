@@ -14,6 +14,7 @@ import {
   signCommit,
   type DemandOp,
   type LockOp,
+  NO_DECISION_VENUE,
 } from "../src/presentation.js";
 import { Sequencer } from "../src/sequencer.js";
 import { LocalVenue } from "../src/venue.js";
@@ -91,7 +92,7 @@ function file(
     beneficiary: KEYS.backer,
     quantity: quantity * 2n,
     timeout,
-    decisionVenue: venue.id,
+    decisionVenue: NO_DECISION_VENUE,
     parties: [KEYS.alice],
     nonce: sequencer.nextNonce(KEYS.alice, gold),
   };
