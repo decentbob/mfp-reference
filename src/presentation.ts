@@ -291,7 +291,7 @@ export function commitMessage(attemptId: Uint8Array): Uint8Array {
 export const MAX_PARTIES = 16;
 
 /** A sorted set of 1..MAX_PARTIES keys, or an EncodingError: one spelling per set. */
-function writeKeySet(w: ByteWriter, keys: readonly Uint8Array[], what: string): void {
+function validateKeySet(keys: readonly Uint8Array[], what: string): void {
   if (keys.length === 0 || keys.length > MAX_PARTIES) {
     throw new EncodingError(`${what}: 1..${MAX_PARTIES} keys`);
   }
@@ -299,8 +299,36 @@ function writeKeySet(w: ByteWriter, keys: readonly Uint8Array[], what: string): 
     if (i > 0 && compareBytes(keys[i - 1] as Uint8Array, key) >= 0) {
       throw new EncodingError(`${what}: keys must be strictly ascending`);
     }
-    w.key32(key, what);
   });
+}
+
+function writeKeySet(w: ByteWriter, keys: readonly Uint8Array[], what: string): void {
+  validateKeySet(keys, what);
+  for (const key of keys) w.key32(key, what);
+}
+
+/**
+ * The signature list of a commit, as every record of one writes it: count, then
+ * each signer and signature, signers a sorted set. ONE codec for the venue record
+ * (encodeCommit) and the log record (oplog.ts), so the two cannot disagree on
+ * what is canonical.
+ */
+export function writeCommitSignatures(w: ByteWriter, signatures: readonly CommitSignature[]): void {
+  validateKeySet(signatures.map((s) => s.signer), "commit signers");
+  w.u8(signatures.length);
+  for (const s of signatures) {
+    w.key32(s.signer, "commit signer");
+    w.fixed(s.signature, 64, "commit signature");
+  }
+}
+
+/** Strict inverse of writeCommitSignatures. Throws EncodingError on anything else. */
+export function readCommitSignatures(r: ByteReader): CommitSignature[] {
+  const count = r.u8();
+  const signatures: CommitSignature[] = [];
+  for (let i = 0; i < count; i++) signatures.push({ signer: r.raw(32), signature: r.raw(64) });
+  validateKeySet(signatures.map((s) => s.signer), "commit signers");
+  return signatures;
 }
 
 function pubOf(secret: Uint8Array): Uint8Array {
@@ -335,16 +363,7 @@ export function countersignCommit(commit: Commit, secret: Uint8Array): Commit {
 export function encodeCommit(commit: Commit): Uint8Array {
   const w = new ByteWriter();
   w.key32(commit.attemptId, "attempt id");
-  w.u8(commit.signatures.length);
-  writeKeySet(
-    new ByteWriter(),
-    commit.signatures.map((s) => s.signer),
-    "commit signers",
-  );
-  for (const s of commit.signatures) {
-    w.key32(s.signer, "commit signer");
-    w.fixed(s.signature, 64, "commit signature");
-  }
+  writeCommitSignatures(w, commit.signatures);
   return w.finish();
 }
 
@@ -352,11 +371,8 @@ export function encodeCommit(commit: Commit): Uint8Array {
 export function decodeCommit(bytes: Uint8Array): Commit {
   const r = new ByteReader(bytes);
   const attemptId = r.raw(32);
-  const count = r.u8();
-  const signatures: CommitSignature[] = [];
-  for (let i = 0; i < count; i++) signatures.push({ signer: r.raw(32), signature: r.raw(64) });
+  const signatures = readCommitSignatures(r);
   r.expectEnd();
-  writeKeySet(new ByteWriter(), signatures.map((s) => s.signer), "commit signers");
   return { attemptId, signatures };
 }
 
@@ -366,11 +382,13 @@ export function decodeCommit(bytes: Uint8Array): Commit {
  */
 export function commitSatisfies(commit: Commit, parties: readonly Uint8Array[]): boolean {
   try {
+    // Presence first, across every party, before a single verify: a partial
+    // object is refused for the price of a few compares, not of k-1 verifies,
+    // and it is the shape anyone may publish under any attempt id.
+    const mine = parties.map((party) => commit.signatures.find((s) => compareBytes(s.signer, party) === 0));
+    if (mine.some((s) => s === undefined)) return false;
     const message = commitMessage(commit.attemptId);
-    return parties.every((party) => {
-      const mine = commit.signatures.find((s) => compareBytes(s.signer, party) === 0);
-      return mine !== undefined && verifySignatureStrict(mine.signature, message, party);
-    });
+    return mine.every((s, i) => verifySignatureStrict((s as CommitSignature).signature, message, parties[i] as Uint8Array));
   } catch {
     return false;
   }

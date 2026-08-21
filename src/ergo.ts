@@ -377,7 +377,8 @@ export class ErgoVenue implements Venue {
       key,
       this.finalised(publicationBoxes, (box) => {
         const decoded = decodePublishedOp(register(box, "R5"));
-        if (compareBytes(decoded.backingName, backingName) !== 0) {
+        // A commit record names no backing and is filed under none here.
+        if (decoded.backingName === undefined || compareBytes(decoded.backingName, backingName) !== 0) {
           throw new EncodingError("record is not this backing's");
         }
         return decoded.op;

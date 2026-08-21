@@ -97,7 +97,7 @@ describe("a venue's records have one canonical spelling", () => {
       const decoded = decodePublishedOp(bytes);
       expect(decoded.op).toEqual(op);
       expect(decoded.backingName).toEqual(n);
-      expect(encodePublishedOp(decoded.backingName, decoded.op)).toEqual(bytes);
+      expect(encodePublishedOp(n, decoded.op)).toEqual(bytes);
     }
   });
 

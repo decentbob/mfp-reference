@@ -41,7 +41,9 @@ import {
 } from "./messages.js";
 import {
   commitMessage,
+  readCommitSignatures,
   type CommitSignature,
+  writeCommitSignatures,
   encodeAcceptanceMessage,
   encodeDemandMessage,
   encodeLockMessage,
@@ -250,11 +252,7 @@ export function encodePublishedOp(backingName: Uint8Array, op: PublishedOp): Uin
   if (op.kind === "commit") {
     // The one operation with several signatures, framed as its record at the
     // venue is: count, then each signer and signature (presentation.ts).
-    w.u8(op.signatures.length);
-    for (const s of op.signatures) {
-      w.key32(s.signer, "commit signer");
-      w.fixed(s.signature, SIGNATURE_LENGTH, "commit signature");
-    }
+    writeCommitSignatures(w, op.signatures);
   } else {
     w.fixed(op.signature, SIGNATURE_LENGTH, "signature");
   }
@@ -308,7 +306,8 @@ function readKeySet(r: ByteReader): Uint8Array[] {
  * exactly one spelling.
  */
 export function decodePublishedOp(bytes: Uint8Array): {
-  readonly backingName: Uint8Array;
+  /** The backing the message names — none for a commit, whose message names none by design. */
+  readonly backingName: Uint8Array | undefined;
   readonly op: PublishedOp;
 } {
   const outer = new ByteReader(bytes);
@@ -324,15 +323,14 @@ export function decodePublishedOp(bytes: Uint8Array): {
   // The signature material follows the message and depends on the kind: one
   // signature for every operation but the commit, which carries each signer.
   const signature = kind === "commit" ? new Uint8Array(0) : outer.raw(SIGNATURE_LENGTH);
-  const signatures: CommitSignature[] = [];
-  if (kind === "commit") {
-    const count = outer.u8();
-    for (let i = 0; i < count; i++) signatures.push({ signer: outer.raw(32), signature: outer.raw(64) });
-  }
+  const signatures = kind === "commit" ? readCommitSignatures(outer) : [];
   outer.expectEnd();
 
   const r = new ByteReader(message.subarray(context.length));
-  const backingName = r.raw(32);
+  // Every message but the commit's opens with the backing it is for; a commit's
+  // is the same bytes in every log of an exchange, so the record alone cannot
+  // say which log it belongs to — the log it sits in says that.
+  const backingName = kind === "commit" ? undefined : r.raw(32);
   const op = ((): PublishedOp => {
     switch (kind) {
       case "issue": {
@@ -386,7 +384,8 @@ export function decodePublishedOp(bytes: Uint8Array): {
   r.expectEnd();
   // The message is the only description of the operation, so the round trip is
   // what proves this decoder is its inverse rather than a second reading of it.
-  if (compareBytes(encodePublishedOp(backingName, op), bytes) !== 0) {
+  // (A commit writes no name, so any name re-encodes it; the bytes are what is checked.)
+  if (compareBytes(encodePublishedOp(backingName ?? new Uint8Array(32), op), bytes) !== 0) {
     throw new EncodingError("published operation is not canonical");
   }
   return { backingName, op };

@@ -1,7 +1,9 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
 import { makeBacking, signBacking, type Backing } from "../src/backing.js";
+import { compareBytes } from "../src/bytes.js";
 import { replayLog } from "../src/ledger.js";
+import { decodePublishedOp, encodePublishedOp, type PublishedOp } from "../src/oplog.js";
 import { encodeIssuanceMessage } from "../src/messages.js";
 import {
   commitSatisfies,
@@ -30,7 +32,11 @@ import { KEYS, SECRETS } from "./support.js";
 // it — and one object carries every signature. A sequencer still matches one
 // object against its own lock and knows nothing else; what it reads off the lock
 // is who must have signed. A partial object therefore settles nothing anywhere,
-// which is the whole of what "all sign" buys.
+// which is the whole of what "all sign" buys. Provided every lock in the exchange
+// names the full set — which each party checks in the others' locks before it
+// signs, exactly as a receiver checks every half is reserved (24b): the
+// protocol cannot stop a party naming fewer, only make that party's own lock
+// the one that settles on fewer signatures.
 
 const TIMEOUT = 50n;
 const ATTEMPT = new Uint8Array(32).fill(0x51);
@@ -63,7 +69,7 @@ function setup() {
   return { venue, one, two, eur, gold };
 }
 
-const sorted = (...keys: Uint8Array[]) => [...keys].sort((a, b) => Buffer.compare(a, b));
+const sorted = (...keys: Uint8Array[]) => [...keys].sort(compareBytes);
 
 /** `holder` reserves `quantity` of `backing` for `beneficiary`, in an exchange among `parties`. */
 function lock(
@@ -210,5 +216,26 @@ describe("§C1: a ring of three, and what the object tolerates", () => {
     const first = f.one.settle(f.eur, ATTEMPT);
     expect(f.one.settle(f.eur, ATTEMPT)).toEqual(first);
     expect(f.one.balance(f.eur, KEYS.bob)).toBe(40n);
+  });
+});
+
+describe("§C1: the object has one spelling in the log as well as at the venue", () => {
+  it("a commit entry with an unsorted or repeated signer list is not a record", () => {
+    // One codec frames the signature list for both records (presentation.ts), so
+    // the log cannot accept what the venue refuses. Found reviewing this slice:
+    // the log record had its own loop and no check.
+    const f = setup();
+    const both = countersignCommit(signCommit(SECRETS.alice, ATTEMPT), SECRETS.bob);
+    const [first, second] = both.signatures as [
+      (typeof both.signatures)[number],
+      (typeof both.signatures)[number],
+    ];
+    const unsorted: PublishedOp = { kind: "commit", attemptId: ATTEMPT, signatures: [second, first] };
+    expect(() => encodePublishedOp(f.eur.name, unsorted)).toThrow(/ascending/);
+    const repeated: PublishedOp = { kind: "commit", attemptId: ATTEMPT, signatures: [first, first] };
+    expect(() => encodePublishedOp(f.eur.name, repeated)).toThrow(/ascending/);
+    // And the well-formed one round-trips through the log record.
+    const entry: PublishedOp = { kind: "commit", attemptId: ATTEMPT, signatures: both.signatures };
+    expect(decodePublishedOp(encodePublishedOp(f.eur.name, entry)).op).toEqual(entry);
   });
 });
