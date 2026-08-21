@@ -83,13 +83,16 @@ the rule still stands.
   where both sides have recourse. The law stays per backing, so whether
   a demand's legs were locked is read across the served state by
   `accompanimentOf`, which the backer asks before it signs an acceptance. **A
-  lock carries §C3's timeout**, and it is the one predicate both exits read: at
-  or before it a commit can still settle the set and no withdrawal is accepted;
-  past it no commit reaches it and withdrawal is the only exit — exactly one
-  open at every index, as for a demand on its acceptance. Every TIME rule is a
-  refusal and never a balance, because the clock is undefined on a replay and a
-  lock that freed its own units would make an honest history unreplayable.
-  Quantities are whole
+  lock carries §C3's timeout**, and it is the one predicate both exits read
+  (`lockIsLive`): at or before it a commit can still settle the set and no
+  withdrawal is accepted; past it no commit reaches it and withdrawal is the exit
+  — exactly one open at every index **per record**, as for a demand on its
+  acceptance (a set of records can have both closed, within the holder's own
+  declared window). The law reads the clock; whether the record already shows a
+  half committed is the sequencer's to read before it co-signs a withdrawal, on
+  the submit path and the gap path alike. Every TIME rule is a refusal and never
+  a balance, because the clock is undefined on a replay and a lock that freed
+  its own units would make an honest history unreplayable. Quantities are whole
   numbers of the backing's declared unit; counts in R are whole. Reliance is
   a conjunction over a fixed list with constant counts — no disjunction, no
   computed membership. Reliance names backings and chain assets only.

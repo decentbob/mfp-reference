@@ -16,7 +16,7 @@ Format:
 
 ---
 
-## 2026-08-21 - Slice 24c: a lock is withdrawable only past its timeout
+## 2026-08-21 - Slice 24c: the exits of a lock, on both sides of its timeout
 
 **Question:** found reviewing 24b by tabulating, per operation kind, which exits
 are open in which index range. A lock's withdrawal had no clock check at all
@@ -24,17 +24,16 @@ are open in which index range. A lock's withdrawal had no clock check at all
 witnessed index. So a holder could let O2 settle against the witnessed commit,
 then free its lock at O1 one message ahead of the receiver's `settle` — one
 witnessed object, two verdicts, and a log that replays as lawful, so no verifier
-could call it a fault. The gap path inherits it, since `adopt` applies
-publications straight to the law (24a's lesson, unchanged). Demonstrated in
-`review-withdraw-before-timeout.mjs`.
+could call it a fault. Demonstrated in `review-withdraw-before-timeout.mjs`.
 
 **Decision (Bob): the two exits are complements on the timeout**, as they are on
 the acceptance for a demand — at or before it, commit or release; past it,
-withdrawal; never both open, never neither. §C3's own words: "**expired** locks
-unlock unilaterally." Before expiry the lock is the holder's own declared
-commitment, and "effective on witnessing" has to mean a half the record committed
-is past taking back. A TIME rule in `applyEntry`, a refusal and never a balance,
-like every other — which is what makes the gap path inherit it for free.
+withdrawal; never both open, never neither, **per record**. §C3's own words:
+"**expired** locks unlock unilaterally." Before expiry the lock is the holder's
+own declared commitment. A TIME rule in `applyEntry`, a refusal and never a
+balance, like every other — which is what makes the gap path inherit it for
+free. `lockIsLive` is the one definition, beside `acceptanceIsLive`, and the
+law's four timeout sites read it rather than four hand-written inequalities.
 
 **It reverses a slice-22 behaviour Bob had approved**, and was put to him as
 such: a single-operator set can no longer be withdrawn before its legs' timeout.
@@ -43,21 +42,76 @@ the head withdraw early and the legs free at their timeout — adds a path for a
 marginal gain, and was not taken. Two slice-22 tests now wait for the timeout
 and say why.
 
+**The review round then found the other side open** — CLAUDE.md's recurring
+shape, "a fix that bounded one input and left the other open", four finders
+reproducing it independently (`review-lock-exits-round2.mjs`, case 1). A commit
+witnessed **in time** settles at any later index, since `settle` applies it at
+the index the venue stamped; the law accepts a withdrawal past the timeout; so
+at T+1 both exits stood open and execution order decided — the same split, one
+index later. The law cannot close it: it cannot see the venue. **So the
+sequencer reads the record before it co-signs a withdrawal of a lock**
+(`committedInTime`): a valid holder-signed commit witnessed while the lock was
+live means the withdrawal's claim that nothing committed is false, and it is
+refused on the submit path and skipped on the gap path — one helper, both
+callers, because 24a showed what one path without the other costs. A
+dishonest operator that co-signs it anyway is provable from the venue and its
+committed log, and that predicate is **open** (below).
+
+**And a sequencer that cannot read its venue's commits now refuses to
+prepare.** `ErgoVenue.commitsFor` refuses by design (24b), so an Ergo-backed
+sequencer could take a lock it could never settle and — with the guard — never
+release either. `submitLock` probes the venue first; its refusal is §C3's "a
+sequencer unwilling to watch it refuses to prepare, which is an abort rather
+than a fork". The probe is the capability check; no interface grew.
+
+**Two adjacent holes the same round found, both since 24b made `submitLock`
+public, both fixed here** (`review-lock-exits-round2.mjs`, cases 2 and 3):
+
+- **A head release checked that each leg held a lock, not what the lock
+  carried.** A holder withdrew the leg past its timeout, relocked ONE unit to
+  a friend under the same demand hash, and released the head against the
+  backer's still-live acceptance: 40 EUR to the backer with none of the 80 GOLD.
+  The set's shape is now one definition (`legTerms`: q·c units, the demanding
+  holder, the demanded obligor), read at filing and again at release against
+  the lock that actually stands.
+- **A withdrawal demanded a leg op per entry in R(b)**, so a bundle lock on a
+  backing with reliance of its own had no exit at any index, and a head whose
+  leg was withdrawn alone could not be withdrawn without relocking. A
+  withdrawal now takes the legs that still stand; a release still takes them all.
+
+**Known and accepted, recorded rather than patched.** The exit table is exact
+per record and not per set: with the lock timeout past and an acceptance still
+live, release is refused at the leg and withdrawal at the head; with the
+acceptance expired and the timeout not yet reached, neither is open either.
+Both sit inside the holder's own declared window, and the leg-alone withdrawal
+plus relock is the set-level exit. The gap path reads the set one record at a
+time, so a set withdrawal published early lands the head and leaves the leg to
+its timeout — pinned in c3-lock-timeout so the shape is known. A refinement
+that would remove the first window, **an acceptance may not outlast the set's
+lock timeouts** (the same reason 24a gave for "may not outlast the demand's
+deadline"), is recorded as open: it is a sequencer rule, since the legs live
+in other backings' states, and it changes fixture deadlines across the suite.
+
 **Also here, the merge this codebase keeps removing, fifth sighting:** `settle`
-answered "no commit is witnessed" where the truth was "no lock is held here", so
+answered "no commit is witnessed" where the truth was "no lock stands here", so
 a caller went to the venue for an object that was there. Two messages now.
 
 **Procedure, added:** the exit table per operation kind — which exits, open in
-which index range — is cheap and is now part of every review round; the
-"exactly one exit is open at every index" test, extended from demands
-(invariant-27) to locks (c3-atomic-bundle), is its executable form.
+which index range, and for a commit-settled record the far side as well as the
+near — is part of every review round; "exactly one exit is open at every
+index", extended from demands (invariant-27) to locks (c3-atomic-bundle), is its
+executable form.
 
-**Open, recorded for slice 26:** `unservedRequests` counts only transfer
-requests, though §C3 says "a lock request left unserved is §C2b's non-service
-object". It belongs with the refusal aggregate (m', W'), not here.
+**Open:** (1) `unservedRequests` counts only transfer requests, though §C3 says
+"a lock request left unserved is §C2b's non-service object" — slice 26, with
+the refusal aggregate (m', W'). (2) An operator that co-signs a withdrawal
+where the venue shows an in-time commit: provable from public data, no
+predicate in fault.ts yet. (3) The acceptance-vs-lock-timeout bound above.
 
-**Spec change:** none needed. §C3's "expired locks unlock unilaterally" already
-says it; the implementation had read "unilaterally" without "expired".
+**Spec change:** none needed. §C3's "expired locks unlock unilaterally" and
+"effective on witnessing rather than delivery" already say it; the
+implementation had read "unilaterally" without "expired", and then "witnessed"
+without "settles at any later index".
 
 ## 2026-08-21 - Slice 24b: an atomic bundle commits on one witnessed object
 
