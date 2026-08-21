@@ -142,14 +142,16 @@ export function isDishonoured(record: DemandRecord, atWitnessedIndex: bigint): b
  * how many, and where they go if the demand settles.
  */
 export interface LockRecord {
-  /** The demand this accompanies, and this record's key. */
-  readonly demandHash: Uint8Array;
+  /** The atomic attempt these units are reserved for, and this record's key. */
+  readonly attemptId: Uint8Array;
   readonly holder: Uint8Array;
   /** The DEMANDED backing's obligor, signed by the holder in the lock. */
   readonly beneficiary: Uint8Array;
   readonly quantity: bigint;
   /** §C3's lock timeout: the witnessed index past which this attempt is over. */
   readonly timeout: bigint;
+  /** The venue whose clock the timeout is read on, and where a commit must appear. */
+  readonly decisionVenue: Uint8Array;
   readonly nonce: bigint;
 }
 
@@ -201,9 +203,10 @@ function copyDemand(record: DemandRecord): DemandRecord {
 function copyLock(record: LockRecord): LockRecord {
   return {
     ...record,
-    demandHash: copyBytes(record.demandHash),
+    attemptId: copyBytes(record.attemptId),
     holder: copyBytes(record.holder),
     beneficiary: copyBytes(record.beneficiary),
+    decisionVenue: copyBytes(record.decisionVenue),
   };
 }
 
@@ -274,6 +277,9 @@ export function signerFromTerms(backing: Backing, entry: PublishedOp): Uint8Arra
       return entry.holder;
     case "release":
     case "withdrawal":
+    // A commit's signer is the holder who locked, which is a record in state
+    // rather than anything the terms name — signerOf reads it there.
+    case "commit":
       return undefined;
   }
   // Exhaustive, and asserted rather than assumed: the return type admits
@@ -293,6 +299,13 @@ export function signerFromTerms(backing: Backing, entry: PublishedOp): Uint8Arra
  * applyEntry expects a LedgerError.
  */
 function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uint8Array {
+  if (entry.kind === "commit") {
+    // Whoever reserved these units is the only party who may commit them, and
+    // the lock is where that is written. No lock, nothing to commit.
+    const lock = state.locks.get(bytesToHex(entry.attemptId));
+    if (lock === undefined) throw new LedgerError("no lock on this backing for that attempt");
+    return copyBytes(lock.holder);
+  }
   if (entry.kind === "release" || entry.kind === "withdrawal") {
     // In this backing's own state one of the two exists, never both: a demand
     // where this IS the demanded backing, a lock where it is one of its legs.
@@ -313,7 +326,8 @@ const SIGNATURE_REFUSAL: Record<PublishedOp["kind"], string> = {
   acceptance: "acceptance signature invalid: only the obligor answers",
   release: "release signature invalid: only the holder releases",
   withdrawal: "withdrawal signature invalid: only the holder withdraws",
-  lock: "lock signature invalid: only the holder commits a leg",
+  lock: "lock signature invalid: only the holder reserves their own units",
+  commit: "commit signature invalid: only the holder who locked may commit",
 };
 
 const ACCEPTANCE_WINDOW =
@@ -346,13 +360,22 @@ export function applyEntry(
 ): void {
   const signer = signerOf(state, backing, entry);
   const signerHex = bytesToHex(signer);
-  const expected = state.nonces.get(signerHex) ?? 0n;
-  if (entry.nonce !== expected) {
-    throw new NonceError(
-      entry.nonce < expected
-        ? "nonce already spent on a different operation"
-        : "nonce is ahead of the signer's next",
-    );
+  // **A commit carries no nonce, and it is the only operation that does not.**
+  // One signature has to be valid in every backing of a bundle at once, and a
+  // nonce is per (signer, backing) — so there is no single value it could carry.
+  // What a nonce buys is bought otherwise here: a repeat is a no-op because the
+  // lock it settles is gone, and it can only touch an attempt its own holder
+  // named in a lock. See presentation.ts.
+  let expected: bigint | undefined;
+  if (entry.kind !== "commit") {
+    expected = state.nonces.get(signerHex) ?? 0n;
+    if (entry.nonce !== expected) {
+      throw new NonceError(
+        entry.nonce < expected
+          ? "nonce already spent on a different operation"
+          : "nonce is ahead of the signer's next",
+      );
+    }
   }
   // The canonical bytes throw EncodingError on a malformed field — a quantity
   // out of range is the encoder's refusal, not the law's. A valid signature
@@ -434,8 +457,8 @@ export function applyEntry(
       // about the demand it names, because the demand is another backing's
       // record — what makes the pair coherent is that one operator applies both
       // or neither, and a verifier holding the served state can read both.
-      if (state.locks.has(bytesToHex(entry.demandHash))) {
-        throw new LedgerError("this demand already has a lock on this backing");
+      if (state.locks.has(bytesToHex(entry.attemptId))) {
+        throw new LedgerError("this attempt already has a lock on this backing");
       }
       if (spendable(state, entry.holder) < entry.quantity) {
         throw new LedgerError("insufficient balance");
@@ -445,14 +468,40 @@ export function applyEntry(
       if (clock !== undefined && entry.timeout <= clock) {
         throw new LedgerError("lock timeout is not ahead of the witnessed index");
       }
-      state.locks.set(bytesToHex(entry.demandHash), {
-        demandHash: copyBytes(entry.demandHash),
+      state.locks.set(bytesToHex(entry.attemptId), {
+        attemptId: copyBytes(entry.attemptId),
         holder: copyBytes(entry.holder),
         beneficiary: copyBytes(entry.beneficiary),
         quantity: entry.quantity,
         timeout: entry.timeout,
+        decisionVenue: copyBytes(entry.decisionVenue),
         nonce: entry.nonce,
       });
+      break;
+    }
+    case "commit": {
+      // §C3's commit, applied to this backing's own half of an attempt. The
+      // lock is guaranteed to exist: signerOf refused already if it did not.
+      const lock = state.locks.get(bytesToHex(entry.attemptId)) as LockRecord;
+      // TIME, and the predicate every sequencer in the bundle evaluates against
+      // the same object: "was a valid release witnessed at or before the lock
+      // timeout?" The clock passed here is the index the VENUE witnessed the
+      // commit at, never the index this operator happens to be applying it —
+      // which is the rule adoption already follows for a gap publication.
+      if (clock !== undefined && clock > lock.timeout) {
+        throw new LedgerError("the commit was witnessed past the lock timeout");
+      }
+      if (heldBy(state, bytesToHex(lock.beneficiary)) + lock.quantity >= MAX_QUANTITY_EXCLUSIVE) {
+        throw new LedgerError("settlement would push a balance beyond the quantity bound");
+      }
+      if (heldBy(state, bytesToHex(lock.holder)) < lock.quantity) {
+        throw new LedgerError("debit exceeds the holding");
+      }
+      // Drop the lock first, for the reason a demand is dropped first: the
+      // settling transfer must not be blocked by its own reservation.
+      state.locks.delete(bytesToHex(entry.attemptId));
+      move(state, lock.holder, -lock.quantity);
+      move(state, lock.beneficiary, lock.quantity);
       break;
     }
     case "acceptance": {
@@ -560,7 +609,9 @@ export function applyEntry(
       break;
     }
   }
-  state.nonces.set(signerHex, expected + 1n);
+  // Advanced for every kind that consumed one, which is every kind but the
+  // commit — see above for the one reason it has none.
+  if (expected !== undefined) state.nonces.set(signerHex, expected + 1n);
 }
 
 /**
@@ -743,6 +794,19 @@ export class TransparentLedger {
   }
 
   /**
+   * The holder whose units this backing has reserved for that attempt, or
+   * undefined if it has reserved none.
+   *
+   * Exposed because a sequencer reading the venue has to know whose signature
+   * makes a published commit its own — the law would refuse a stranger's anyway,
+   * but the sequencer would otherwise have to try applying one to find out.
+   */
+  lockHolder(backing: Backing, attemptId: Uint8Array): Uint8Array | undefined {
+    const record = this.stateOf(backing).state.locks.get(bytesToHex(attemptId));
+    return record === undefined ? undefined : copyBytes(record.holder);
+  }
+
+  /**
    * Whether this backing holds a reliance lock against that demand — that is,
    * whether it is a LEG of the demand rather than the backing demanded.
    *
@@ -750,8 +814,8 @@ export class TransparentLedger {
    * state resolves whichever record it has for it. Which backing heads a set is
    * the shape of the set, and that is the sequencer's to know.
    */
-  hasLock(backing: Backing, demandHash: Uint8Array): boolean {
-    return this.stateOf(backing).state.locks.has(bytesToHex(demandHash));
+  hasLock(backing: Backing, attemptId: Uint8Array): boolean {
+    return this.stateOf(backing).state.locks.has(bytesToHex(attemptId));
   }
 
   /** The standing demand record (invariant 23), as copies. */

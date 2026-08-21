@@ -40,6 +40,7 @@ import {
   encodeTransferMessage,
 } from "./messages.js";
 import {
+  commitMessage,
   encodeAcceptanceMessage,
   encodeDemandMessage,
   encodeLockMessage,
@@ -52,6 +53,7 @@ import {
   ACCEPTANCE_CONTEXT,
   BURN_CONTEXT,
   DEMAND_CONTEXT,
+  COMMIT_CONTEXT,
   ISSUANCE_CONTEXT,
   LOCK_CONTEXT,
   RELEASE_CONTEXT,
@@ -120,12 +122,24 @@ export type PublishedOp =
     }
   | {
       readonly kind: "lock";
-      readonly demandHash: Uint8Array;
+      readonly attemptId: Uint8Array;
       readonly holder: Uint8Array;
       readonly beneficiary: Uint8Array;
       readonly quantity: bigint;
       readonly timeout: bigint;
+      readonly decisionVenue: Uint8Array;
       readonly nonce: bigint;
+      readonly signature: Uint8Array;
+    }
+  | {
+      /**
+       * §C3's commit. The one operation whose message names no backing and
+       * carries no nonce, because one signature has to be valid in every log in
+       * a bundle at once — see presentation.ts for why those are the only two
+       * departures and what they buy.
+       */
+      readonly kind: "commit";
+      readonly attemptId: Uint8Array;
       readonly signature: Uint8Array;
     };
 
@@ -192,13 +206,18 @@ export function opMessageOfEntry(backingName: Uint8Array, entry: PublishedOp): U
     case "lock":
       return encodeLockMessage(
         backingName,
-        entry.demandHash,
+        entry.attemptId,
         entry.holder,
         entry.beneficiary,
         entry.quantity,
         entry.timeout,
+        entry.decisionVenue,
         entry.nonce,
       );
+    // The backing name is not written, and that is the point: the same bytes are
+    // this operation in every backing of the bundle.
+    case "commit":
+      return commitMessage(entry.attemptId);
   }
   return unknownOpKind(entry);
 }
@@ -245,6 +264,7 @@ const OP_CONTEXTS: readonly (readonly [Uint8Array, PublishedOp["kind"]])[] = [
   [RELEASE_CONTEXT, "release"],
   [WITHDRAWAL_CONTEXT, "withdrawal"],
   [LOCK_CONTEXT, "lock"],
+  [COMMIT_CONTEXT, "commit"],
 ];
 
 /** A quantity, as every operation message writes it. */
@@ -312,21 +332,25 @@ export function decodePublishedOp(bytes: Uint8Array): {
       case "withdrawal":
         return { kind, demandHash: r.raw(32), nonce: r.u64(), signature };
       case "lock": {
-        const demandHash = r.raw(32);
+        const attemptId = r.raw(32);
         const holder = r.raw(32);
         const beneficiary = r.raw(32);
         const quantity = readQuantity(r);
+        const timeout = r.u64();
         return {
           kind,
-          demandHash,
+          attemptId,
           holder,
           beneficiary,
           quantity,
-          timeout: r.u64(),
+          timeout,
+          decisionVenue: r.raw(32),
           nonce: r.u64(),
           signature,
         };
       }
+      case "commit":
+        return { kind, attemptId: r.raw(32), signature };
     }
   })();
   r.expectEnd();
@@ -364,9 +388,16 @@ export function copyOp(entry: PublishedOp): PublishedOp {
     case "lock":
       return {
         ...entry,
-        demandHash: copyBytes(entry.demandHash),
+        attemptId: copyBytes(entry.attemptId),
         holder: copyBytes(entry.holder),
         beneficiary: copyBytes(entry.beneficiary),
+        decisionVenue: copyBytes(entry.decisionVenue),
+        signature: copyBytes(entry.signature),
+      };
+    case "commit":
+      return {
+        ...entry,
+        attemptId: copyBytes(entry.attemptId),
         signature: copyBytes(entry.signature),
       };
   }

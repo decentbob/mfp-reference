@@ -64,6 +64,7 @@ function setup() {
 
 function file(
   sequencer: Sequencer,
+  venue: LocalVenue,
   eur: Backing,
   gold: Backing,
   quantity: bigint,
@@ -80,11 +81,12 @@ function file(
   const hash = demandHash(demand);
   const lock: LockOp = {
     backing: gold,
-    demandHash: hash,
+    attemptId: hash,
     holder: KEYS.alice,
     beneficiary: KEYS.backer,
     quantity: quantity * 2n,
     timeout,
+    decisionVenue: venue.id,
     nonce: sequencer.nextNonce(KEYS.alice, gold),
   };
   sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice), [
@@ -123,7 +125,7 @@ function withdrawSet(sequencer: Sequencer, eur: Backing, gold: Backing, hash: Ui
 describe("§C3: the lock timeout ends the atomic attempt", () => {
   it("settles inside the timeout", () => {
     const { venue, sequencer, eur, gold } = setup();
-    const { hash } = file(sequencer, eur, gold, 40n);
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
     accept(sequencer, eur, hash);
     venue.advance(TIMEOUT);
     releaseSet(sequencer, eur, gold, hash);
@@ -134,7 +136,7 @@ describe("§C3: the lock timeout ends the atomic attempt", () => {
     // "was a valid release witnessed at or before the lock timeout?" — at is
     // inside, one past is not.
     const { venue, sequencer, eur, gold } = setup();
-    const { hash } = file(sequencer, eur, gold, 40n);
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
     accept(sequencer, eur, hash);
     venue.advance(TIMEOUT + 1n);
     expect(() => releaseSet(sequencer, eur, gold, hash)).toThrow(/timeout/);
@@ -144,7 +146,7 @@ describe("§C3: the lock timeout ends the atomic attempt", () => {
   it("refuses a lock whose timeout has already passed", () => {
     const { venue, sequencer, eur, gold } = setup();
     venue.advance(50n);
-    expect(() => file(sequencer, eur, gold, 40n, 40n)).toThrow(/timeout/);
+    expect(() => file(sequencer, venue, eur, gold, 40n, 40n)).toThrow(/timeout/);
   });
 
   it("the demand outlives its locks, and can be relocked", () => {
@@ -152,7 +154,7 @@ describe("§C3: the lock timeout ends the atomic attempt", () => {
     // and a demand outlives its locks." So an expired attempt is a retry, not a
     // lost demand — the whole point of the timeout being separate.
     const { venue, sequencer, eur, gold } = setup();
-    const { hash } = file(sequencer, eur, gold, 40n);
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
     accept(sequencer, eur, hash);
     venue.advance(TIMEOUT + 1n);
     expect(() => releaseSet(sequencer, eur, gold, hash)).toThrow(/timeout/);
@@ -166,7 +168,7 @@ describe("§C3: the lock timeout ends the atomic attempt", () => {
 describe("§C3: an expired lock unlocks unilaterally", () => {
   it("withdrawal frees it with nobody else's cooperation", () => {
     const { venue, sequencer, eur, gold } = setup();
-    const { hash } = file(sequencer, eur, gold, 40n);
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
     venue.advance(TIMEOUT + 5n);
     withdrawSet(sequencer, eur, gold, hash);
     expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(200n);
@@ -178,7 +180,7 @@ describe("§C3: an expired lock unlocks unilaterally", () => {
     // lock that silently freed its units would make an operator's correct
     // history unreplayable, since applyEntry has no clock on a replay.
     const { venue, sequencer, eur, gold } = setup();
-    file(sequencer, eur, gold, 40n);
+    file(sequencer, venue, eur, gold, 40n);
     venue.advance(TIMEOUT + 5n);
     expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(120n);
     const nonce = sequencer.nextNonce(KEYS.alice, gold);
@@ -195,7 +197,7 @@ describe("§C3: an expired lock unlocks unilaterally", () => {
 
   it("and the whole history still replays after the timeout passes", () => {
     const { venue, sequencer, eur, gold } = setup();
-    const { hash } = file(sequencer, eur, gold, 40n);
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
     venue.advance(TIMEOUT + 5n);
     withdrawSet(sequencer, eur, gold, hash);
     const nonce = sequencer.nextNonce(KEYS.alice, gold);

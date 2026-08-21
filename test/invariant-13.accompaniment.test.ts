@@ -132,18 +132,25 @@ function bareLock(
   const full: LockOp = { ...lock, backing: gold };
   return {
     kind: "lock",
-    demandHash: full.demandHash,
+    attemptId: full.attemptId,
     holder: full.holder,
     beneficiary: full.beneficiary,
     quantity: full.quantity,
     timeout: full.timeout,
+    decisionVenue: full.decisionVenue,
     nonce: full.nonce,
     signature: ed25519.sign(encodeLock(full), secret),
   };
 }
 
 /** File a demand for `quantity` of eur, locking its leg. */
-function file(sequencer: Sequencer, eur: Backing, gold: Backing, quantity: bigint) {
+function file(
+  sequencer: Sequencer,
+  venue: LocalVenue,
+  eur: Backing,
+  gold: Backing,
+  quantity: bigint,
+) {
   const demand: DemandOp = {
     backing: eur,
     holder: KEYS.alice,
@@ -156,11 +163,12 @@ function file(sequencer: Sequencer, eur: Backing, gold: Backing, quantity: bigin
   const signature = ed25519.sign(encodeDemand(demand), SECRETS.alice);
   const lock: LockOp = {
     backing: gold,
-    demandHash: hash,
+    attemptId: hash,
     holder: KEYS.alice,
     beneficiary: KEYS.backer,
     quantity: quantity * 2n,
     timeout: 90n,
+    decisionVenue: venue.id,
     nonce: sequencer.nextNonce(KEYS.alice, gold),
   };
   sequencer.submitDemand(demand, signature, [
@@ -172,7 +180,7 @@ function file(sequencer: Sequencer, eur: Backing, gold: Backing, quantity: bigin
 describe("invariant 13: whether a standing demand is accompanied", () => {
   it("says accompanied where every leg is locked for q·cᵢ", () => {
     const { venue, sequencer, eur, gold, terms } = setup();
-    const { hash } = file(sequencer, eur, gold, 40n);
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
     expect(accompanimentOf(eur, venue, terms, served(sequencer), hash)).toBe("accompanied");
   });
 
@@ -207,7 +215,7 @@ describe("invariant 13: whether a standing demand is accompanied", () => {
     // nothing, and reporting that as a fact about the backer is the merge this
     // codebase keeps removing.
     const { venue, sequencer, eur, gold } = setup();
-    const { hash } = file(sequencer, eur, gold, 40n);
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
     const partial: Terms = (name) =>
       Buffer.from(eur.name).equals(Buffer.from(name)) ? eur : undefined;
     expect(accompanimentOf(eur, venue, partial, served(sequencer), hash)).toBe("unreadable");
@@ -222,7 +230,7 @@ describe("invariant 13: whether a standing demand is accompanied", () => {
 
   it("refuses a resolver that answers with a different backing", () => {
     const { venue, sequencer, eur, gold, terms } = setup();
-    const { hash } = file(sequencer, eur, gold, 40n);
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
     const liar: Terms = (name) =>
       Buffer.from(eur.name).equals(Buffer.from(name)) ? eur : eur;
     expect(accompanimentOf(eur, venue, liar, served(sequencer), hash)).toBe("unreadable");
@@ -235,11 +243,12 @@ describe("invariant 13: a lock that does not match its demand is not accompanime
     const { venue, sequencer, eur, gold, terms } = setup();
     const { hash, op } = bareDemand(sequencer, eur, 40n);
     const short = bareLock(gold, {
-      demandHash: hash,
+      attemptId: hash,
       holder: KEYS.alice,
       beneficiary: KEYS.backer,
       quantity: 79n,
       timeout: 90n,
+      decisionVenue: venue.id,
       nonce: sequencer.nextNonce(KEYS.alice, gold),
     });
     const state = commitWith(venue, sequencer, [
@@ -253,11 +262,12 @@ describe("invariant 13: a lock that does not match its demand is not accompanime
     const { venue, sequencer, eur, gold, terms } = setup();
     const { hash, op } = bareDemand(sequencer, eur, 40n);
     const elsewhere = bareLock(gold, {
-      demandHash: hash,
+      attemptId: hash,
       holder: KEYS.alice,
       beneficiary: KEYS.mallory,
       quantity: 80n,
       timeout: 90n,
+      decisionVenue: venue.id,
       nonce: sequencer.nextNonce(KEYS.alice, gold),
     });
     const state = commitWith(venue, sequencer, [
@@ -276,11 +286,12 @@ describe("invariant 13: a lock that does not match its demand is not accompanime
     const bobs = bareLock(
       gold,
       {
-        demandHash: hash,
+        attemptId: hash,
         holder: KEYS.bob,
         beneficiary: KEYS.backer,
         quantity: 80n,
         timeout: 90n,
+        decisionVenue: venue.id,
         nonce: sequencer.nextNonce(KEYS.bob, gold),
       },
       SECRETS.bob,
@@ -341,11 +352,12 @@ describe("one level, no traversal — and what covers the rest", () => {
     const hash = demandHash(demand);
     const lock: LockOp = {
       backing: gold,
-      demandHash: hash,
+      attemptId: hash,
       holder: KEYS.alice,
       beneficiary: KEYS.backer,
       quantity: 20n,
       timeout: 90n,
+      decisionVenue: venue.id,
       nonce: sequencer.nextNonce(KEYS.alice, gold),
     };
     sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice), [

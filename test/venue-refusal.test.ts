@@ -193,7 +193,11 @@ function exportedVenueReaders(): string[] {
     if (!file.endsWith(".ts")) continue;
     const source = readFileSync(new URL(file, dir), "utf8");
     for (const match of source.matchAll(/export function (\w+)\(([^)]*)\)/gs)) {
-      if ((match[2] as string).includes("Venue")) names.push(match[1] as string);
+      // The TYPE, not the word: a parameter merely named `decisionVenue` is not
+      // a venue read, and matching the substring reported one as a gap in the
+      // surface. A guard that cries wolf gets an exception added to it, which is
+      // how it stops being a guard.
+      if (/:\s*Venue\b/.test(match[2] as string)) names.push(match[1] as string);
     }
   }
   return names;

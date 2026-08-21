@@ -16,6 +16,117 @@ Format:
 
 ---
 
+## 2026-08-21 - Slice 24b: an atomic bundle commits on one witnessed object
+
+**Question:** the last structural gap in §C3. It began as "cross-operator
+reliance legs" and Bob's questioning turned it into the general case, which is
+what §C2 already asks for: "**A payment from several backings touches several
+sequencers**... Two honest answers, pick one. Extend §C3's prepare-decide-commit
+to any multi-sequencer transfer, at a round trip per payment. Or let payees
+accept partial-and-retry and price it, as card networks do."
+
+**The conversation that shaped it, because none of it was written down.**
+
+- **Bob:** "i dont really see a difference between redemption (with reliances)
+  and ordinary transfer. for both a bundle or set has to move at once." Correct,
+  and it is the paper's own framing — the reliance set is just the bundle R
+  happens to name. Built as the general mechanism accordingly.
+
+- **Bob:** "no sequencer ever needs to check other claims transfers or
+  witnessings. the backers wallet alone can check if all reliances get
+  transfered and either accept for redemption or not." Right about the backer,
+  which slice 23 already did. What it misses is the **holder's** side, and that
+  is why a lock exists at all: invariant 8 makes a transfer irreversible, so
+  handing the accompaniment over before the outcome is known destroys §11's "**a
+  refusal burns nothing** — present at Nadia, be refused, and you still hold
+  everything", which §15 prices as a term in a holding's value ("surrender the
+  set unconditionally and the refusal branch drops out"). **A lock is a transfer
+  that can be taken back.**
+
+- **Bob:** "sounds like maybe a job for some escrow the holder locks claims
+  independantly into, that triggers when all sequencers sign." The escrow is
+  right and already built — a lock IS one. The trigger is where it breaks: a
+  certificate of n signatures is delivered, and delivery reaches O1 before the
+  timeout and O2 after, so **O1 commits and O2 aborts**. That is precisely what
+  §C3's "effective on **witnessing** rather than **delivery**" defends against.
+  Delivery is a fact about a message and differs per recipient; witnessing is a
+  fact about the record and is the same for everyone. There are only three ways
+  to get a fact everyone shares — a shared record, a trusted coordinator, or
+  consensus among participants — and the design already has the first.
+
+- **Bob:** "then wait for each witnessing, which unlocks to the receiver... no
+  additional expenses." Nearly: a commitment is a **root**, so "O2 witnessed its
+  lock" is not readable from the venue (slice 18's lesson). Proving it needs
+  either O2's served state (unbounded, and it would make every sequencer fetch
+  and verify n−1 others — reopening invariant 23's membership-proof question for
+  a **peer** verifier, a third class after person and contract), or a receipt
+  (~160 bytes but co-signature rather than witnessing, so it dies if O2 goes
+  dark). The third way is one small published object per attempt, which is one
+  venue write per bundle rather than per sequencer, and needs nothing from
+  anyone else.
+
+- **Bob:** "its only for when there is no trust between parties... if i buy at my
+  local grocery its fine if i pay in independent claims." Exactly right, and the
+  cheap path was already complete: independent transfers, the receipt as the
+  payer's proof, `isOverdue` as the payee's read on how long finality takes.
+  **Atomicity here is a choice the two parties make per trade, not a rule the
+  protocol imposes** — the holder decides whether to transfer or to lock, and
+  nothing in E declares it.
+
+**Decisions (Bob):**
+
+- **One commit object, not one per sequencer.** Bob's own objection to sequencers
+  reading each other's backings is what settles it: n objects would force each
+  sequencer to check the whole set, where one object lets it match its own lock
+  and know nothing else. My earlier recommendation (n per-leg releases plus a
+  whole-set check) was the wrong half of that trade, and I had talked myself out
+  of the right one.
+
+- **The two departures that buys, and they are the only two.** A commit's message
+  **names no backing** — the same bytes have to be this operation in every log of
+  the bundle — and it **carries no nonce**, since one signature cannot sit at one
+  signer's next nonce in several backings at once. Safe here and nowhere else: a
+  repeat is a no-op because the lock it settles is gone, and it can only reach an
+  attempt its own holder named in a lock. CLAUDE.md now states the rule and its
+  exception, so a third has to argue for itself.
+
+- **The lock generalises from a demand to an attempt.** A presentation's attempt
+  id IS its demand hash, so slices 22 and 23 read unchanged; a bundle picks its
+  own. One mechanism, because it is one property: units spoken for by an attempt
+  that will either commit or expire.
+
+- **A sequencer refuses to prepare against a venue it does not watch** (§C3: "an
+  abort rather than a fork"), and `ErgoVenue.commitsFor` refuses rather than
+  answering empty — no commits reads as "the attempt did not commit", which frees
+  a reservation that may have settled elsewhere.
+
+**Found by the tests, and it corrects slice 22.** That slice's head-vs-leg guard
+refused a **withdrawal** as well as a release. A withdrawal frees your own
+reservation and gives nothing away, and §C3's abort is "expired locks unlock
+unilaterally" — for a bundle across operators it is the only exit there is.
+Release only now.
+
+**Found by the review round, three properties and no bugs**
+(`review-bundle-adjacent.mjs`): two holders may reuse one attempt id without
+touching each other's half, since each sequencer resolves against its own lock's
+holder; noise published first under the same id does not win, because it is the
+earliest **valid** commit rather than the earliest publication; and a commit
+witnessed before the lock still settles it, which is the holder choosing the
+order of their own two signatures and lets nobody else force a partial bundle.
+
+**What makes a bundle whole is the receiver, not the protocol.** A holder can
+always lock only one half. The receiver checks every half is reserved before
+parting with value — the same discipline `accompanimentOf` gives a backer before
+it signs an acceptance.
+
+**And the guard that caught its own fix.** `venue-refusal` matched the word
+"Venue" anywhere in a signature, so the lock's new `decisionVenue` field reported
+`encodeLockMessage` as an unguarded venue reader. Matching the type instead broke
+the matcher outright, and slice 20's "cannot pass vacuously" test caught that
+within the same run — which is the only reason it was noticed.
+
+**Spec change:** none needed. §C2 names both branches and §C3 specifies this one.
+
 ## 2026-08-21 - Slice 24a: the lock timeout, and the gap path it exposed
 
 **Question:** §C3's fourth step, the only one slice 22 left out. "**Abort.** The
