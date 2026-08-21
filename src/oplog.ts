@@ -124,6 +124,7 @@ export type PublishedOp =
       readonly holder: Uint8Array;
       readonly beneficiary: Uint8Array;
       readonly quantity: bigint;
+      readonly timeout: bigint;
       readonly nonce: bigint;
       readonly signature: Uint8Array;
     };
@@ -195,6 +196,7 @@ export function opMessageOfEntry(backingName: Uint8Array, entry: PublishedOp): U
         entry.holder,
         entry.beneficiary,
         entry.quantity,
+        entry.timeout,
         entry.nonce,
       );
   }
@@ -313,12 +315,14 @@ export function decodePublishedOp(bytes: Uint8Array): {
         const demandHash = r.raw(32);
         const holder = r.raw(32);
         const beneficiary = r.raw(32);
+        const quantity = readQuantity(r);
         return {
           kind,
           demandHash,
           holder,
           beneficiary,
-          quantity: readQuantity(r),
+          quantity,
+          timeout: r.u64(),
           nonce: r.u64(),
           signature,
         };

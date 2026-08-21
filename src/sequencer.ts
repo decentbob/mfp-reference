@@ -451,9 +451,8 @@ export class Sequencer {
     if (this.ledger.hasLock(backing, op.demandHash)) {
       throw new SequencerError("that backing is a leg of this demand, not the demand it accompanies");
     }
-    const items = [
-      { backing, op: { kind, demandHash: op.demandHash, nonce: op.nonce, signature } as PublishedOp },
-    ];
+    const head: PublishedOp = { kind, demandHash: op.demandHash, nonce: op.nonce, signature };
+    const items = [{ backing, op: head }];
     // Exactly the backings this demand has locks on, and no others: a leg the
     // set does not name would be resolving somebody else's reservation.
     const expected = new Set(backing.reliance.map((entry) => bytesToHex(entry.target)));
@@ -468,15 +467,13 @@ export class Sequencer {
       if (compareBytes(leg.op.demandHash, op.demandHash) !== 0) {
         throw new SequencerError("a leg must name the demand being settled");
       }
-      items.push({
-        backing: legBacking,
-        op: {
-          kind,
-          demandHash: leg.op.demandHash,
-          nonce: leg.op.nonce,
-          signature: leg.signature,
-        } as PublishedOp,
-      });
+      const legOp: PublishedOp = {
+        kind,
+        demandHash: leg.op.demandHash,
+        nonce: leg.op.nonce,
+        signature: leg.signature,
+      };
+      items.push({ backing: legBacking, op: legOp });
     }
     return this.submit(items);
   }
@@ -517,18 +514,20 @@ export class Sequencer {
       if (compareBytes(supplied.op.beneficiary, backing.obligor) !== 0) {
         throw new SequencerError("a lock must pay the demanded backing's obligor");
       }
-      return {
-        backing: legBacking,
-        op: {
-          kind: "lock",
-          demandHash: supplied.op.demandHash,
-          holder: supplied.op.holder,
-          beneficiary: supplied.op.beneficiary,
-          quantity: supplied.op.quantity,
-          nonce: supplied.op.nonce,
-          signature: supplied.signature,
-        } as PublishedOp,
+      // Built field by field rather than cast: a cast here suppressed the
+      // exhaustiveness that catches a field added to the kind and forgotten,
+      // and the lock's timeout was forgotten exactly that way.
+      const op: PublishedOp = {
+        kind: "lock",
+        demandHash: supplied.op.demandHash,
+        holder: supplied.op.holder,
+        beneficiary: supplied.op.beneficiary,
+        quantity: supplied.op.quantity,
+        timeout: supplied.op.timeout,
+        nonce: supplied.op.nonce,
+        signature: supplied.signature,
       };
+      return { backing: legBacking, op };
     });
   }
 

@@ -98,6 +98,17 @@ export interface LockOp {
   readonly beneficiary: Uint8Array;
   /** q·cᵢ — whole units of this leg per unit demanded. */
   readonly quantity: bigint;
+  /**
+   * §C3's **lock timeout**: the witnessed index past which this attempt is over.
+   *
+   * "The lock timeout the holder declared in the prepare, itself a witnessed
+   * index, unlocks everywhere... It is not the demand's deadline: the timeout
+   * ends the atomic attempt, the deadline governs evidence, and a demand
+   * outlives its locks." So an expired attempt is a retry rather than a lost
+   * demand, and the holder chooses the window because the holder bears the
+   * lock-up — the same reason §C3 makes the deadline theirs.
+   */
+  readonly timeout: bigint;
   readonly nonce: bigint;
 }
 
@@ -182,6 +193,7 @@ export function encodeLockMessage(
   holder: Uint8Array,
   beneficiary: Uint8Array,
   quantity: bigint,
+  timeout: bigint,
   nonce: bigint,
 ): Uint8Array {
   validateQuantity(quantity, "lock quantity");
@@ -192,6 +204,7 @@ export function encodeLockMessage(
   w.key32(holder, "holder key");
   w.key32(beneficiary, "beneficiary key");
   w.lengthPrefixed(bigintToMinimalBytes(quantity));
+  w.u64(timeout);
   w.u64(nonce);
   return w.finish();
 }
@@ -203,6 +216,7 @@ export function encodeLock(op: LockOp): Uint8Array {
     op.holder,
     op.beneficiary,
     op.quantity,
+    op.timeout,
     op.nonce,
   );
 }

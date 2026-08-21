@@ -86,6 +86,7 @@ function present(sequencer: Sequencer, eur: Backing, gold: Backing, quantity: bi
     holder: KEYS.alice,
     beneficiary: KEYS.backer,
     quantity: quantity * 2n,
+    timeout: 90n,
     nonce: sequencer.nextNonce(KEYS.alice, gold),
   };
   return {
