@@ -78,6 +78,33 @@ import {
 export class VenueError extends Error {}
 
 /**
+ * Run a verifier's body, keeping the one distinction every catch in this system
+ * has to make: **a venue declining to answer is not malformed input.**
+ *
+ * The verifiers here catch broadly on purpose, because everything they read —
+ * served states, receipts, commitments, published operations — comes from
+ * whoever exhibits it, so a wrong length or a missing field has to be a failed
+ * check rather than a crash (CLAUDE.md: verifiers never throw). A `VenueError`
+ * is the one thing reaching those catches that is not that. It means the caller
+ * holds a partial view and asked it something it was not synced for, and turning
+ * it into `false`, `undefined` or `"unrelated"` states a fact about a party
+ * built out of not having looked: an honest operator reads as inauthentic, a
+ * punctual successor reads as silent, a stolen key reads as live.
+ *
+ * That rule was written by hand three times and forgotten four, each time one
+ * layer above the last, so it lives here once and every catch that can see a
+ * venue goes through it. `venue-refusal.test.ts` holds the whole surface to it.
+ */
+export function answering<T>(body: () => T, onMalformed: T): T {
+  try {
+    return body();
+  } catch (cause) {
+    if (cause instanceof VenueError) throw cause;
+    return onMalformed;
+  }
+}
+
+/**
  * Whether this venue is the one the backing declares (§C2b: a grade is effective
  * "at its witnessed index on that backing's declared venue", and a revocation is
  * "effective for each backing at its witnessed index on that backing's declared

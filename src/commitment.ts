@@ -45,7 +45,7 @@ import { verifySignatureStrict } from "./keys.js";
 import type { Backing } from "./backing.js";
 import type { BackingSnapshot } from "./ledger.js";
 import { isAnOperator } from "./replacement.js";
-import type { Venue } from "./venue.js";
+import { answering, type Venue } from "./venue.js";
 import { opMessageOfEntry, type OpLogEntry } from "./oplog.js";
 
 export type { BackingSnapshot } from "./ledger.js";
@@ -194,16 +194,14 @@ export function committedLogFor(
   venue: Venue,
   served: ServedState,
 ): CommittedLog | undefined {
-  try {
+  return answering(() => {
     if (!isAnOperator(backing, venue, served.commitment.operator)) return undefined;
     if (!stateProvesCommitment(served.snapshots, served.commitment)) return undefined;
     const sequence = served.commitment.sequence;
     const snapshot = served.snapshots.find((s) => compareBytes(s.name, backing.name) === 0);
     if (snapshot === undefined) return { kind: "dropped", sequence };
     return { kind: "log", sequence, opLog: snapshot.opLog };
-  } catch {
-    return undefined;
-  }
+  }, undefined);
 }
 
 function commitmentMessage(sequence: bigint, root: Uint8Array): Uint8Array {

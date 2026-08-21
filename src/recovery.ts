@@ -69,7 +69,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { opHashOfEntry } from "./oplog.js";
 import { operatorAt, operatorIn, successionOf, type Succession } from "./replacement.js";
 import { revokedAt } from "./revocation.js";
-import { venueIsDeclared, Venue, VenueError, type WitnessedOp } from "./venue.js";
+import { answering, venueIsDeclared, Venue, type WitnessedOp } from "./venue.js";
 
 export type { ServedState };
 
@@ -199,7 +199,7 @@ export function unservedRequests(
   backing: Backing,
   served: ServedState,
 ): WitnessedOp[] {
-  try {
+  return answering(() => {
     const terms = backing.evidence.nonService;
     if (terms === undefined) return [];
     if (!venueIsDeclared(venue, backing)) return [];
@@ -264,9 +264,7 @@ export function unservedRequests(
       standing.push(witnessed);
     }
     return standing;
-  } catch {
-    return [];
-  }
+  }, []);
 }
 
 /**
@@ -322,7 +320,7 @@ function replayServedState(
   venue: Venue,
   served: ServedState,
 ): LedgerState | undefined {
-  try {
+  return answering(() => {
     // committedLogFor asks the three questions that always travel together: is
     // this signed by a key that served this backing, is this the state it
     // commits to, and does it carry this backing. What is left here is the law.
@@ -331,9 +329,7 @@ function replayServedState(
     const committed = committedLogFor(backing, venue, served);
     if (committed === undefined || committed.kind === "dropped") return undefined;
     return replayLog(backing, committed.opLog);
-  } catch {
-    return undefined;
-  }
+  }, undefined);
 }
 
 /**
@@ -355,14 +351,12 @@ export function provesHolding(
   holder: Uint8Array,
   quantity: bigint,
 ): boolean {
-  try {
+  return answering(() => {
     if (!isValidQuantity(quantity)) return false;
     const replay = replayLatestState(venue, backing, served);
     if (replay === undefined) return false;
     return (replay.balances.get(bytesToHex(holder)) ?? 0n) >= quantity;
-  } catch {
-    return false;
-  }
+  }, false);
 }
 
 /**
@@ -444,7 +438,7 @@ export function standingOutstanding(
   venue: Venue,
   boundary: ServedState,
 ): bigint | undefined {
-  try {
+  return answering(() => {
     const revoked = revokedAt(venue, backing);
     if (revoked === undefined) return undefined;
     const before = revoked - 1n;
@@ -461,12 +455,7 @@ export function standingOutstanding(
       return undefined;
     }
     return committedOutstanding(backing, venue, boundary);
-  } catch (cause) {
-    // A venue that declines to answer is not malformed input, and reporting it
-    // as "nothing to see" is how a guard gets swallowed by the layer above it.
-    if (cause instanceof VenueError) throw cause;
-    return undefined;
-  }
+  }, undefined);
 }
 
 /**
@@ -777,7 +766,7 @@ export function snapshotRedemptions(
   backing: Backing,
   served: ServedState,
 ): Redemption[] {
-  try {
+  return answering(() => {
     const clause = backing.evidence.silence;
     if (clause === undefined) return [];
     if (!venueIsDeclared(venue, backing)) return [];
@@ -800,7 +789,5 @@ export function snapshotRedemptions(
         settled: venue.witnessedIndex() > closesAt,
       };
     });
-  } catch {
-    return [];
-  }
+  }, []);
 }
