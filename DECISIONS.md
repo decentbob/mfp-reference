@@ -69,6 +69,37 @@ of the same demand. Locks are keyed by attempt id per backing, so one slot under
 the demand's hash cannot hold both the holder's leg and the backer's payout; the
 (attempt, holder) key recorded open in 24c would lift it.
 
+**The review round (four angles, all survived this time), and what it closed.**
+
+- **The commit door.** I had closed the release path for a paying lock settled
+  alone and left the commit path open: the paying lock is a one-party lock with
+  the holder as its party, which is exactly what a witnessed commit converts, so
+  the holder could publish an object under the demand's hash, `settle` the GOLD
+  and keep the EUR. **A set leg now names no decision venue** (`NO_DECISION_VENUE`,
+  its own value — `UNNAMED_VENUE` is the identity of the venue nobody named and
+  a bundle lock may name it): a presentation's legs and the paying lock carry it,
+  `witnessedCommitFor` answers nothing for such a lock (one place, so settle, the
+  gate, adoption and the verifier's fold agree), `settle` refuses it, and legs are
+  no longer asked to find a commit-serving venue — the Ergo test that refused a
+  reliant demand for want of one flipped to "a leg naming a venue is refused".
+- **The verifier's fold.** `mayAdopt`'s new gap rule had no twin in `walkGap`, so
+  `snapshotRedemptions` reported the head's release the operator refused: paid
+  twice. `admittedInGap` is one exported predicate read by both, and covers the
+  gap acceptance too (it was adopted bare, leaving the holder a live answer with
+  no payout to release against).
+- **Squats.** Anyone with one unit of the paying backing could lock under the
+  demand's hash before the backer answered and make the acceptance impossible —
+  a manufactured dishonour. A lock naming a venue under a standing demand's hash
+  is refused at the gate: a demand's hash is its set's. (The 24c junk-relock and
+  leg-slot squat tests now end at that gate.)
+- The "paying backing is a reliance leg" refusal the entry promised is in the
+  code; `legMismatch`'s messages were written for the holder's legs and read
+  backwards for the backer's lock, so they name the set's parties neutrally;
+  `LegTerms`/`legMismatch`/`soleParty` live in presentation.ts so the readers
+  (`accompanimentOf`, `payoutOf`) and the sequencer read one definition; the
+  lock's log entry has one builder; an acceptance with no standing demand is left
+  to the law's own words.
+
 **Not built:** "or the fresh issuance" — the backer issuing to pay, an issuance
 inside the settlement set; same shape, its own slice. Open from 24c still: an
 acceptance may not outlast the holder's legs' timeouts (the paying lock's bound
