@@ -397,12 +397,12 @@ describe("§C2b: void, not a fault, and nothing is unwound", () => {
   });
 
   it("invariant 19's payout reads the standing count, or a caught thief still dilutes", () => {
-    // The gap this slice found in the paper. A payout declining in the backing's
-    // own outstanding count (invariant 19) collapses as the count rises. If it
-    // read the committed count, a thief who has already been caught and revoked
-    // could keep issuing and drive every honest holder's payout toward zero, in
-    // public, for free. The standing count is checkable, so it satisfies
-    // invariant 19's "published" condition, and it does not move.
+    // The gap this slice found in the paper, now closed there. §C2b: "A payout
+    // reading this backing's own outstanding count (invariant 19) reads what
+    // stands rather than what was committed, or a revoked thief dilutes every
+    // holder by issuing on." Read against the committed count, a thief already
+    // caught could drive every honest holder's payout toward zero, in public,
+    // for free, on the one payout shape built to survive over-issuance.
     const { venue, backing, boundary, stolen } = toTheft();
     expect(standingOutstanding(backing, venue, boundary)).toBe(100n);
     venue.advance(5n);

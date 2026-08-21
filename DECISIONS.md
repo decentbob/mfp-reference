@@ -111,7 +111,8 @@ against the paper rather than argued:
   reason the operator's is: t-of-n aggregated to one Ed25519 key leaves the name,
   E and strict verification untouched.
 
-**A paper gap this surfaced, not yet raised.** Invariant 19 lets a payout decline
+**A paper gap this surfaced, and closed.** *[Landed 2026-08-21 in
+money-from-first-principles@1483333.]* Invariant 19 lets a payout decline
 in the backing's own **outstanding count**; invariant 10 defines outstanding from
 the operator's log; §C2b makes post-revocation issuance void. Nothing connects
 them. On the literal reading the payout reads the committed count - and then a
@@ -157,8 +158,10 @@ none is as dangerous, but "a venue that declines to answer is never a verdict" i
 enforced in four places by hand and not structurally. Making it structural is its
 own piece of work.
 
-**Spec change:** none made. The invariant-19 count question above is the one to
-raise.
+**Spec change:** `money-from-first-principles@1483333`, "C2b: say which
+outstanding count a payout reads after a revocation" - one sentence, at Bob's
+instruction to keep it concise. The code already read the standing count, so
+nothing here changed.
 
 ## 2026-08-20 - Slice 18: the backing that vanished, and the remedy that could not be taken
 

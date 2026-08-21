@@ -433,13 +433,11 @@ export function committedOutstanding(
  * would also allocate the loss by spend order, which is worse than any declared
  * shape, and it is a reversal in all but name (invariant 8).
  *
- * **This is the count invariant 19's payout must read.** A payout declining in
- * the backing's own outstanding count collapses as that count rises; read
- * against the committed count, a thief already caught and revoked could keep
- * issuing and drive every honest holder's payout toward zero, in public, for
- * free. This count is checkable from the published record, so it satisfies
- * invariant 19's "published" condition, and a thief cannot move it. The paper
- * does not connect the two; see DECISIONS.md.
+ * **This is the count invariant 19's payout reads**, and §C2b now says so: "A
+ * payout reading this backing's own outstanding count (invariant 19) reads what
+ * stands rather than what was committed, or a revoked thief dilutes every holder
+ * by issuing on." Checkable from the published record, so it meets invariant
+ * 19's "published" condition, and a thief cannot move it.
  */
 export function standingOutstanding(
   backing: Backing,
