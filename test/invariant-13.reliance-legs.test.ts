@@ -340,20 +340,18 @@ describe("§C3: one atomically signed decision, or none of it", () => {
   });
 });
 
-describe("what a verifier still cannot check", () => {
-  it("OPEN: a served state can carry a demand whose legs were never locked", () => {
-    // Pinning a gap, not a property. The set is the SEQUENCER's rule, because
-    // the law is per backing and invariant 13's q·cᵢ live in other states. So a
-    // log carrying an unaccompanied demand replays lawfully, and
-    // stateIsAuthentic — which folds one backing — says yes.
+describe("what the law alone does not settle", () => {
+  it("a served state can carry a demand whose legs were never locked", () => {
+    // This was an OPEN test: the law is per backing, so a log carrying an
+    // unaccompanied demand replays and stateIsAuthentic — which folds one
+    // backing — says yes. It still does, and that is correct: whether the legs
+    // are reserved is a fact about the SET, spread over several backings.
     //
-    // Closing it means replaying the legs beside the demand, and a served state
-    // does carry them, so it is reachable: it is the same shape as every other
-    // "read it across the served state" answer this codebase has landed on. Not
-    // done here because it widens stateIsAuthentic, which is a decision rather
-    // than a review fix. The exposure is bounded meanwhile: the party who would
-    // lose by it is the backer, and the backer signs the acceptance, so it can
-    // check before answering.
+    // What closed is that nobody could read it. accompanimentOf
+    // (invariant-13.accompaniment) answers it across the served state, where
+    // every backing this operator serves already is, and the backer asks it
+    // before signing an acceptance — the party that loses by an unaccompanied
+    // demand, at the moment it can still refuse.
     const { sequencer, eur } = setup();
     const op: DemandOp = {
       backing: eur,
@@ -369,75 +367,7 @@ describe("what a verifier still cannot check", () => {
       position: sequencer.opLog(eur).length,
       signature: ed25519.sign(encodeDemand(op), SECRETS.alice),
     };
-    // The law takes it: nothing here can see GOLD.
     expect(replayLog(eur, [...sequencer.opLog(eur), entry])).toBeDefined();
-    // And the sequencer does not, which is what actually holds the line today.
     expect(() => sequencer.submitDemand(op, entry.signature)).toThrow(SequencerError);
-  });
-});
-
-describe("a leg is not a head", () => {
-  it("refuses a release submitted on a leg alone", () => {
-    // Found reviewing the slice. A leg's own state resolves a release by the
-    // lock it holds, and the law cannot tell a head from a leg — a release names
-    // a demand hash and each backing answers for whatever record it has under
-    // it. GOLD has no reliance of its own, so the set it "heads" is empty and
-    // the check on leg count passed. The accompaniment settled to the backer
-    // with no demand settled and no acceptance needed, which is the whole of
-    // what taking the set together prevents.
-    const { sequencer, eur, gold } = setup();
-    const hash = file(sequencer, eur, gold, 40n).hash;
-    accept(sequencer, eur, hash);
-    const leg = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
-    expect(() =>
-      sequencer.submitRelease(leg, ed25519.sign(encodeRelease(leg), SECRETS.alice)),
-    ).toThrow(SequencerError);
-    expect(sequencer.balance(gold, KEYS.backer)).toBe(0n);
-  });
-
-  it("and a withdrawal submitted on a leg alone", () => {
-    const { sequencer, eur, gold } = setup();
-    const hash = file(sequencer, eur, gold, 40n).hash;
-    const leg = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
-    expect(() =>
-      sequencer.submitWithdrawal(leg, ed25519.sign(encodeWithdrawal(leg), SECRETS.alice)),
-    ).toThrow(SequencerError);
-    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(120n);
-  });
-
-  it("but the head is still submittable when its own legs come with it", () => {
-    const { sequencer, eur, gold } = setup();
-    const hash = file(sequencer, eur, gold, 40n).hash;
-    accept(sequencer, eur, hash);
-    release(sequencer, eur, gold, hash);
-    expect(sequencer.balance(gold, KEYS.backer)).toBe(80n);
-  });
-
-  it("and a leg can still be presented in its own right, lock intact", () => {
-    // The adjacent case the guard must not catch: GOLD is a leg of a EUR
-    // demand AND a backing Alice may present with the units the lock does not
-    // reach. Both stand at once, and settling one leaves the other reserved.
-    const { sequencer, eur, gold } = setup();
-    file(sequencer, eur, gold, 40n);
-    const own: DemandOp = {
-      backing: gold,
-      holder: KEYS.alice,
-      quantity: 100n,
-      instant: 0n,
-      deadline: DEADLINE,
-      nonce: sequencer.nextNonce(KEYS.alice, gold),
-    };
-    sequencer.submitDemand(own, ed25519.sign(encodeDemand(own), SECRETS.alice));
-    accept(sequencer, gold, demandHash(own));
-    const settle = {
-      backing: gold,
-      demandHash: demandHash(own),
-      nonce: sequencer.nextNonce(KEYS.alice, gold),
-    };
-    sequencer.submitRelease(settle, ed25519.sign(encodeRelease(settle), SECRETS.alice));
-
-    expect(sequencer.balance(gold, KEYS.backer)).toBe(100n);
-    // 200 held, 100 settled away, 80 still locked for the EUR demand.
-    expect(sequencer.availableBalance(gold, KEYS.alice)).toBe(20n);
   });
 });

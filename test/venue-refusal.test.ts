@@ -15,6 +15,7 @@ import {
   isSilent,
   provesHolding,
   redemptionIsOpen,
+  replayServedState,
   snapshotRedemptions,
   standingOutstanding,
   stateIsAuthentic,
@@ -27,6 +28,7 @@ import {
   operatorsOf,
   successionOf,
 } from "../src/replacement.js";
+import { accompanimentOf } from "../src/presentability.js";
 import { revokedAt } from "../src/revocation.js";
 import { LocalVenue, VenueError, type Venue } from "../src/venue.js";
 import { KEYS, SECRETS } from "./support.js";
@@ -161,6 +163,11 @@ function surface() {
     ["successionOf", () => successionOf(backing, refusing)],
     ["gapLegsFor", () => gapLegsFor(refusing, backing)],
     ["quietFor", () => quietFor(refusing, KEYS.operator)],
+    ["replayServedState", () => replayServedState(backing, refusing, served)],
+    [
+      "accompanimentOf",
+      () => accompanimentOf(backing, refusing, () => backing, served, new Uint8Array(32)),
+    ],
   ] as const;
 }
 

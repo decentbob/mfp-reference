@@ -16,6 +16,67 @@ Format:
 
 ---
 
+## 2026-08-21 - Slice 23: a backer can read whether a demand is accompanied
+
+**Question:** slice 22 pinned an `OPEN:` test — a served log can carry a demand
+whose reliance legs were never locked. The law is per backing, so that log
+replays and `stateIsAuthentic`, which folds one backing, says yes. Close it.
+
+**Decisions (Bob):**
+
+- **The law stays per backing, and the OPEN case stays true.** Whether the legs
+  are reserved is a fact about the SET, spread over several backings, and the
+  fold of one backing is right to be silent about it. What was missing was not a
+  stricter law but a reader.
+
+- **`accompanimentOf` reads it across the served state**, where every backing
+  the operator serves already is, plus the legs' own terms — which are hashes in
+  R, so a resolver, with every answer checked against the name asked for. That is
+  closure.ts's rule reused rather than a second one: what a store hands back is
+  never taken on its word.
+
+- **Three answers.** `accompanied`, `unaccompanied`, `unreadable`. "I could not
+  read the legs" must not come back as "the backer took in a set it cannot
+  unwind" — the merge this codebase has now removed four times (slice 18
+  `committedLogFor`, 19 `revokedAt`, 20 every venue reader, 21 `isClosed`).
+
+- **The backer is who asks.** §C3 makes the acceptance the backer's own
+  signature, and it is the party that loses by an unaccompanied demand, so it has
+  both the motive and the moment — before it answers.
+
+- **`replayServedState` is exported rather than copied.** It is the same "what
+  does this served state fold to" every reader here already needs, and a private
+  second copy beside a second caller is how one property becomes two that agree
+  until they do not.
+
+**One level, no traversal — and a test that says so.** `accompanimentOf` checks
+R(b) and does not walk down, because invariant 13 is one level by construction:
+"a reliance target's own reliance is that target's presentation problem." What
+covers the rest is one layer earlier: R(b) written as `closure(S)` already names
+everything under it, and `closureStatus` says whether it was. The two are
+complementary — closure says the TERMS are fully unwindable, accompaniment says
+this DEMAND honours them — and a test pins the pair, so a later reader tempted to
+make this traverse is changing the invariant rather than fixing a gap.
+
+**The review round found nothing**, which is a first here, and it was not for
+want of looking. Three adjacent paths probed
+(`review-accompaniment-adjacent.mjs`), all correct: a demand with **two** legs
+has both checked rather than the first; a leg whose snapshot is absent from the
+served state answers `unreadable` rather than a verdict; and a withdrawn demand
+answers `unreadable`, since there is no standing demand to answer about.
+
+**Found by the tests rather than by reasoning, and the code was right:** a lock
+by a holder with no units is not a lawful entry at all, so that leg does not
+replay and the answer is `unreadable`, not `unaccompanied`. The test premise was
+wrong, not the predicate.
+
+**The self-checking surface did its job.** Both new venue readers were caught by
+`venue-refusal`'s "covers every exported function that takes a Venue" the moment
+they landed, which is exactly the failure mode slice 20 built it for.
+
+**Spec change:** none needed. §C3 and invariant 13 say what must hold; that a
+verifier can now read it is an implementation property.
+
 ## 2026-08-21 - Slice 22: a demand reserves its reliance legs
 
 **Question:** §C3's prepare-decide-commit is the last structural gap, and closure
