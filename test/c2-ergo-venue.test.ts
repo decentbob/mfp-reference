@@ -1,6 +1,6 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
-import { makeBacking } from "../src/backing.js";
+import { makeBacking, signBacking } from "../src/backing.js";
 import { signCommitment, stateRoot, type Commitment } from "../src/commitment.js";
 import {
   commitmentRegisters,
@@ -12,6 +12,8 @@ import {
 } from "../src/ergo.js";
 import { encodePublishedOp } from "../src/oplog.js";
 import { encodeTransferMessage } from "../src/messages.js";
+import { encodeLock, type LockOp } from "../src/presentation.js";
+import { Sequencer } from "../src/sequencer.js";
 import { isSilent, provesHolding, quietFor } from "../src/recovery.js";
 import { VenueError } from "../src/venue.js";
 import { operatorAt } from "../src/replacement.js";
@@ -377,5 +379,33 @@ describe("a view answers only for what it was synced for", () => {
     await v.sync(new FakeNode().at(100n).putCommitment(commitment(0n, 0xaa), 40n), [backing]);
     expect(() => v.latestFor(KEYS.operator)).not.toThrow();
     expect(v.latestFor(KEYS.operator)?.sequence).toBe(0n);
+  });
+});
+
+describe("a sequencer on this venue refuses to prepare", () => {
+  it("because it could not read the commit a lock would settle on", () => {
+    // §C3: "A sequencer unwilling to watch it refuses to prepare, which is an
+    // abort rather than a fork." This view does not sync commits (above), so a
+    // lock taken here could be neither settled nor, once the record showed it
+    // committed, safely released — the sequencer probes the venue before it
+    // reserves anything, and the venue's refusal is the answer.
+    const sequencer = new Sequencer(SECRETS.operator, venue());
+    sequencer.register(backing, signBacking(SECRETS.backer, backing));
+    const lock: LockOp = {
+      backing,
+      attemptId: new Uint8Array(32).fill(0xe7),
+      holder: KEYS.alice,
+      beneficiary: KEYS.bob,
+      quantity: 1n,
+      timeout: 100n,
+      decisionVenue: VENUE_ID,
+      nonce: 0n,
+    };
+    expect(() => sequencer.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice))).toThrow(
+      /does not sync commits/,
+    );
+    expect(() => sequencer.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice))).toThrow(
+      VenueError,
+    );
   });
 });

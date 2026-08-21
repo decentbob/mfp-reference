@@ -155,6 +155,19 @@ export interface LockRecord {
   readonly nonce: bigint;
 }
 
+/**
+ * §C3's lock predicate: "was a valid release witnessed **at or before** the lock
+ * timeout?" At the timeout is inside; one past is not. Commit and release read
+ * it, withdrawal reads its complement, and a lock is refused at creation unless
+ * it is live then — so exactly one exit is open at every index, as release and
+ * withdrawal are complements on `acceptanceIsLive` for a demand. One definition,
+ * because the complement is the property: four hand-written inequalities agreed
+ * until the withdrawal's was forgotten (24b, found in 24c's review).
+ */
+export function lockIsLive(lock: { readonly timeout: bigint }, atWitnessedIndex: bigint): boolean {
+  return atWitnessedIndex <= lock.timeout;
+}
+
 export interface LedgerState {
   /** Units held, by holder key hex. A holder at zero is absent. */
   readonly balances: Map<string, bigint>;
@@ -465,7 +478,7 @@ export function applyEntry(
       }
       // TIME. A lock whose timeout has already passed is an attempt that is over
       // before it starts, and would reserve units nothing could ever settle.
-      if (clock !== undefined && entry.timeout <= clock) {
+      if (clock !== undefined && !lockIsLive(entry, clock)) {
         throw new LedgerError("lock timeout is not ahead of the witnessed index");
       }
       state.locks.set(bytesToHex(entry.attemptId), {
@@ -488,7 +501,7 @@ export function applyEntry(
       // timeout?" The clock passed here is the index the VENUE witnessed the
       // commit at, never the index this operator happens to be applying it —
       // which is the rule adoption already follows for a gap publication.
-      if (clock !== undefined && clock > lock.timeout) {
+      if (clock !== undefined && !lockIsLive(lock, clock)) {
         throw new LedgerError("the commit was witnessed past the lock timeout");
       }
       if (heldBy(state, bytesToHex(lock.beneficiary)) + lock.quantity >= MAX_QUANTITY_EXCLUSIVE) {
@@ -548,8 +561,8 @@ export function applyEntry(
         // A refusal and never a balance, which is what keeps a replay exact: the
         // clock is undefined on a replay, so a lock that freed its own units on
         // expiry would make an operator's correct history unreplayable.
-        if (clock !== undefined && clock > leg.timeout) {
-          throw new LedgerError("the lock timeout has passed: withdraw the set instead");
+        if (clock !== undefined && !lockIsLive(leg, clock)) {
+          throw new LedgerError("the lock timeout has passed: the set can no longer settle on this lock");
         }
         if (heldBy(state, bytesToHex(leg.beneficiary)) + leg.quantity >= MAX_QUANTITY_EXCLUSIVE) {
           throw new LedgerError("settlement would push a balance beyond the quantity bound");
@@ -593,20 +606,14 @@ export function applyEntry(
       break;
     }
     case "withdrawal": {
-      // The other exit, on a leg — and the complement of the commit on one
-      // predicate, as withdrawal and release are complements on the acceptance
-      // for a demand. §C3: "**expired** locks unlock unilaterally." Expired:
-      // at or before the timeout a commit can still be witnessed, and a lock that
-      // could be taken back meanwhile let one witnessed object settle at one
-      // sequencer and not another (found reviewing 24b: a holder freed its half
-      // one message ahead of the receiver's settle, lawfully). So exactly one
-      // exit is open at every index — commit or release inside the timeout,
-      // withdrawal past it — and the rule is TIME, a refusal and never a
-      // balance, as every rule here: a replay with no clock accepts the history
-      // either way, and applyEntry marks exactly where.
+      // The other exit, on a leg, and the complement of the commit on one
+      // predicate: §C3's "**expired** locks unlock unilaterally". TIME, a refusal
+      // and never a balance, like every rule here. Why a live lock cannot be
+      // taken back, and why the far side needs the sequencer too: 24c in
+      // DECISIONS.md.
       const leg = state.locks.get(bytesToHex(entry.demandHash));
       if (leg !== undefined) {
-        if (clock !== undefined && clock <= leg.timeout) {
+        if (clock !== undefined && lockIsLive(leg, clock)) {
           throw new LedgerError("the lock has not expired: the attempt settles or times out");
         }
         state.locks.delete(bytesToHex(entry.demandHash));
@@ -808,19 +815,6 @@ export class TransparentLedger {
   }
 
   /**
-   * The holder whose units this backing has reserved for that attempt, or
-   * undefined if it has reserved none.
-   *
-   * Exposed because a sequencer reading the venue has to know whose signature
-   * makes a published commit its own — the law would refuse a stranger's anyway,
-   * but the sequencer would otherwise have to try applying one to find out.
-   */
-  lockHolder(backing: Backing, attemptId: Uint8Array): Uint8Array | undefined {
-    const record = this.stateOf(backing).state.locks.get(bytesToHex(attemptId));
-    return record === undefined ? undefined : copyBytes(record.holder);
-  }
-
-  /**
    * Whether this backing holds a reliance lock against that demand — that is,
    * whether it is a LEG of the demand rather than the backing demanded.
    *
@@ -835,6 +829,18 @@ export class TransparentLedger {
   /** The standing demand record (invariant 23), as copies. */
   openDemands(backing: Backing): DemandRecord[] {
     return [...this.stateOf(backing).state.demands.values()].map(copyDemand);
+  }
+
+  /** One standing demand, as a copy, or undefined if none stands under that hash. */
+  demandOf(backing: Backing, hash: Uint8Array): DemandRecord | undefined {
+    const record = this.stateOf(backing).state.demands.get(bytesToHex(hash));
+    return record === undefined ? undefined : copyDemand(record);
+  }
+
+  /** One standing lock, as a copy, or undefined if none stands under that attempt. */
+  lockOf(backing: Backing, attemptId: Uint8Array): LockRecord | undefined {
+    const record = this.stateOf(backing).state.locks.get(bytesToHex(attemptId));
+    return record === undefined ? undefined : copyLock(record);
   }
 
   /** Units this holder can still spend: held minus committed by open demands. */

@@ -11,7 +11,7 @@ import {
 } from "../src/presentation.js";
 import { Sequencer, SequencerError } from "../src/sequencer.js";
 import { LocalVenue } from "../src/venue.js";
-import { KEYS, SECRETS } from "./support.js";
+import { advanceWitnessedIndex, KEYS, SECRETS } from "./support.js";
 
 // §C3's prepare-decide-commit, generalised to any multi-sequencer transfer.
 //
@@ -118,6 +118,12 @@ function prepare(venue: LocalVenue, one: Sequencer, two: Sequencer, eur: Backing
   return { eurLock, goldLock };
 }
 
+/** The holder frees its own reservation under `attempt` at that sequencer. */
+function withdrawLock(sequencer: Sequencer, backing: Backing, attempt: Uint8Array) {
+  const op = { backing, demandHash: attempt, nonce: sequencer.nextNonce(KEYS.alice, backing) };
+  return sequencer.submitWithdrawal(op, ed25519.sign(encodeWithdrawal(op), SECRETS.alice));
+}
+
 describe("§C3: prepare reserves without moving", () => {
   it("locks at each sequencer, and neither has moved anything", () => {
     const { venue, one, two, eur, gold } = setup();
@@ -214,8 +220,7 @@ describe("§C3: abort, and what each side can do alone", () => {
     const { venue, one, two, eur, gold } = setup();
     prepare(venue, one, two, eur, gold);
     venue.advance(TIMEOUT + 1n);
-    const abort = { backing: eur, demandHash: ATTEMPT, nonce: one.nextNonce(KEYS.alice, eur) };
-    one.submitWithdrawal(abort, ed25519.sign(encodeWithdrawal(abort), SECRETS.alice));
+    withdrawLock(one, eur, ATTEMPT);
     expect(one.availableBalance(eur, KEYS.alice)).toBe(200n);
     expect(one.balance(eur, KEYS.bob)).toBe(0n);
   });
@@ -224,8 +229,7 @@ describe("§C3: abort, and what each side can do alone", () => {
     const { venue, one, two, eur, gold } = setup();
     prepare(venue, one, two, eur, gold);
     venue.advance(TIMEOUT + 1n);
-    const abort = { backing: eur, demandHash: ATTEMPT, nonce: one.nextNonce(KEYS.alice, eur) };
-    one.submitWithdrawal(abort, ed25519.sign(encodeWithdrawal(abort), SECRETS.alice));
+    withdrawLock(one, eur, ATTEMPT);
     venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
     expect(() => one.settle(eur, ATTEMPT)).toThrow();
   });
@@ -364,10 +368,7 @@ describe("§C3: a half the record committed cannot be taken back", () => {
     venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
     two.settle(gold, ATTEMPT);
     venue.advance(1n);
-    const abort = { backing: eur, demandHash: ATTEMPT, nonce: one.nextNonce(KEYS.alice, eur) };
-    expect(() =>
-      one.submitWithdrawal(abort, ed25519.sign(encodeWithdrawal(abort), SECRETS.alice)),
-    ).toThrow(/expired/);
+    expect(() => withdrawLock(one, eur, ATTEMPT)).toThrow(/committed in time/);
     one.settle(eur, ATTEMPT);
     expect(one.balance(eur, KEYS.bob)).toBe(40n);
     expect(two.balance(gold, KEYS.bob)).toBe(90n);
@@ -377,40 +378,63 @@ describe("§C3: a half the record committed cannot be taken back", () => {
     // invariant-27 pins this for a demand on the acceptance; a lock has the
     // same shape on its timeout. Commit and withdrawal are complements: at or
     // before the timeout the commit settles and the withdrawal is refused, one
-    // past it the reverse. Never both open, never neither.
-    for (let at = TIMEOUT - 2n; at <= TIMEOUT + 2n; at++) {
-      const settle = setup();
-      prepare(settle.venue, settle.one, settle.two, settle.eur, settle.gold);
-      settle.venue.advance(at);
-      settle.venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
-      let committed = true;
-      try {
-        settle.one.settle(settle.eur, ATTEMPT);
-      } catch {
-        committed = false;
+    // past it the reverse. Never both open, never neither — and each refusal
+    // is checked to be THE refusal, not any throw. One world, two fresh locks
+    // per probed index, all reserved at index 0: what is under test is the
+    // exits, not the fixture.
+    const { venue, one, eur } = setup();
+    const probes = [TIMEOUT - 1n, TIMEOUT, TIMEOUT + 1n];
+    const ids = probes.map((_, i) => ({
+      settle: new Uint8Array(32).fill(0x10 + i),
+      walk: new Uint8Array(32).fill(0x20 + i),
+    }));
+    for (const pair of ids) {
+      for (const id of [pair.settle, pair.walk]) {
+        const lock = lockFor(one, eur, venue, 10n, id);
+        one.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice));
       }
-
-      const walk = setup();
-      prepare(walk.venue, walk.one, walk.two, walk.eur, walk.gold);
-      walk.venue.advance(at);
-      const abort = {
-        backing: walk.eur,
-        demandHash: ATTEMPT,
-        nonce: walk.one.nextNonce(KEYS.alice, walk.eur),
-      };
-      let withdrew = true;
+    }
+    probes.forEach((at, i) => {
+      const pair = ids[i] as { settle: Uint8Array; walk: Uint8Array };
+      advanceWitnessedIndex(venue, at);
+      venue.publishCommit(signCommit(SECRETS.alice, pair.settle));
+      let committed: string | true = true;
       try {
-        walk.one.submitWithdrawal(abort, ed25519.sign(encodeWithdrawal(abort), SECRETS.alice));
-      } catch {
-        withdrew = false;
+        one.settle(eur, pair.settle);
+      } catch (e) {
+        committed = (e as Error).message;
       }
-
+      let withdrew: string | true = true;
+      try {
+        withdrawLock(one, eur, pair.walk);
+      } catch (e) {
+        withdrew = (e as Error).message;
+      }
       expect({ at, committed, withdrew }).toEqual({
         at,
-        committed: at <= TIMEOUT,
-        withdrew: at > TIMEOUT,
+        committed: at <= TIMEOUT ? true : expect.stringMatching(/past the lock timeout/),
+        withdrew: at > TIMEOUT ? true : expect.stringMatching(/expired/),
       });
-    }
+    });
+  });
+
+  it("a commit witnessed in time is not undone by a withdrawal past the timeout", () => {
+    // The other side of the same hole, found reviewing this slice: the law
+    // accepts a withdrawal past the timeout, and a commit witnessed in time
+    // settles at any later index — so with the law alone both exits stood
+    // open at T+1 and execution order decided. The sequencer reads the record
+    // before it co-signs a withdrawal: the holder's claim that nothing
+    // committed is checked, not taken.
+    const { venue, one, two, eur, gold } = setup();
+    prepare(venue, one, two, eur, gold);
+    advanceWitnessedIndex(venue, TIMEOUT);
+    venue.publishCommit(signCommit(SECRETS.alice, ATTEMPT));
+    two.settle(gold, ATTEMPT);
+    venue.advance(1n);
+    expect(() => withdrawLock(one, eur, ATTEMPT)).toThrow(/committed in time/);
+    one.settle(eur, ATTEMPT);
+    expect(one.balance(eur, KEYS.bob)).toBe(40n);
+    expect(two.balance(gold, KEYS.bob)).toBe(90n);
   });
 });
 

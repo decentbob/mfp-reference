@@ -62,7 +62,9 @@ import {
   replayLog,
   TransparentLedger,
   type BackingSnapshot,
+  lockIsLive,
   type DemandRecord,
+  type LockRecord,
 } from "./ledger.js";
 import {
   encodeBurn,
@@ -88,7 +90,27 @@ import { isNamedSuccessor, operatorAt } from "./replacement.js";
 import { gapLegsFor, venueIsDeclared } from "./recovery.js";
 import { revokedAt } from "./revocation.js";
 import { isSignedCommit } from "./presentation.js";
-import { Venue } from "./venue.js";
+import { type Venue, type WitnessedCommit } from "./venue.js";
+
+/**
+ * What one leg of a set must carry: q*c units of the target (invariant 13),
+ * committed by the demanding holder, paying the DEMANDED backing's obligor.
+ * Checked at filing against the lock the holder signs, and at release against
+ * the lock that actually stands — the same definition both times.
+ */
+interface LegTerms {
+  readonly quantity: bigint;
+  readonly holder: Uint8Array;
+  readonly beneficiary: Uint8Array;
+}
+
+/** Why a lock does not carry the set's terms, or undefined if it does. */
+function legMismatch(lock: LegTerms, want: LegTerms): string | undefined {
+  if (lock.quantity !== want.quantity) return "a lock does not cover q·c units of its leg";
+  if (compareBytes(lock.holder, want.holder) !== 0) return "a lock must commit the demanding holder's units";
+  if (compareBytes(lock.beneficiary, want.beneficiary) !== 0) return "a lock must pay the demanded backing's obligor";
+  return undefined;
+}
 
 /** This operator declines to serve you. */
 export class SequencerError extends Error {}
@@ -343,6 +365,9 @@ export class Sequencer {
     if (!this.mayAdopt(backing, op)) return;
     const key = bytesToHex(opHashOfEntry(backing.name, op));
     if (this.receipts.has(key)) return;
+    // Skipped for the reason submit refuses it: the record shows this half
+    // committed, and a gap is not a way around the record.
+    if (op.kind === "withdrawal" && this.committedInTime(backing, op.demandHash)) return;
     let entry: OpLogEntry;
     try {
       entry = this.ledger.apply(backing, op, at);
@@ -452,6 +477,11 @@ export class Sequencer {
     if (compareBytes(op.decisionVenue, this.venue.id) !== 0) {
       throw new SequencerError("this sequencer does not watch that decision venue");
     }
+    // And it must be able to READ that venue's commits, or it would hold a
+    // reservation it can neither settle nor, once committed, safely release. A
+    // venue that does not serve them refuses here (VenueError), which is the
+    // refusal to prepare §C3 asks for.
+    this.venue.commitsFor(op.attemptId);
     const lock: PublishedOp = {
       kind: "lock",
       attemptId: op.attemptId,
@@ -486,37 +516,66 @@ export class Sequencer {
    */
   settle(backing: Backing, attemptId: Uint8Array): Receipt {
     const held = this.served(backing);
-    const candidates = this.venue
-      .commitsFor(attemptId)
-      .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
     const asOp = (commit: Commit): PublishedOp => ({
       kind: "commit",
       attemptId: commit.attemptId,
       signature: commit.signature,
     });
-    // Anyone may publish anything under any attempt id, so the holder who
-    // reserved here is what picks this operator's own commit out of the noise.
-    const holder = this.ledger.lockHolder(held, attemptId);
+    const lock = this.ledger.lockOf(held, attemptId);
     const witnessed =
-      holder !== undefined
-        ? candidates.find((w) => isSignedCommit(w.commit, holder))
-        : // No lock left, so this attempt has already settled here — or never
+      lock !== undefined
+        ? this.witnessedCommitFor(lock)
+        : // No lock stands, so this attempt has already resolved here — or never
           // existed. Invariant 26 wants a repeat answered with the identical
           // prior receipt rather than refused, so the one already co-signed is
           // what is looked for.
-          candidates.find((w) =>
-            this.receipts.has(bytesToHex(opHashOfEntry(held.name, asOp(w.commit)))),
-          );
+          this.venue
+            .commitsFor(attemptId)
+            .find((w) => this.receipts.has(bytesToHex(opHashOfEntry(held.name, asOp(w.commit)))));
     if (witnessed === undefined) {
       // Two answers, not one: a caller told the commit is missing would go to
       // the venue for an object that is there.
       throw new SequencerError(
-        holder === undefined
-          ? "no lock for that attempt is held here"
+        lock === undefined
+          ? "no lock for that attempt stands here"
           : "no commit for that attempt is witnessed at this venue",
       );
     }
     return this.submit([{ backing: held, op: asOp(witnessed.commit) }], witnessed.at);
+  }
+
+  /**
+   * The commit this lock would settle on: the earliest witnessed one signed by
+   * the lock's holder. Anyone may publish anything under any attempt id, so the
+   * holder who reserved here is what picks this operator's own commit out of
+   * the noise — and **earliest witnessing wins**: a commit republished later
+   * cannot un-commit an attempt the record already showed.
+   */
+  private witnessedCommitFor(lock: LockRecord): WitnessedCommit | undefined {
+    return this.venue
+      .commitsFor(lock.attemptId)
+      .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
+      .find((w) => isSignedCommit(w.commit, lock.holder));
+  }
+
+  /**
+   * Whether the record already shows this backing's half of an attempt
+   * committed: a valid commit witnessed while the lock was live. §C3's one
+   * predicate, read by the sequencer because the law cannot see the venue.
+   *
+   * Asked before any withdrawal of a lock is co-signed, on the submit path and
+   * the gap path alike. The law refuses a withdrawal while the lock is live and
+   * accepts one past the timeout — but a commit witnessed in time settles at
+   * any later index, so past the timeout both exits would otherwise stand open
+   * and a holder could free its half one message ahead of the receiver's
+   * settle (found reviewing 24c). A withdrawal asserts that nothing committed;
+   * the record, not the holder, says whether that is so.
+   */
+  private committedInTime(backing: Backing, attemptId: Uint8Array): boolean {
+    const lock = this.ledger.lockOf(backing, attemptId);
+    if (lock === undefined) return false;
+    const witnessed = this.witnessedCommitFor(lock);
+    return witnessed !== undefined && lockIsLive(lock, witnessed.at);
   }
 
   submitAcceptance(op: AcceptanceOp, signature: Uint8Array): Receipt {
@@ -568,17 +627,36 @@ export class Sequencer {
     // frees their own reservation without anybody's cooperation — which for a
     // bundle spread over operators is the only exit there is. Freeing a
     // reservation gives nothing away, so nothing needs holding together.
-    // "Expired" is the law's to read: a lock is withdrawable only past its timeout.
+    // "Expired" is the law's to read, and whether the record already shows the
+    // half committed is the sequencer's (committedInTime, in submit).
     if (kind === "release" && this.ledger.hasLock(backing, op.demandHash)) {
       throw new SequencerError("that backing is a leg of this demand, not the demand it accompanies");
     }
     const head: PublishedOp = { kind, demandHash: op.demandHash, nonce: op.nonce, signature };
     const items = [{ backing, op: head }];
-    // Exactly the backings this demand has locks on, and no others: a leg the
-    // set does not name would be resolving somebody else's reservation.
-    const expected = new Set(backing.reliance.map((entry) => bytesToHex(entry.target)));
+    // **Which legs the set has.** A release settles the accompaniment, so it
+    // needs every leg R(b) names, each carrying the set's terms — the shape
+    // legSet checked at filing, checked again here against the lock that
+    // actually stands, because a lock under this hash may have been withdrawn
+    // past its timeout and relocked by submitLock with any terms at all. A
+    // withdrawal frees, so it takes the legs that still stand: a bundle lock on a
+    // backing with reliance of its own has none, and a head whose leg was
+    // withdrawn alone has none left.
+    const demand = this.ledger.demandOf(backing, op.demandHash);
+    const terms =
+      demand === undefined ? undefined : this.legTerms(backing, demand.holder, demand.quantity);
+    const standing = (hex: string): boolean => {
+      const leg = this.backings.get(hex);
+      return leg !== undefined && this.ledger.hasLock(leg, op.demandHash);
+    };
+    const targets = backing.reliance.map((entry) => bytesToHex(entry.target));
+    const expected = new Set(kind === "release" ? targets : targets.filter(standing));
     if (legs.length !== expected.size) {
-      throw new SequencerError("the set must name every reliance leg, and only those");
+      throw new SequencerError(
+        kind === "release"
+          ? "the set must name every reliance leg, and only those"
+          : "a withdrawal must name every leg still standing, and only those",
+      );
     }
     for (const leg of legs) {
       const legBacking = this.served(leg.op.backing);
@@ -587,6 +665,12 @@ export class Sequencer {
       }
       if (compareBytes(leg.op.demandHash, op.demandHash) !== 0) {
         throw new SequencerError("a leg must name the demand being settled");
+      }
+      if (kind === "release" && terms !== undefined) {
+        const lock = this.ledger.lockOf(legBacking, op.demandHash);
+        if (lock === undefined) throw new SequencerError("a reliance leg is not locked");
+        const why = legMismatch(lock, terms.get(legBacking.nameHex) as LegTerms);
+        if (why !== undefined) throw new SequencerError(why);
       }
       const legOp: PublishedOp = {
         kind,
@@ -597,6 +681,20 @@ export class Sequencer {
       items.push({ backing: legBacking, op: legOp });
     }
     return this.submit(items);
+  }
+
+  /** The terms every leg of a set on this backing must carry, by target name hex. */
+  private legTerms(backing: Backing, holder: Uint8Array, quantity: bigint): Map<string, LegTerms> {
+    return new Map(
+      backing.reliance.map((entry) => [
+        bytesToHex(entry.target),
+        // Invariant 13's arithmetic, and the only place it is applied: q units of
+        // the claim need q·c of each target. Where the accompaniment goes: the
+        // DEMANDED backing's obligor, who takes in the set and may then present
+        // at this leg itself.
+        { quantity: quantity * entry.count, holder, beneficiary: backing.obligor },
+      ]),
+    );
   }
 
   /**
@@ -610,7 +708,8 @@ export class Sequencer {
     quantity: bigint,
     legs: readonly { readonly op: LockOp; readonly signature: Uint8Array }[],
   ): { backing: Backing; op: PublishedOp }[] {
-    if (legs.length !== backing.reliance.length) {
+    const terms = this.legTerms(backing, holder, quantity);
+    if (legs.length !== terms.size) {
       throw new SequencerError("a demand must lock every reliance leg, and only those");
     }
     return backing.reliance.map((entry) => {
@@ -619,22 +718,11 @@ export class Sequencer {
       );
       if (supplied === undefined) throw new SequencerError("a reliance leg is not locked");
       const legBacking = this.served(supplied.op.backing);
-      // Invariant 13's arithmetic, and the only place it is applied: q units of
-      // the claim need q·cᵢ of each target.
-      if (supplied.op.quantity !== quantity * entry.count) {
-        throw new SequencerError("a lock does not cover q·c units of its leg");
-      }
       if (compareBytes(supplied.op.attemptId, hash) !== 0) {
         throw new SequencerError("a lock must name the demand it accompanies");
       }
-      if (compareBytes(supplied.op.holder, holder) !== 0) {
-        throw new SequencerError("a lock must commit the demanding holder's units");
-      }
-      // Where the accompaniment goes: the DEMANDED backing's obligor, who takes
-      // in the set and may then present at this leg itself.
-      if (compareBytes(supplied.op.beneficiary, backing.obligor) !== 0) {
-        throw new SequencerError("a lock must pay the demanded backing's obligor");
-      }
+      const why = legMismatch(supplied.op, terms.get(legBacking.nameHex) as LegTerms);
+      if (why !== undefined) throw new SequencerError(why);
       // Built field by field rather than cast: a cast here suppressed the
       // exhaustiveness that catches a field added to the kind and forgotten,
       // and the lock's timeout was forgotten exactly that way.
@@ -777,6 +865,13 @@ export class Sequencer {
     // every later replay is answered with.
     if (existing !== undefined) return copyReceipt(existing);
 
+    // A withdrawal of a lock asserts that its attempt did not commit. The record
+    // decides that, not the holder: see committedInTime.
+    for (const item of items) {
+      if (item.op.kind === "withdrawal" && this.committedInTime(item.backing, item.op.demandHash)) {
+        throw new SequencerError("the attempt committed in time: settle it");
+      }
+    }
     const entries = this.ledger.applyAll(items, at);
     const receipts = entries.map((entry, i) =>
       signReceipt(

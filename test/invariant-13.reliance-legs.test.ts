@@ -41,6 +41,7 @@ import { KEYS, SECRETS } from "./support.js";
 // release, or the operator would choose where the accompaniment goes.
 
 const DEADLINE = 100n;
+const LOCK_TIMEOUT = 90n;
 
 function setup() {
   const venue = new LocalVenue();
@@ -92,7 +93,7 @@ function present(
     holder: KEYS.alice,
     beneficiary: KEYS.backer,
     quantity: quantity * 2n,
-    timeout: 90n,
+    timeout: LOCK_TIMEOUT,
     decisionVenue: venue.id,
     nonce: sequencer.nextNonce(KEYS.alice, gold),
   };
@@ -220,7 +221,7 @@ describe("§C3: the set settles together, or ends together", () => {
     const { hash } = file(sequencer, venue, eur, gold, 40n);
     // Since 24c a lock is withdrawable only past its timeout (c3-lock-timeout):
     // before it, the reservation is the holder's own declared commitment.
-    venue.advance(91n);
+    venue.advance(LOCK_TIMEOUT + 1n);
     const head = { backing: eur, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, eur) };
     const leg = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
     sequencer.submitWithdrawal(head, ed25519.sign(encodeWithdrawal(head), SECRETS.alice), [
@@ -239,7 +240,7 @@ describe("§C3: the set settles together, or ends together", () => {
 
     // Since 24c a lock is withdrawable only past its timeout (c3-lock-timeout):
     // before it, the reservation is the holder's own declared commitment.
-    venue.advance(91n);
+    venue.advance(LOCK_TIMEOUT + 1n);
     const head = {
       backing: eur,
       demandHash: first.hash,
@@ -389,5 +390,71 @@ describe("what the law alone does not settle", () => {
     };
     expect(replayLog(eur, [...sequencer.opLog(eur), entry])).toBeDefined();
     expect(() => sequencer.submitDemand(op, entry.signature)).toThrow(SequencerError);
+  });
+});
+
+describe("§C3: the set's shape is read where it settles, not only where it is filed", () => {
+  // Found reviewing 24c. Since 24b a lock can be created by submitLock with any
+  // terms under any attempt id — a standing demand's hash included. A head
+  // release used to check only that each leg HELD a lock, so a holder could
+  // withdraw a leg past its timeout, relock one unit to a friend under the same
+  // hash, and settle the head against the backer's still-live acceptance: 40 EUR
+  // to the backer with none of the 80 GOLD that must accompany them.
+  it("a head release checks that each leg's lock carries the set's terms", () => {
+    const { venue, sequencer, eur, gold } = setup();
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
+    accept(sequencer, eur, hash, DEADLINE);
+    venue.advance(LOCK_TIMEOUT + 1n);
+    const legOut = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
+    sequencer.submitWithdrawal(legOut, ed25519.sign(encodeWithdrawal(legOut), SECRETS.alice));
+    const junk: LockOp = {
+      backing: gold,
+      attemptId: hash,
+      holder: KEYS.alice,
+      beneficiary: KEYS.mallory,
+      quantity: 1n,
+      timeout: 200n,
+      decisionVenue: venue.id,
+      nonce: sequencer.nextNonce(KEYS.alice, gold),
+    };
+    sequencer.submitLock(junk, ed25519.sign(encodeLock(junk), SECRETS.alice));
+    expect(() => release(sequencer, eur, gold, hash)).toThrow(/does not cover/);
+    expect(sequencer.balance(eur, KEYS.backer)).toBe(0n);
+    expect(sequencer.balance(gold, KEYS.mallory)).toBe(0n);
+  });
+
+  it("a head whose leg was withdrawn alone can still be withdrawn", () => {
+    // A withdrawal takes the legs that still stand; demanding one per entry in
+    // R(b) left this head with no exit short of relocking. Same shape for a
+    // bundle lock on a backing that itself has reliance, below.
+    const { venue, sequencer, eur, gold } = setup();
+    const { hash } = file(sequencer, venue, eur, gold, 40n);
+    venue.advance(LOCK_TIMEOUT + 1n);
+    const legOut = { backing: gold, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, gold) };
+    sequencer.submitWithdrawal(legOut, ed25519.sign(encodeWithdrawal(legOut), SECRETS.alice));
+    const head = { backing: eur, demandHash: hash, nonce: sequencer.nextNonce(KEYS.alice, eur) };
+    sequencer.submitWithdrawal(head, ed25519.sign(encodeWithdrawal(head), SECRETS.alice));
+    expect(sequencer.openDemands(eur)).toHaveLength(0);
+    expect(sequencer.availableBalance(eur, KEYS.alice)).toBe(100n);
+  });
+
+  it("a bundle lock on a backing with reliance of its own is withdrawable past its timeout", () => {
+    const { venue, sequencer, eur } = setup();
+    const X = new Uint8Array(32).fill(0x11);
+    const lock: LockOp = {
+      backing: eur,
+      attemptId: X,
+      holder: KEYS.alice,
+      beneficiary: KEYS.bob,
+      quantity: 40n,
+      timeout: 10n,
+      decisionVenue: venue.id,
+      nonce: sequencer.nextNonce(KEYS.alice, eur),
+    };
+    sequencer.submitLock(lock, ed25519.sign(encodeLock(lock), SECRETS.alice));
+    venue.advance(11n);
+    const out = { backing: eur, demandHash: X, nonce: sequencer.nextNonce(KEYS.alice, eur) };
+    sequencer.submitWithdrawal(out, ed25519.sign(encodeWithdrawal(out), SECRETS.alice));
+    expect(sequencer.availableBalance(eur, KEYS.alice)).toBe(100n);
   });
 });
