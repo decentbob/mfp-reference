@@ -103,9 +103,10 @@ the rule still stands.
   submit path and the gap path alike, and the verifier's gap fold). Exactly one
   exit is open at every index **per record**, as for a demand on its acceptance
   (a set of records can have both closed, within the holder's own declared
-  window). A lock and a demand never share a hash on one backing, and a lock is
-  prepared only where the sequencer can read the commits it may settle on and
-  only for an attempt the record does not already show committed. Every TIME
+  window). A lock and a demand never share a hash on one backing, and a bundle
+  lock is prepared only where the sequencer can read the commits it may settle
+  on and only for an attempt the record does not already show committed (a set
+  leg names no venue, needs none, and comes only with its set). Every TIME
   rule is a refusal and never a balance, because the clock is undefined on a
   replay and a lock that freed its own units would make an honest history
   unreplayable. Quantities are whole

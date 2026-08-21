@@ -94,7 +94,12 @@ the demand's hash cannot hold both the holder's leg and the backer's payout; the
   leg-slot squat tests now end at that gate.) And the bare door: `submitLock`
   refuses a lock naming no decision venue, since a set leg comes only with its
   set — found regression-reviewing the fixes, where a bare leg-shaped lock slipped
-  past the gate's skip for legs and squatted the slot.
+  past the gate's skip for legs and squatted the slot. Regression-reviewing those
+  fixes found the squat's other side — BEFORE the demand exists, by anyone who
+  predicts the hash — so filing refuses a demand whose paying slot already holds a
+  lock (re-file with a fresh nonce); and that the gap rule had swallowed a timely
+  acceptance on a reliance-only backing, which brings nothing with it and is the
+  backer's whole act — only a claims-paying acceptance waits for the operator.
 - The "paying backing is a reliance leg" refusal the entry promised is in the
   code; `legMismatch`'s messages were written for the holder's legs and read
   backwards for the backer's lock, so they name the set's parties neutrally;

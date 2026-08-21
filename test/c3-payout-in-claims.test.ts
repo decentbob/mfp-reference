@@ -392,3 +392,42 @@ describe("§C3: set legs come only with their set", () => {
     expect(f.sequencer.availableBalance(f.gold, KEYS.backer)).toBe(420n);
   });
 });
+
+describe("§C3: the paying slot cannot be taken before the demand either", () => {
+  it("a demand whose paying slot already holds a lock is refused at filing: re-file with a fresh nonce", () => {
+    // Found regression-reviewing the review: the gate refused a lock under a
+    // STANDING demand's hash, so a holder who predicted her own next hash could
+    // lock the paying slot first, file, and leave the backer no way to answer.
+    const f = setup();
+    const demand: DemandOp = {
+      backing: f.eur,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: 0n,
+      deadline: DEADLINE,
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.eur),
+    };
+    const hash = demandHash(demand);
+    const n = f.sequencer.nextNonce(KEYS.backer, f.gold);
+    f.sequencer.submitIssue(
+      { backing: f.gold, recipient: KEYS.alice, quantity: 1n, nonce: n },
+      ed25519.sign(encodeIssuanceMessage(f.gold.name, KEYS.alice, 1n, n), SECRETS.backer),
+    );
+    const first: LockOp = {
+      backing: f.gold,
+      attemptId: hash,
+      holder: KEYS.alice,
+      beneficiary: KEYS.alice,
+      quantity: 1n,
+      timeout: 10_000n,
+      decisionVenue: f.venue.id,
+      parties: [KEYS.alice],
+      nonce: f.sequencer.nextNonce(KEYS.alice, f.gold),
+    };
+    f.sequencer.submitLock(first, ed25519.sign(encodeLock(first), SECRETS.alice));
+    expect(() => f.sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice))).toThrow(
+      /paying slot/,
+    );
+    expect(f.sequencer.openDemands(f.eur)).toHaveLength(0);
+  });
+});

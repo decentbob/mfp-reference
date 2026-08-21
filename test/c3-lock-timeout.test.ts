@@ -655,3 +655,28 @@ describe("§C3: the verifier's gap fold reads the record the way the operator do
     expect(f.sequencer.openDemands(f.gold)).toHaveLength(0);
   });
 });
+
+describe("§C2b: what a gap still takes for a set with legs", () => {
+  it("a timely acceptance published in a gap is adopted: the answer is the whole act where P pays outside", () => {
+    // The set's demand and releases wait for the operator (slice 26), but an
+    // acceptance on a backing whose payout settles outside the claim layer brings
+    // nothing with it and is the backer's whole act; refusing it would record a
+    // backer that answered in time as unanswered past its deadline.
+    const { venue, sequencer, eur, gold } = gapPair();
+    const { hash } = file(sequencer, venue, eur, gold, 40n, 200n);
+    sequencer.commit();
+    venue.advance(30n);
+    const answer = { backing: eur, demandHash: hash, instant: 0n, deadline: 90n, nonce: sequencer.nextNonce(KEYS.backer, eur) };
+    venue.publishOp(eur.name, {
+      kind: "acceptance",
+      demandHash: hash,
+      instant: answer.instant,
+      deadline: answer.deadline,
+      nonce: answer.nonce,
+      signature: ed25519.sign(encodeAcceptance(answer), SECRETS.backer),
+    });
+    venue.advance(1n);
+    sequencer.commit();
+    expect(sequencer.openDemands(eur)[0]?.acceptedDeadline).toBe(90n);
+  });
+});

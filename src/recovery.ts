@@ -526,8 +526,8 @@ function isLeg(op: PublishedOp): boolean {
       // would have to serve, and adopting one alone would commit a holder's
       // accompaniment to an attempt with no counterparty. Filing a reliant
       // presentation during a gap is not built — `adopt` refuses the demand for
-      // the same reason — while SETTLING one locked before the gap works, since
-      // a leg's own release is a leg here like any other.
+      // the same reason — and since slice 26 SETTLING one locked before the gap is
+      // refused too (admittedInGap): the venue holds operations one at a time.
       return false;
   }
   // Exhaustive, and asserted rather than assumed: this was an allow-list, so an
@@ -685,8 +685,10 @@ export function admittedInGap(
   const hasLegs = backing.reliance.length > 0 || paysInClaims(backing.payout);
   switch (op.kind) {
     case "demand":
-    case "acceptance":
       return !hasLegs;
+    case "acceptance":
+      // An answer is the whole act, except where it must bring the payout with it.
+      return !paysInClaims(backing.payout);
     case "release":
       return !hasLegs && !lockStands(op.demandHash);
     default:

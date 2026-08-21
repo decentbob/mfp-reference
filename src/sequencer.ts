@@ -365,11 +365,11 @@ export class Sequencer {
    * a gap and keeps the whole accompaniment — 40 units to the backer with none
    * of what must accompany them.
    *
-   * Settling a set locked BEFORE the gap is untouched: each leg's own release is
-   * an ordinary gap leg, so the set resolves wherever it was already reserved.
-   * What is refused is opening a new reliant presentation with no operator to
-   * take the locks — and refusing is §C2b's own posture, since claims "go
-   * illiquid rather than dead" while the operator is away.
+   * Since slice 26 a set neither opens nor settles in a gap: the venue holds
+   * operations one at a time, never a set, and a paying lock released alone
+   * would hand the holder the payout for nothing. Refusing is §C2b's own
+   * posture, since claims "go illiquid rather than dead" while the operator is
+   * away; the predicate is admittedInGap (recovery.ts), read by the verifier too.
    */
   private mayAdopt(backing: Backing, op: PublishedOp): boolean {
     // The one predicate the verifier's fold of the same gap reads (recovery.ts).
@@ -468,6 +468,16 @@ export class Sequencer {
       nonce,
       signature,
     };
+    // Where P pays in claims the demand's hash is also the paying slot's key: a
+    // lock standing under it there already (anyone who predicted the hash) would
+    // make the backer's answer impossible — a dishonour the holder could
+    // manufacture. Refused at filing; the holder re-files with a fresh nonce.
+    if (paysInClaims(backing.payout)) {
+      const paying = this.backings.get(bytesToHex(backing.payout.backing));
+      if (paying !== undefined && this.ledger.hasLock(paying, demandHash(op))) {
+        throw new SequencerError("the paying slot under this demand's hash is taken: re-file with a fresh nonce");
+      }
+    }
     return this.submit([
       { backing, op: demand },
       ...this.legSet(backing, demandHash(op), op.holder, op.quantity, legs),
@@ -884,9 +894,9 @@ export class Sequencer {
     at: bigint = this.witnessedIndex(),
   ): Receipt {
     const hashes = items.map((item) => opHashOfEntry(item.backing.name, item.op));
-    // **A lock is prepared only where it can later be read, on the clock it
-    // names, and only once.** Each lock item — prepared alone or as a leg of a
-    // set, this is the one gate — must name this venue as its decision venue
+    // **A bundle lock is prepared only where it can later be read, on the clock it
+    // names, and only once; a set leg names no venue and needs none.** Each lock
+    // item passes this one gate; one naming a venue must name this one
     // (§C3: "a sequencer unwilling to watch it refuses to prepare, which is an
     // abort rather than a fork"; reading the timeout on a clock nobody else
     // reads is the fork), must find a venue that serves commits (one that does
