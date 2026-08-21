@@ -232,6 +232,16 @@ returns `false` or a typed rejection on *any* malformed input — wrong lengths,
 non-integer positions, out-of-range quantities. A verifier that throws is a
 denial-of-service hole and tempts a caller to read "no exception" as "checked".
 
+**But a venue's refusal is not malformed input.** A real venue holds a partial
+view and refuses what it was not synced for, and answering `false`, `undefined`
+or `"unrelated"` there states a fact about a party built out of not having
+looked: an honest operator reads as inauthentic, a punctual successor as silent,
+a stolen key as live. So a `VenueError` propagates where everything else is
+caught. That is one rule, in one place — `answering` in `src/venue.ts` — because
+it was written by hand three times and forgotten four, each time one layer above
+the last. `venue-refusal.test.ts` holds every verifier that takes a `Venue` to
+it; a new one belongs in that list.
+
 **An error names the boundary that refused.** `EncodingError` = these bytes or
 fields are not well-formed. `SigningError` = you asked me to sign with a key
 that is not yours. `LedgerError` = the law refuses (`NonceError` = this nonce

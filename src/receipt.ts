@@ -18,7 +18,7 @@ import type { Backing } from "./backing.js";
 import { ByteWriter, compareBytes, copyBytes } from "./bytes.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
 import { isAnOperator } from "./replacement.js";
-import type { Venue } from "./venue.js";
+import { answering, type Venue } from "./venue.js";
 import { RECEIPT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
 import type { BackingSnapshot } from "./ledger.js";
@@ -181,15 +181,13 @@ function entryAt(
  * operator in force now, and a receipt is read against that log.
  */
 export function isOperatorReceipt(backing: Backing, venue: Venue, receipt: Receipt): boolean {
-  try {
+  return answering(() => {
     return (
       compareBytes(receipt.backingName, backing.name) === 0 &&
       isAnOperator(backing, venue, receipt.operator) &&
       verifyReceipt(receipt)
     );
-  } catch {
-    return false;
-  }
+  }, false);
 }
 
 /**
@@ -243,7 +241,7 @@ export function receiptStatus(
   receipt: Receipt,
   served: ServedState,
 ): ReceiptStatus {
-  try {
+  return answering(() => {
     if (!isOperatorReceipt(backing, venue, receipt)) return "unrelated";
     const committed = committedLogFor(backing, venue, served);
     if (committed === undefined) return "unrelated";
@@ -260,7 +258,5 @@ export function receiptStatus(
     return compareBytes(opHashOfEntry(backing.name, entry), receipt.opHash) === 0
       ? "witnessed"
       : "contradicted";
-  } catch {
-    return "unrelated";
-  }
+  }, "unrelated");
 }

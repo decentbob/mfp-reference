@@ -47,7 +47,7 @@ import { type Backing } from "./backing.js";
 import { ByteReader, ByteWriter, compareBytes, copyBytes } from "./bytes.js";
 import { REPLACEMENT_CONTEXT } from "./contexts.js";
 import { verifySignatureStrict } from "./keys.js";
-import { VenueError, type Venue } from "./venue.js";
+import { answering, type Venue } from "./venue.js";
 
 /** The only role this slice can replace. */
 export const ROLE_OPERATOR = 0x01;
@@ -197,7 +197,10 @@ export function successionOf(backing: Backing, venue: Venue): Succession[] {
   const chain: Succession[] = [
     { operator: copyBytes(backing.evidence.operator), from: 0n, link: copyBytes(backing.name) },
   ];
-  try {
+  // The fallback is the chain as far as it got, which at minimum is the key E
+  // names — and `answering` is what stops a venue's refusal being mistaken for
+  // that, since the genesis chain is a real answer about who serves.
+  return answering(() => {
     if (backing.evidence.replacementRule === undefined) return chain;
     const witnessed = venue
       .replacementsFor(backing.name)
@@ -241,17 +244,7 @@ export function successionOf(backing: Backing, venue: Venue): Succession[] {
       chain.push({ operator: copyBytes(successor), from, link: copyBytes(hash) });
       link = hash;
     }
-  } catch (cause) {
-    // **A venue that declines to answer is not a short chain.** Swallowing it
-    // here hands back the genesis chain — the pre-succession answer slice 14
-    // warned a caller must never get silently — so a view never synced for this
-    // backing reads the RETIRED operator as the one in force, and isSilent then
-    // grades a successor committing on schedule as silent. That opens snapshot
-    // redemption against an honest operator out of not having looked, which is
-    // the hole slice 17 closed at the venue and this catch reopened above it.
-    if (cause instanceof VenueError) throw cause;
-    return chain;
-  }
+  }, chain);
 }
 
 /**
@@ -302,7 +295,7 @@ export function operatorsOf(backing: Backing, venue: Venue): Uint8Array[] {
  * issue" until it is in force.
  */
 export function isNamedSuccessor(backing: Backing, venue: Venue, key: Uint8Array): boolean {
-  try {
+  return answering(() => {
     if (backing.evidence.replacementRule === undefined) return false;
     const chain = successionOf(backing, venue);
     const tip = chain[chain.length - 1] as Succession;
@@ -316,16 +309,12 @@ export function isNamedSuccessor(backing: Backing, venue: Venue, key: Uint8Array
           compareBytes(w.replacement.predecessor, tip.link) === 0 &&
           compareBytes(w.replacement.successor, key) === 0,
       );
-  } catch {
-    return false;
-  }
+  }, false);
 }
 
 /** Whether this key is one of the operators this backing has had. */
 export function isAnOperator(backing: Backing, venue: Venue, key: Uint8Array): boolean {
-  try {
+  return answering(() => {
     return operatorsOf(backing, venue).some((operator) => compareBytes(operator, key) === 0);
-  } catch {
-    return false;
-  }
+  }, false);
 }

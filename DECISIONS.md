@@ -16,6 +16,72 @@ Format:
 
 ---
 
+## 2026-08-21 - Slice 20: a venue's refusal is not a verdict, in one place
+
+**Question:** slice 19 fixed this rule by hand twice and both fixes moved the
+swallow one layer up rather than removing it. With `successionOf` propagating,
+`isAnOperator` caught the refusal next and answered false - so an honest
+operator's real committed state read as **inauthentic** and every receipt
+against it read `"unrelated"`. The bug class had now appeared in slices 17, 18
+and twice in 19. Make it structural.
+
+**The rule.** A real venue holds a partial view: ErgoVenue syncs for named
+backings and refuses anything else, because absence of data must not read as a
+fact. Every verifier above it catches broadly and on purpose, since served
+states, receipts and published operations all come from whoever exhibits them -
+"verifiers never throw". A `VenueError` is the one thing reaching those catches
+that is **not** malformed input, and turning it into `false`, `undefined` or
+`"unrelated"` states a fact about a party built out of not having looked: an
+honest operator reads as inauthentic, a punctual successor as silent, a stolen
+key as live.
+
+**Decisions (Bob):**
+
+- **One helper, `answering` in venue.ts**, running a verifier's body,
+  re-throwing a VenueError and returning the malformed-input answer for
+  everything else. Fourteen call sites go through it, including slice 19's two
+  hand-written re-throws, so the distinction has exactly one definition. A
+  helper rather than fourteen refined catches: the rule was written by hand
+  three times and forgotten four, so what mattered was that it stop being
+  something a maintainer has to remember at each site.
+
+- **The rule is a documented exception to "verifiers never throw"**, and
+  CLAUDE.md now says so rather than leaving the two in silent tension.
+
+- **`venue-refusal.test.ts` holds the surface to it**, and the surface is
+  **read out of the source rather than remembered**. contexts.ts asserts its
+  tags are prefix-free rather than assuming it; this asserts every exported
+  function taking a `Venue` is in the list. `venueIsDeclared` is named as the
+  one exception, because it reads only the venue's id and has no refusal to
+  swallow.
+
+**Found reviewing the implementation, and it is the point of the slice.** The
+first draft of that list missed **three of twenty-four** - `successionOf`,
+`gapLegsFor`, `quietFor` - which is the same failure the rule itself kept
+having, committed by the very mechanism meant to stop it. A hand-kept list is
+not structural. Reading the source is, and the guard was checked by deleting an
+entry and watching it fail rather than by trusting it.
+
+Two fixture bugs, both passing for the wrong reason: the first draft handed
+`isDoubleAcceptance` the same operation twice, so `equivocatingSigner` answered
+before the venue was ever read, and the earlier Ergo guard test's unsynced
+backing had an operator nobody had fetched. Both are the shape this codebase
+keeps finding in tests as well as in code - a green result that proves nothing.
+
+**A fragility recorded rather than fixed.** Putting `answering` in venue.ts made
+five modules import a *value* from it where they had imported only a type, and
+venue.ts imports values from commitment.ts, replacement.ts and revocation.ts in
+turn. The cycles resolve because nothing is used at module-evaluation time, and
+each module was checked to load standalone. A top-level statement added to
+venue.ts that called into one of those would break it. Moving `VenueError` and
+`answering` into a dependency-free module of their own would remove the class
+entirely; that is a module-boundary decision rather than part of this rule.
+
+**Spec change:** none needed. This is an implementation property throughout -
+§C0b's "published means retrievable by a stranger" says what a venue owes, and
+nothing in the paper speaks to what a reader does when it holds only part of the
+record.
+
 ## 2026-08-20 - Slice 19: revocation, and the boundary a stolen key draws
 
 **Question:** which of the backlog to take. Revocation is §C2b's first paragraph

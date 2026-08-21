@@ -62,7 +62,7 @@ import { opMessageOfEntry, type PublishedOp } from "./oplog.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
 import { receiptCovers, isOperatorReceipt, type Receipt } from "./receipt.js";
 import { successionOf, type Succession } from "./replacement.js";
-import type { Venue } from "./venue.js";
+import { answering, type Venue } from "./venue.js";
 
 /** An operation and the operator co-signature that accepted it. */
 export interface AcceptedOp {
@@ -130,7 +130,7 @@ export function isDoubleAcceptance(
   a: AcceptedOp,
   b: AcceptedOp,
 ): boolean {
-  try {
+  return answering(() => {
     if (equivocatingSigner(backing, a.op, b.op) === undefined) return false;
     // Both halves by ONE operator, and one that served this backing. Two
     // different operators of the chain accepting one nonce each is the handover
@@ -148,9 +148,7 @@ export function isDoubleAcceptance(
       receiptCovers(backing.name, a.op, a.receipt) &&
       receiptCovers(backing.name, b.op, b.receipt)
     );
-  } catch {
-    return false;
-  }
+  }, false);
 }
 
 /**
@@ -171,7 +169,7 @@ export function isDoublePosition(
   a: Receipt,
   b: Receipt,
 ): boolean {
-  try {
+  return answering(() => {
     return (
       compareBytes(a.operator, b.operator) === 0 &&
       isOperatorReceipt(backing, venue, a) &&
@@ -179,9 +177,7 @@ export function isDoublePosition(
       a.position === b.position &&
       compareBytes(a.opHash, b.opHash) !== 0
     );
-  } catch {
-    return false;
-  }
+  }, false);
 }
 
 /**
@@ -266,7 +262,7 @@ export function isRewrittenHistory(
   a: ServedState,
   b: ServedState,
 ): boolean {
-  try {
+  return answering(() => {
     const first = committedLogFor(backing, venue, a);
     const second = committedLogFor(backing, venue, b);
     if (first === undefined || second === undefined) return false;
@@ -311,7 +307,5 @@ export function isRewrittenHistory(
       if (compareBytes(before, after) !== 0) return true;
     }
     return false;
-  } catch {
-    return false;
-  }
+  }, false);
 }
