@@ -63,7 +63,7 @@ import {
   type LedgerState,
 } from "./ledger.js";
 import { compareBytes, copyBytes, isValidQuantity } from "./bytes.js";
-import { type PublishedOp } from "./oplog.js";
+import { unknownOpKind, type PublishedOp } from "./oplog.js";
 import { committedLogFor, type ServedState } from "./commitment.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { opHashOfEntry } from "./oplog.js";
@@ -488,12 +488,30 @@ export function redemptionIsOpen(
  *     without an operator, order, or a receipt.
  */
 function isLeg(op: PublishedOp): boolean {
-  return (
-    op.kind === "demand" ||
-    op.kind === "acceptance" ||
-    op.kind === "release" ||
-    op.kind === "withdrawal"
-  );
+  switch (op.kind) {
+    case "demand":
+    case "acceptance":
+    case "release":
+    case "withdrawal":
+      return true;
+    case "issue":
+    case "transfer":
+    case "burn":
+      return false;
+    case "lock":
+      // **Deliberately not a gap leg**, and it has to be said rather than left
+      // off a list. A lock reserves units for a presentation the dark operator
+      // would have to serve, and adopting one alone would commit a holder's
+      // accompaniment to an attempt with no counterparty. Filing a reliant
+      // presentation during a gap is not built — `adopt` refuses the demand for
+      // the same reason — while SETTLING one locked before the gap works, since
+      // a leg's own release is a leg here like any other.
+      return false;
+  }
+  // Exhaustive, and asserted rather than assumed: this was an allow-list, so an
+  // operation kind added later was silently not a leg and nobody had to decide.
+  // That is how the gap path inherited slice 22's relaxed demand rule.
+  return unknownOpKind(op);
 }
 
 /**

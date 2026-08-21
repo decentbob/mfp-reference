@@ -310,7 +310,28 @@ export class Sequencer {
    * and invariant 26 does not care where a request arrived: it is an accepted
    * operation, so it gets the receipt it would have got.
    */
+  /**
+   * Whether this operator may take a gap publication on this backing at all.
+   *
+   * **A demand on a backing with reliance is refused here**, because the legs
+   * cannot come with it: invariant 13 wants q·cᵢ units of each target reserved,
+   * a lock is not a gap leg (recovery.ts), and the law is per backing so nothing
+   * below can see the shortfall. Adopted anyway, a holder settles the set during
+   * a gap and keeps the whole accompaniment — 40 units to the backer with none
+   * of what must accompany them.
+   *
+   * Settling a set locked BEFORE the gap is untouched: each leg's own release is
+   * an ordinary gap leg, so the set resolves wherever it was already reserved.
+   * What is refused is opening a new reliant presentation with no operator to
+   * take the locks — and refusing is §C2b's own posture, since claims "go
+   * illiquid rather than dead" while the operator is away.
+   */
+  private mayAdopt(backing: Backing, op: PublishedOp): boolean {
+    return !(op.kind === "demand" && backing.reliance.length > 0);
+  }
+
   private adoptOne(backing: Backing, op: PublishedOp, at: bigint): void {
+    if (!this.mayAdopt(backing, op)) return;
     const key = bytesToHex(opHashOfEntry(backing.name, op));
     if (this.receipts.has(key)) return;
     let entry: OpLogEntry;

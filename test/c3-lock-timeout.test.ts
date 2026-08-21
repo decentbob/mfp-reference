@@ -212,3 +212,169 @@ describe("§C3: an expired lock unlocks unilaterally", () => {
     expect(replayLog(eur, sequencer.opLog(eur))).toBeDefined();
   });
 });
+
+describe("§C2b: the gap path cannot open a reliant presentation", () => {
+  it("refuses to adopt a demand on a backing with reliance", () => {
+    // Found regression-reviewing this slice, and it reaches back into slice 22.
+    // That slice removed applyEntry's refusal of a reliant demand — correctly,
+    // since the legs live in other states — and made the sequencer enforce the
+    // set. But `adopt` applies gap publications straight to the ledger, so the
+    // gap path inherited the relaxed law with nothing in its place: a holder
+    // published demand, acceptance and release at the venue while the operator
+    // was dark, and settled 40 units to the backer with none of the 80 that must
+    // accompany them, keeping the lot. Invariant 13, through the back door.
+    //
+    // Refused, and refusing is §C2b's own posture: claims "go illiquid rather
+    // than dead" while the operator is away. A lock is not a gap leg either
+    // (recovery.ts), so there is nothing that could have accompanied it.
+    const venue = new LocalVenue();
+    const silence = { noCommitmentDuration: 10n, challengeWindow: 5n };
+    const mk = (thing: string, reliance: { target: Uint8Array; count: bigint }[] = []) =>
+      makeBacking({
+        obligor: KEYS.backer,
+        payout: { thing, quantumExponent: -2, perUnit: 100n },
+        reliance,
+        evidence: {
+          setting: "transparent",
+          operator: KEYS.operator,
+          silence,
+          witnessing: { venue: venue.id, interval: 5n },
+        },
+      });
+    const gold = mk("GOLD");
+    const eur = mk("EUR", [{ target: gold.name, count: 2n }]);
+    const sequencer = new Sequencer(SECRETS.operator, venue);
+    for (const backing of [gold, eur]) {
+      sequencer.register(backing, signBacking(SECRETS.backer, backing));
+      const nonce = sequencer.nextNonce(KEYS.backer, backing);
+      sequencer.submitIssue(
+        { backing, recipient: KEYS.alice, quantity: 200n, nonce },
+        ed25519.sign(encodeIssuanceMessage(backing.name, KEYS.alice, 200n, nonce), SECRETS.backer),
+      );
+    }
+    sequencer.commit();
+    venue.advance(30n);
+
+    const demand: DemandOp = {
+      backing: eur,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: venue.witnessedIndex(),
+      deadline: 200n,
+      nonce: 0n,
+    };
+    const hash = demandHash(demand);
+    venue.publishOp(eur.name, {
+      kind: "demand",
+      holder: demand.holder,
+      quantity: demand.quantity,
+      instant: demand.instant,
+      deadline: demand.deadline,
+      nonce: demand.nonce,
+      signature: ed25519.sign(encodeDemand(demand), SECRETS.alice),
+    });
+    venue.advance(1n);
+    const answer = {
+      backing: eur,
+      demandHash: hash,
+      instant: demand.instant,
+      deadline: 150n,
+      nonce: sequencer.nextNonce(KEYS.backer, eur),
+    };
+    venue.publishOp(eur.name, {
+      kind: "acceptance",
+      demandHash: hash,
+      instant: answer.instant,
+      deadline: answer.deadline,
+      nonce: answer.nonce,
+      signature: ed25519.sign(encodeAcceptance(answer), SECRETS.backer),
+    });
+    venue.advance(1n);
+    const settle = { backing: eur, demandHash: hash, nonce: demand.nonce + 1n };
+    venue.publishOp(eur.name, {
+      kind: "release",
+      demandHash: hash,
+      nonce: settle.nonce,
+      signature: ed25519.sign(encodeRelease(settle), SECRETS.alice),
+    });
+
+    venue.advance(1n);
+    sequencer.commit();
+
+    expect(sequencer.balance(eur, KEYS.backer)).toBe(0n);
+    expect(sequencer.balance(eur, KEYS.alice)).toBe(200n);
+    expect(sequencer.openDemands(eur)).toHaveLength(0);
+  });
+
+  it("but a backing with no reliance settles through the gap as before", () => {
+    // The guard must be exactly as wide as the reason for it.
+    const venue = new LocalVenue();
+    const gold = makeBacking({
+      obligor: KEYS.backer,
+      payout: { thing: "GOLD", quantumExponent: -2, perUnit: 100n },
+      reliance: [],
+      evidence: {
+        setting: "transparent",
+        operator: KEYS.operator,
+        silence: { noCommitmentDuration: 10n, challengeWindow: 5n },
+        witnessing: { venue: venue.id, interval: 5n },
+      },
+    });
+    const sequencer = new Sequencer(SECRETS.operator, venue);
+    sequencer.register(gold, signBacking(SECRETS.backer, gold));
+    const nonce = sequencer.nextNonce(KEYS.backer, gold);
+    sequencer.submitIssue(
+      { backing: gold, recipient: KEYS.alice, quantity: 200n, nonce },
+      ed25519.sign(encodeIssuanceMessage(gold.name, KEYS.alice, 200n, nonce), SECRETS.backer),
+    );
+    sequencer.commit();
+    venue.advance(30n);
+
+    const demand: DemandOp = {
+      backing: gold,
+      holder: KEYS.alice,
+      quantity: 40n,
+      instant: venue.witnessedIndex(),
+      deadline: 200n,
+      nonce: 0n,
+    };
+    const hash = demandHash(demand);
+    venue.publishOp(gold.name, {
+      kind: "demand",
+      holder: demand.holder,
+      quantity: demand.quantity,
+      instant: demand.instant,
+      deadline: demand.deadline,
+      nonce: demand.nonce,
+      signature: ed25519.sign(encodeDemand(demand), SECRETS.alice),
+    });
+    venue.advance(1n);
+    const answer = {
+      backing: gold,
+      demandHash: hash,
+      instant: demand.instant,
+      deadline: 150n,
+      nonce: sequencer.nextNonce(KEYS.backer, gold),
+    };
+    venue.publishOp(gold.name, {
+      kind: "acceptance",
+      demandHash: hash,
+      instant: answer.instant,
+      deadline: answer.deadline,
+      nonce: answer.nonce,
+      signature: ed25519.sign(encodeAcceptance(answer), SECRETS.backer),
+    });
+    venue.advance(1n);
+    const settle = { backing: gold, demandHash: hash, nonce: 1n };
+    venue.publishOp(gold.name, {
+      kind: "release",
+      demandHash: hash,
+      nonce: settle.nonce,
+      signature: ed25519.sign(encodeRelease(settle), SECRETS.alice),
+    });
+    venue.advance(1n);
+    sequencer.commit();
+
+    expect(sequencer.balance(gold, KEYS.backer)).toBe(40n);
+  });
+});
