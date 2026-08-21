@@ -42,6 +42,7 @@ import {
 import {
   encodeAcceptanceMessage,
   encodeDemandMessage,
+  encodeLockMessage,
   encodeReleaseMessage,
   encodeWithdrawalMessage,
 } from "./presentation.js";
@@ -52,6 +53,7 @@ import {
   BURN_CONTEXT,
   DEMAND_CONTEXT,
   ISSUANCE_CONTEXT,
+  LOCK_CONTEXT,
   RELEASE_CONTEXT,
   TRANSFER_CONTEXT,
   WITHDRAWAL_CONTEXT,
@@ -113,6 +115,15 @@ export type PublishedOp =
   | {
       readonly kind: "withdrawal";
       readonly demandHash: Uint8Array;
+      readonly nonce: bigint;
+      readonly signature: Uint8Array;
+    }
+  | {
+      readonly kind: "lock";
+      readonly demandHash: Uint8Array;
+      readonly holder: Uint8Array;
+      readonly beneficiary: Uint8Array;
+      readonly quantity: bigint;
       readonly nonce: bigint;
       readonly signature: Uint8Array;
     };
@@ -177,6 +188,15 @@ export function opMessageOfEntry(backingName: Uint8Array, entry: PublishedOp): U
       return encodeReleaseMessage(backingName, entry.demandHash, entry.nonce);
     case "withdrawal":
       return encodeWithdrawalMessage(backingName, entry.demandHash, entry.nonce);
+    case "lock":
+      return encodeLockMessage(
+        backingName,
+        entry.demandHash,
+        entry.holder,
+        entry.beneficiary,
+        entry.quantity,
+        entry.nonce,
+      );
   }
   return unknownOpKind(entry);
 }
@@ -222,6 +242,7 @@ const OP_CONTEXTS: readonly (readonly [Uint8Array, PublishedOp["kind"]])[] = [
   [ACCEPTANCE_CONTEXT, "acceptance"],
   [RELEASE_CONTEXT, "release"],
   [WITHDRAWAL_CONTEXT, "withdrawal"],
+  [LOCK_CONTEXT, "lock"],
 ];
 
 /** A quantity, as every operation message writes it. */
@@ -288,6 +309,20 @@ export function decodePublishedOp(bytes: Uint8Array): {
       case "release":
       case "withdrawal":
         return { kind, demandHash: r.raw(32), nonce: r.u64(), signature };
+      case "lock": {
+        const demandHash = r.raw(32);
+        const holder = r.raw(32);
+        const beneficiary = r.raw(32);
+        return {
+          kind,
+          demandHash,
+          holder,
+          beneficiary,
+          quantity: readQuantity(r),
+          nonce: r.u64(),
+          signature,
+        };
+      }
     }
   })();
   r.expectEnd();
@@ -320,6 +355,14 @@ export function copyOp(entry: PublishedOp): PublishedOp {
       return {
         ...entry,
         demandHash: copyBytes(entry.demandHash),
+        signature: copyBytes(entry.signature),
+      };
+    case "lock":
+      return {
+        ...entry,
+        demandHash: copyBytes(entry.demandHash),
+        holder: copyBytes(entry.holder),
+        beneficiary: copyBytes(entry.beneficiary),
         signature: copyBytes(entry.signature),
       };
   }

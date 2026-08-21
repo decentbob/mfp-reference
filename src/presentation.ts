@@ -40,6 +40,7 @@ import {
   DEMAND_CONTEXT,
   RELEASE_CONTEXT,
   WITHDRAWAL_CONTEXT,
+  LOCK_CONTEXT,
 } from "./contexts.js";
 
 /** A holder presenting claims for payment. */
@@ -69,6 +70,34 @@ export interface AcceptanceOp {
 export interface ReleaseOp {
   readonly backing: Backing;
   readonly demandHash: Uint8Array;
+  readonly nonce: bigint;
+}
+
+/**
+ * A holder reserving one reliance leg against a demand (invariant 13, §C3's
+ * prepare).
+ *
+ * Presenting *b* for *q* means handing over *q·cᵢ* units of each *(bᵢ, cᵢ)* in
+ * R(b), and those units live in another backing's ledger entirely — so the
+ * reservation is an operation in the LEG's own log, signed by the holder whose
+ * units it commits. That keeps every backing replayable on its own, which is
+ * what provesHolding, the redemption walk and committedOutstanding all rest on.
+ *
+ * **The beneficiary is signed**, and it is the DEMANDED backing's obligor rather
+ * than this leg's: the backer of *b* takes in the whole set and may then present
+ * at *bᵢ* itself, which is what reliance is for. Signed rather than supplied at
+ * release time, or the operator would choose where the accompaniment goes.
+ */
+export interface LockOp {
+  /** The leg backing whose units are reserved. */
+  readonly backing: Backing;
+  /** The demand this accompanies, by its hash. */
+  readonly demandHash: Uint8Array;
+  readonly holder: Uint8Array;
+  /** Where these units go if the demand settles: the demanded backing's obligor. */
+  readonly beneficiary: Uint8Array;
+  /** q·cᵢ — whole units of this leg per unit demanded. */
+  readonly quantity: bigint;
   readonly nonce: bigint;
 }
 
@@ -145,6 +174,37 @@ export function encodeWithdrawalMessage(
   nonce: bigint,
 ): Uint8Array {
   return endOfDemandMessage(WITHDRAWAL_CONTEXT, backingName, demandHash, nonce);
+}
+
+export function encodeLockMessage(
+  backingName: Uint8Array,
+  demandHash: Uint8Array,
+  holder: Uint8Array,
+  beneficiary: Uint8Array,
+  quantity: bigint,
+  nonce: bigint,
+): Uint8Array {
+  validateQuantity(quantity, "lock quantity");
+  const w = new ByteWriter();
+  w.context(LOCK_CONTEXT);
+  w.key32(backingName, "backing name");
+  w.key32(demandHash, "demand hash");
+  w.key32(holder, "holder key");
+  w.key32(beneficiary, "beneficiary key");
+  w.lengthPrefixed(bigintToMinimalBytes(quantity));
+  w.u64(nonce);
+  return w.finish();
+}
+
+export function encodeLock(op: LockOp): Uint8Array {
+  return encodeLockMessage(
+    op.backing.name,
+    op.demandHash,
+    op.holder,
+    op.beneficiary,
+    op.quantity,
+    op.nonce,
+  );
 }
 
 export function encodeDemand(op: DemandOp): Uint8Array {
