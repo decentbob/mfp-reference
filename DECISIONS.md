@@ -16,6 +16,93 @@ Format:
 
 ---
 
+## 2026-08-21 - Slice 21: closure(S), and the reading its one example does not settle
+
+**Question:** what to continue with. §C3's prepare-decide-commit is the last
+structural gap, but §C3 licenses single-phase "wherever every lock in the set can
+be taken in one atomically signed decision: R empty and the payout settling
+outside the claim layer" - which is exactly what is built. Reaching two-phase
+needs reliance legs, and those need closure. So closure first: it is invariant
+16, the last binding rule in CLAUDE.md still marked unbuilt, and it is the
+prerequisite rather than a detour.
+
+**Decisions (Bob):**
+
+- **`closure(S)` is a macro for writing terms, not a rule about them.** §8b:
+  "Anyone can compute closed(b), whether R(b) equals its own closure. **An
+  unclosed requirement is readable**: the backer takes in a set it cannot fully
+  unwind, usually because it means to sell it." So an unclosed R is a legal
+  setting, `makeBacking` stores what it is handed, and no existing name moves.
+  "Expanded before hashing" means a backer who writes closure(S) gets the flat
+  expansion into its terms and the name commits to that - never that a later
+  reader re-expands, which would make a name a function of who is reading it.
+
+- **It takes a resolver, and the resolver is untrusted.** Targets are hashes, so
+  expansion needs the targets' own terms; §C0b's "published means retrievable by
+  a stranger... terms, logs, totals" is what makes one available. Every answer is
+  checked against the name asked for, **recomputed from the fields** rather than
+  read off the object, so a hand-made Backing cannot assert a name it does not
+  have.
+
+- **That check is also what makes the walk terminate**, and it is how invariant 5
+  survives: "do not write cycle detection. A reliance cycle would need a hash
+  cycle; it cannot be built." With the answer pinned to the question, a loop
+  would need one. Nothing here detects a cycle; a resolver that tries is refused
+  for lying.
+
+**The reading, flagged rather than taken silently.** §8b's worked example does
+not discriminate between two readings of "counts add up where paths meet". With
+b relying on x and y, each relying on z at 1, both give `{x:1, y:1, z:2}`,
+because the set names no z of its own. Where it does they part:
+
+```
+S = {x:1, z:1},  x -> z:2
+  sum over paths    z = 1 + 2 = 3
+  max over parents  z = max(1, 2) = 2
+```
+
+**It is max over parents**, for two reasons. Presenting the set hands the z over
+once, and the same two units satisfy both the direct requirement and x's, so 3 is
+not minimal. And decisively, sum-over-paths is **not idempotent**: closure of
+`{x:1, z:1}` is `{x:1, z:3}`, then `{x:1, z:5}`, then `{x:1, z:7}` - which would
+make §8b's own `closed(b)`, "whether R(b) equals its own closure", false for
+every set with any depth at all, and the paper says anyone can compute it. Worked
+in a scratch script rather than argued; a test pins both the reading and the
+idempotence.
+
+So the rule is `T(t) = max(S(t), sum over parents b of T(b)·R(b)(t))`, computed
+by settling each backing only once everything requiring it has settled - which a
+DAG always allows, and the graph is a DAG for the same reason there is no cycle
+detection.
+
+**Found reviewing the implementation, and it is the merge this codebase keeps
+finding.** `isClosed` returned a boolean, so "I do not have the terms under this"
+came back as "the backer took in a set it cannot fully unwind, usually because it
+means to sell it" - a verdict about the backer built out of not having looked.
+Third time in four slices: slice 18 removed it from `committedLogFor`, slice 20
+from every reader of a venue, and here it was written fresh. `closureStatus` now
+answers `closed | unclosed | unreadable`.
+
+**Also checked, and it holds:** `closureOf`'s node cap and `makeBacking`'s
+reliance cap are the same bound, so an expansion can never hand back terms nobody
+can mint. 4096 nodes mints; 4097 is refused by the expansion first.
+
+**A cost accepted rather than guarded:** the traversal pushes one entry per edge,
+so a store of 4096 backings each declaring 4096 reliance entries is ~17M pushes
+before the node cap fires. The resolver is the caller's own store and this is a
+builder's tool, so the input is not an adversary's; recorded rather than capped a
+second way.
+
+**Not built, and it is the next thing:** nothing moves a reliance leg.
+`presentableFor` is still uncalled from src and the ledger still refuses a demand
+on a backing with reliance. That is §C3's prepare-decide-commit, which this slice
+was the prerequisite for.
+
+**Spec change:** none made. §8b's example could gain the discriminating case -
+one line showing that a directly-named target is a floor rather than a second
+contribution - but the reading is forced by `closed(b)` having to mean anything,
+so the paper is not wrong, only silent. Worth raising if Bob agrees.
+
 ## 2026-08-21 - Slice 20: a venue's refusal is not a verdict, in one place
 
 **Question:** slice 19 fixed this rule by hand twice and both fixes moved the
