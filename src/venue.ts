@@ -404,8 +404,8 @@ export class LocalVenue implements Venue {
    * revocation has its whole effect the moment it is recorded, so an unsigned one
    * would freeze a backer's issuance for the price of a publication. A commit
    * has no effect here at all: it settles nothing until a sequencer matches it
-   * against a lock IT accepted, and the law checks the signature against that
-   * lock's own holder. Anyone may publish noise under any attempt id, and it
+   * against a lock IT accepted, and the law checks the signatures against the
+   * parties that lock names. Anyone may publish noise under any attempt id, and it
    * reaches nothing.
    */
   publishCommit(commit: Commit): void {

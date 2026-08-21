@@ -30,7 +30,7 @@ import {
   operatorsOf,
   successionOf,
 } from "../src/replacement.js";
-import { accompanimentOf } from "../src/presentability.js";
+import { accompanimentOf, payoutOf } from "../src/presentability.js";
 import { revokedAt } from "../src/revocation.js";
 import { LocalVenue, VenueError, type Venue } from "../src/venue.js";
 import { KEYS, SECRETS } from "./support.js";
@@ -130,8 +130,16 @@ function fixtures() {
   });
   const op = transfer(10n);
   const op2 = transfer(20n);
+  // A backing that pays in claims, so payoutOf has a venue to read (a constant
+  // payout answers "outside" before it looks).
+  const paying = makeBacking({
+    obligor: KEYS.backer,
+    payout: { backing: backing.name, perUnit: 1n },
+    reliance: [],
+    evidence: backing.evidence,
+  });
   const refusing: Venue = new RefusesEverything(real.id);
-  return { refusing, backing, served, other, receipt, op, op2 };
+  return { refusing, backing, paying, served, other, receipt, op, op2 };
 }
 
 /**
@@ -140,7 +148,7 @@ function fixtures() {
  * by a holder who was told their operator is at fault.
  */
 function surface() {
-  const { refusing, backing, served, other, receipt, op, op2 } = fixtures();
+  const { refusing, backing, paying, served, other, receipt, op, op2 } = fixtures();
   const accepted = { op, receipt };
   const accepted2 = { op: op2, receipt };
   return [
@@ -169,7 +177,7 @@ function surface() {
     ["gapLegsFor", () => gapLegsFor(refusing, backing)],
     ["quietFor", () => quietFor(refusing, KEYS.operator)],
     ["replayServedState", () => replayServedState(backing, refusing, served)],
-    ["witnessedCommitFor", () => witnessedCommitFor(refusing, { attemptId: new Uint8Array(32), parties: [KEYS.alice] })],
+    ["witnessedCommitFor", () => witnessedCommitFor(refusing, { attemptId: new Uint8Array(32), parties: [KEYS.alice], decisionVenue: refusing.id })],
     [
       "committedInTime",
       () =>
@@ -187,6 +195,10 @@ function surface() {
     [
       "accompanimentOf",
       () => accompanimentOf(backing, refusing, () => backing, served, new Uint8Array(32)),
+    ],
+    [
+      "payoutOf",
+      () => payoutOf(paying, refusing, () => backing, served, new Uint8Array(32)),
     ],
   ] as const;
 }

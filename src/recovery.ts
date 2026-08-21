@@ -54,7 +54,7 @@
 // Everything here is a verifier: it answers questions about state an untrusted
 // operator served, so it returns false on any malformed input and never throws.
 
-import { type Backing } from "./backing.js";
+import { paysInClaims, type Backing } from "./backing.js";
 import {
   applyEntry,
   lockIsLive,
@@ -72,7 +72,7 @@ import { opHashOfEntry } from "./oplog.js";
 import { operatorAt, operatorIn, successionOf, type Succession } from "./replacement.js";
 import { revokedAt } from "./revocation.js";
 import { answering, venueIsDeclared, Venue, type WitnessedCommit, type WitnessedOp } from "./venue.js";
-import { commitSatisfies } from "./presentation.js";
+import { commitSatisfies, NO_DECISION_VENUE } from "./presentation.js";
 
 export type { ServedState };
 
@@ -526,8 +526,8 @@ function isLeg(op: PublishedOp): boolean {
       // would have to serve, and adopting one alone would commit a holder's
       // accompaniment to an attempt with no counterparty. Filing a reliant
       // presentation during a gap is not built — `adopt` refuses the demand for
-      // the same reason — while SETTLING one locked before the gap works, since
-      // a leg's own release is a leg here like any other.
+      // the same reason — and since slice 26 SETTLING one locked before the gap is
+      // refused too (admittedInGap): the venue holds operations one at a time.
       return false;
   }
   // Exhaustive, and asserted rather than assumed: this was an allow-list, so an
@@ -642,8 +642,12 @@ interface Settlement {
  */
 export function witnessedCommitFor(
   venue: Venue,
-  lock: { readonly attemptId: Uint8Array; readonly parties: readonly Uint8Array[] },
+  lock: { readonly attemptId: Uint8Array; readonly parties: readonly Uint8Array[]; readonly decisionVenue: Uint8Array },
 ): WitnessedCommit | undefined {
+  // A set leg names no venue: it settles with its set on the holder's release,
+  // and no witnessed object reaches it — read here, once, so the sequencer's
+  // settle and gate, adoption and the verifier's fold all agree.
+  if (compareBytes(lock.decisionVenue, NO_DECISION_VENUE) === 0) return undefined;
   return venue
     .commitsFor(lock.attemptId)
     .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
@@ -664,6 +668,34 @@ export function committedInTime(venue: Venue, lock: LockRecord): boolean {
   return witnessed !== undefined && lockIsLive(lock, witnessed.at);
 }
 
+/**
+ * Whether a gap publication is one the record can take on its own. A set — a
+ * presentation on a backing with reliance or a claims payout — is several
+ * operations applied as one, and the venue holds operations one at a time; so in
+ * a gap a set neither opens (its demand, its acceptance) nor settles (the head's
+ * release, any leg's), while a plain presentation flows through. One predicate,
+ * read by the operator's adoption and by the verifier's fold of the same gap, so
+ * the two never disagree about what happened in it (24c's lesson).
+ */
+export function admittedInGap(
+  backing: Backing,
+  op: PublishedOp,
+  lockStands: (hash: Uint8Array) => boolean,
+): boolean {
+  const hasLegs = backing.reliance.length > 0 || paysInClaims(backing.payout);
+  switch (op.kind) {
+    case "demand":
+      return !hasLegs;
+    case "acceptance":
+      // An answer is the whole act, except where it must bring the payout with it.
+      return !paysInClaims(backing.payout);
+    case "release":
+      return !hasLegs && !lockStands(op.demandHash);
+    default:
+      return true;
+  }
+}
+
 function walkGap(
   venue: Venue,
   backing: Backing,
@@ -679,6 +711,7 @@ function walkGap(
     // unresolvable could make it so by publishing one more commitment — and a
     // backer-run operator is exactly the party with that motive.
     if (!isLatestAt(venue, backing, chain, served, witnessed.at)) continue;
+    if (!admittedInGap(backing, witnessed.op, (hash) => state.locks.has(bytesToHex(hash)))) continue;
     // A release settles the demand and drops it, so the record has to be read
     // before the law applies the leg that removes it.
     // The refusal the sequencer applies on adoption: a withdrawal of a lock the

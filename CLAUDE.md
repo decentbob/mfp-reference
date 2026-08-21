@@ -81,7 +81,15 @@ the rule still stands.
   others. **§C1's n-party exchange is the same mechanism**: each lock names its
   parties, one object carries every signature, and a sequencer converts its lock
   only when every party its lock names has signed — so a partial object settles
-  nothing anywhere, and 24b's bundle is the one-party case. Which branch a trade uses is the parties' choice — §C2's other honest
+  nothing anywhere, and 24b's bundle is the one-party case. **Where P pays in
+  claims** (§C3: "a payout paying in claims settles as a swap inside the
+  settlement"), the backer's acceptance reserves the payout — its lock on the
+  paying backing, to the holder, convertible by the holder alone — and the
+  holder's release settles surrendered set and payout as one act; `payoutOf` is
+  the holder's read of it, as `accompanimentOf` is the backer's. A lock names who
+  may convert it: one party converts on their release or their commit, several
+  only on the witnessed object — and **a set leg names no decision venue**
+  (`NO_DECISION_VENUE`), so no commit reaches it and it settles only with its set. Which branch a trade uses is the parties' choice — §C2's other honest
   answer, partial-and-retry, is the ordinary transfer path and covers every trade
   where both sides have recourse. The law stays per backing, so whether
   a demand's legs were locked is read across the served state by
@@ -95,9 +103,10 @@ the rule still stands.
   submit path and the gap path alike, and the verifier's gap fold). Exactly one
   exit is open at every index **per record**, as for a demand on its acceptance
   (a set of records can have both closed, within the holder's own declared
-  window). A lock and a demand never share a hash on one backing, and a lock is
-  prepared only where the sequencer can read the commits it may settle on and
-  only for an attempt the record does not already show committed. Every TIME
+  window). A lock and a demand never share a hash on one backing, and a bundle
+  lock is prepared only where the sequencer can read the commits it may settle
+  on and only for an attempt the record does not already show committed (a set
+  leg names no venue, needs none, and comes only with its set). Every TIME
   rule is a refusal and never a balance, because the clock is undefined on a
   replay and a lock that freed its own units would make an honest history
   unreplayable. Quantities are whole
@@ -192,7 +201,11 @@ construction — which is why they are rules here rather than code.
 - **Claims go illiquid while the operator is dark. Do not accept one.** §C2b:
   claims "go illiquid rather than dead. Value discounts until they return." A
   transfer published at the venue is evidence, never an operation, so nothing
-  moves until the operator returns or a successor takes over. A payee who
+  moves until the operator returns or a successor takes over. A presentation
+  with legs — reliance or a claims payout — neither opens nor settles in a gap:
+  the venue holds operations one at a time, never a set. One predicate
+  (`admittedInGap`) says so for the operator's adoption and the verifier's fold
+  alike. A payee who
   accepts anyway is relying on §C2b's challenge window, and that window reaches
   a careless double-spender and never a deliberate one: the spend's nonce is
   fixed, the claim's nonce is the claimant's to choose, and she moves the claim

@@ -13,7 +13,8 @@
 // than out of a holding. See DECISIONS.md.
 
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { backingName, type Backing } from "./backing.js";
+import { paysInClaims, backingName, type Backing } from "./backing.js";
+import { legMismatch, soleParty } from "./presentation.js";
 import { compareBytes } from "./bytes.js";
 import { type Terms } from "./closure.js";
 import { type ServedState } from "./commitment.js";
@@ -90,13 +91,53 @@ export function accompanimentOf(
 
       const lock = legState.locks.get(bytesToHex(demandHash));
       if (lock === undefined) return "unaccompanied";
-      // Invariant 13's arithmetic, checked rather than assumed: q units of the
-      // claim need q·cᵢ of this leg.
-      if (lock.quantity !== demand.quantity * entry.count) return "unaccompanied";
-      // The demanding holder's own units, and going where the set goes.
-      if (compareBytes(lock.holder, demand.holder) !== 0) return "unaccompanied";
-      if (compareBytes(lock.beneficiary, backing.obligor) !== 0) return "unaccompanied";
+      // The set's terms for this leg, the one definition the sequencer took it by:
+      // q times c of the target, the demanding holder's own units, to the obligor.
+      const want = { quantity: demand.quantity * entry.count, holder: demand.holder, beneficiary: backing.obligor };
+      if (legMismatch(lock, want) !== undefined) return "unaccompanied";
     }
     return "accompanied";
+  }, "unreadable");
+}
+
+/**
+ * Whether a standing demand's payout is reserved inside the claim layer: the
+ * backer's lock on the backing P names, q times per-unit units, to the demand
+ * holder, convertible by the holder alone. The holder asks before it releases,
+ * as the backer asks `accompanimentOf` before it accepts — the two sides of
+ * §C3's "neither party can write the other's outcome".
+ *
+ *   - `reserved`     the paying lock stands with the set's terms.
+ *   - `unreserved`   the demand stands and the payout does not.
+ *   - `outside`      P pays outside the claim layer; nothing here to reserve.
+ *   - `unreadable`   the served state does not let the question be answered.
+ */
+export type PayoutStanding = "reserved" | "unreserved" | "outside" | "unreadable";
+
+export function payoutOf(
+  backing: Backing,
+  venue: Venue,
+  terms: Terms,
+  served: ServedState,
+  demandHash: Uint8Array,
+): PayoutStanding {
+  return answering(() => {
+    if (!paysInClaims(backing.payout)) return "outside";
+    const head = replayServedState(backing, venue, served);
+    if (head === undefined) return "unreadable";
+    const demand = head.demands.get(bytesToHex(demandHash));
+    if (demand === undefined) return "unreadable";
+    const paying = terms(backing.payout.backing);
+    if (paying === undefined) return "unreadable";
+    if (compareBytes(backingName(paying), backing.payout.backing) !== 0) return "unreadable";
+    const payingState = replayServedState(paying, venue, served);
+    if (payingState === undefined) return "unreadable";
+    const lock = payingState.locks.get(bytesToHex(demandHash));
+    if (lock === undefined) return "unreserved";
+    const want = { quantity: demand.quantity * backing.payout.perUnit, holder: backing.obligor, beneficiary: demand.holder };
+    if (legMismatch(lock, want) !== undefined) return "unreserved";
+    const party = soleParty(lock.parties);
+    if (party === undefined || compareBytes(party, demand.holder) !== 0) return "unreserved";
+    return "reserved";
   }, "unreadable");
 }

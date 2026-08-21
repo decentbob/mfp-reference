@@ -411,11 +411,11 @@ describe("a sequencer on this venue refuses to prepare", () => {
   });
 });
 
-describe("and not as a leg of a set either", () => {
-  it("a demand whose legs would be locks is refused at the same gate", () => {
-    // The probe sits on submit, the one gate every lock passes — prepared alone
-    // or built by submitDemand as a reliance leg — because a probe on one door
-    // and not the other is the shape every review round here has found.
+describe("and a set leg names no venue at all", () => {
+  it("a leg naming this venue is refused: legs settle with their set, never on a commit", () => {
+    // Slice 26: a presentation's legs name no decision venue (NO_DECISION_VENUE), so
+    // this view's silence on commits never touches them — and a leg that names a
+    // venue anyway is refused where the set is filed.
     const gold = makeBacking({
       obligor: KEYS.backer,
       payout: { thing: "GOLD", quantumExponent: -2, perUnit: 100n },
@@ -462,6 +462,6 @@ describe("and not as a leg of a set either", () => {
       sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice), [
         { op: leg, signature: ed25519.sign(encodeLock(leg), SECRETS.alice) },
       ]),
-    ).toThrow(/does not sync commits/);
+    ).toThrow(/names no decision venue/);
   });
 });

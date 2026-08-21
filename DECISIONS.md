@@ -16,6 +16,106 @@ Format:
 
 ---
 
+## 2026-08-22 - Slice 26: a payout paying in claims settles inside the settlement
+
+**Question:** §C3. "A payout paying in claims settles as a swap inside the
+settlement. The acceptance names the claims, or the fresh issuance, that will
+pay, and the release executes as one atomic exchange, surrendered set against
+paying claims, co-signed by every sequencer either side needs. That is §C1's
+swap run at settlement, so the backer cannot take the set and not pay. Neither
+party can write the other's outcome." Until now P was a constant thing settled
+outside the claim layer, which §C3 licenses as single-phase.
+
+**Decisions (Bob: "as proposed, but simplify where you can"), and where I did:**
+
+- **P gains a form, inside the name.** Tag 0x02, `claims { backing, perUnit }`:
+  one unit pays `perUnit` whole units of the named backing. The constant tag is
+  untouched, so no existing name moves.
+- **The acceptance reserves the payout** — the backer's lock on the paying
+  backing: its own units, q times per-unit, to the demand holder, under the
+  demand's hash, parties `[holder]`, timeout at or past the acceptance's deadline
+  — taken with the acceptance in one act, the mirror of a demand and its legs.
+  Exactly one paying lock where P pays in claims, none where it does not.
+- **The holder's release settles both sides.** The release set is the head, the
+  holder's legs and the paying lock, all released by the holder, all or none.
+  "Void only on the holder's release" stays exact; the backer consented at the
+  acceptance; the sequencer's atomicity is what "cannot take the set and not
+  pay" comes to.
+- **F1 taken: parties say who converts; the lock is the locker's consent.** The
+  rule "a lock's holder must be among its parties" (slice 25) is gone: the backer
+  holds the paying lock and the holder converts it.
+- **F2 taken: one release converts a one-party lock on that party's signature;
+  several parties convert only on the witnessed object.** One release is one
+  signature; "all sign" is an exchange's rule. The law's `signerOf` reads it.
+- **F3 simplified: the acceptance's bytes are unchanged.** The paying lock is
+  tied by the demand's hash and taken in the same act; `payoutOf` reads it
+  (`reserved | unreserved | outside | unreadable`), the holder's twin of the
+  backer's `accompanimentOf`. The paper's "the acceptance names the claims" is
+  true of the record rather than of the acceptance's own message — a smaller
+  change, and the record is what anyone reads.
+
+**A hole the slice opens, closed in it.** A paying lock gives the holder a motive
+the accompaniment legs never did: in a gap `adopt` takes operations one at a
+time, so the holder could publish the paying lock's release alone and take the
+payout without surrendering. **In a gap, a presentation with legs — reliance or
+a claims payout — neither opens nor settles**: the demand (24a), the head's
+release and any leg's release are all refused adoption; plain presentations flow
+through as before. 24a's "settling a set locked before the gap is untouched" is
+superseded; the set waits for the operator, which is §C2b's "illiquid rather
+than dead". The holder's own exits (withdrawal past the timeouts) are untouched.
+
+**Also refused, at the sequencer:** a paying backing that is also a reliance leg
+of the same demand. Locks are keyed by attempt id per backing, so one slot under
+the demand's hash cannot hold both the holder's leg and the backer's payout; the
+(attempt, holder) key recorded open in 24c would lift it.
+
+**The review round (four angles, all survived this time), and what it closed.**
+
+- **The commit door.** I had closed the release path for a paying lock settled
+  alone and left the commit path open: the paying lock is a one-party lock with
+  the holder as its party, which is exactly what a witnessed commit converts, so
+  the holder could publish an object under the demand's hash, `settle` the GOLD
+  and keep the EUR. **A set leg now names no decision venue** (`NO_DECISION_VENUE`,
+  its own value — `UNNAMED_VENUE` is the identity of the venue nobody named and
+  a bundle lock may name it): a presentation's legs and the paying lock carry it,
+  `witnessedCommitFor` answers nothing for such a lock (one place, so settle, the
+  gate, adoption and the verifier's fold agree), `settle` refuses it, and legs are
+  no longer asked to find a commit-serving venue — the Ergo test that refused a
+  reliant demand for want of one flipped to "a leg naming a venue is refused".
+- **The verifier's fold.** `mayAdopt`'s new gap rule had no twin in `walkGap`, so
+  `snapshotRedemptions` reported the head's release the operator refused: paid
+  twice. `admittedInGap` is one exported predicate read by both, and covers the
+  gap acceptance too (it was adopted bare, leaving the holder a live answer with
+  no payout to release against).
+- **Squats.** Anyone with one unit of the paying backing could lock under the
+  demand's hash before the backer answered and make the acceptance impossible —
+  a manufactured dishonour. A lock naming a venue under a standing demand's hash
+  is refused at the gate: a demand's hash is its set's. (The 24c junk-relock and
+  leg-slot squat tests now end at that gate.) And the bare door: `submitLock`
+  refuses a lock naming no decision venue, since a set leg comes only with its
+  set — found regression-reviewing the fixes, where a bare leg-shaped lock slipped
+  past the gate's skip for legs and squatted the slot. Regression-reviewing those
+  fixes found the squat's other side — BEFORE the demand exists, by anyone who
+  predicts the hash — so filing refuses a demand whose paying slot already holds a
+  lock (re-file with a fresh nonce); and that the gap rule had swallowed a timely
+  acceptance on a reliance-only backing, which brings nothing with it and is the
+  backer's whole act — only a claims-paying acceptance waits for the operator.
+- The "paying backing is a reliance leg" refusal the entry promised is in the
+  code; `legMismatch`'s messages were written for the holder's legs and read
+  backwards for the backer's lock, so they name the set's parties neutrally;
+  `LegTerms`/`legMismatch`/`soleParty` live in presentation.ts so the readers
+  (`accompanimentOf`, `payoutOf`) and the sequencer read one definition; the
+  lock's log entry has one builder; an acceptance with no standing demand is left
+  to the law's own words.
+
+**Not built:** "or the fresh issuance" — the backer issuing to pay, an issuance
+inside the settlement set; same shape, its own slice. Open from 24c still: an
+acceptance may not outlast the holder's legs' timeouts (the paying lock's bound
+is enforced here; the legs' is not yet).
+
+**Spec change:** none needed. §C3 says it; the implementation reads it with the
+acceptance's bytes left alone, which the paper does not forbid.
+
 ## 2026-08-21 - Slice 25: the n-party exchange, one object signed by all
 
 **Question:** §C1's swap. "The n-party atomic exchange is first-class, and the
@@ -410,7 +510,9 @@ Demonstrated in `review-gap-unaccompanied.mjs`.
 `adopt` refuses a demand on a backing with reliance now, and refusing is §C2b's
 own posture: claims "go illiquid rather than dead" while the operator is away.
 Settling a set locked BEFORE the gap is untouched, since each leg's own release is
-an ordinary gap leg; and a backing with no reliance settles through the gap
+an ordinary gap leg; *[Superseded 2026-08-22 in slice 26: a set with legs
+neither opens nor settles in a gap — a paying lock released alone would hand
+the holder the payout for nothing.]* and a backing with no reliance settles through the gap
 exactly as it did, which a second test pins so the guard is no wider than its
 reason.
 

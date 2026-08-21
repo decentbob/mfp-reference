@@ -44,6 +44,7 @@ import {
   WITHDRAWAL_CONTEXT,
   LOCK_CONTEXT,
   COMMIT_CONTEXT,
+  utf8Encoder,
 } from "./contexts.js";
 
 /** A holder presenting claims for payment. */
@@ -91,6 +92,15 @@ export interface ReleaseOp {
  * at *bᵢ* itself, which is what reliance is for. Signed rather than supplied at
  * release time, or the operator would choose where the accompaniment goes.
  */
+/**
+ * The decision venue a set leg names: none. A presentation's legs and the
+ * backer's paying lock settle with their set on the holder's release, never on a
+ * witnessed commit, so no commit reaches a lock naming this and no venue is read
+ * for it. Its own value rather than UNNAMED_VENUE, which is a real venue's
+ * identity (the one nobody named) that a bundle lock may legitimately name.
+ */
+export const NO_DECISION_VENUE = sha256(utf8Encoder.encode("mfp/lock/no-decision-venue/v1"));
+
 export interface LockOp {
   /** The backing whose units are reserved. */
   readonly backing: Backing;
@@ -132,6 +142,11 @@ export interface LockOp {
    * one clock"). Signed by the holder, or an operator could read the deadline on
    * a friendlier clock. A sequencer that does not watch it refuses to prepare,
    * "which is an abort rather than a fork".
+   *
+   * **A set leg names no venue** (`NO_DECISION_VENUE`): a presentation's legs and the
+   * backer's paying lock settle with their set on the holder's release, never on
+   * a witnessed commit — so no commit reaches them, no decision venue is read
+   * for them, and a holder cannot convert one alone by publishing an object.
    */
   readonly decisionVenue: Uint8Array;
   /**
@@ -170,6 +185,33 @@ export interface LockOp {
 export interface CommitSignature {
   readonly signer: Uint8Array;
   readonly signature: Uint8Array;
+}
+
+/**
+ * What one lock of a set must carry: the quantity the set needs, committed by the
+ * party the set names as its holder, paying the party the set names. A demand's
+ * legs: q·c units, the demanding holder, the demanded obligor. A backer's paying
+ * lock: q·perUnit units, the obligor, the demanding holder. One definition, read
+ * where a lock is taken (the sequencer) and where it is read back (the holder's
+ * and the backer's readers), so enforcer and reader cannot drift.
+ */
+export interface LegTerms {
+  readonly quantity: bigint;
+  readonly holder: Uint8Array;
+  readonly beneficiary: Uint8Array;
+}
+
+/** Why a lock does not carry the set's terms, or undefined if it does. */
+export function legMismatch(lock: LegTerms, want: LegTerms): string | undefined {
+  if (lock.quantity !== want.quantity) return "a lock does not cover the quantity the set needs";
+  if (compareBytes(lock.holder, want.holder) !== 0) return "a lock is not held by the party the set names as its holder";
+  if (compareBytes(lock.beneficiary, want.beneficiary) !== 0) return "a lock does not pay the party the set names";
+  return undefined;
+}
+
+/** The one party of a lock that converts on a release, or undefined where several must sign the object. */
+export function soleParty(parties: readonly Uint8Array[]): Uint8Array | undefined {
+  return parties.length === 1 ? parties[0] : undefined;
 }
 
 export interface Commit {

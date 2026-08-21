@@ -11,6 +11,7 @@ import {
   encodeLock,
   type DemandOp,
   type LockOp,
+  NO_DECISION_VENUE,
 } from "../src/presentation.js";
 import { type PublishedOp } from "../src/oplog.js";
 import { Sequencer } from "../src/sequencer.js";
@@ -169,7 +170,7 @@ function file(
     beneficiary: KEYS.backer,
     quantity: quantity * 2n,
     timeout: 90n,
-    decisionVenue: venue.id,
+    decisionVenue: NO_DECISION_VENUE,
     parties: [KEYS.alice],
     nonce: sequencer.nextNonce(KEYS.alice, gold),
   };
@@ -250,7 +251,7 @@ describe("invariant 13: a lock that does not match its demand is not accompanime
       beneficiary: KEYS.backer,
       quantity: 79n,
       timeout: 90n,
-      decisionVenue: venue.id,
+      decisionVenue: NO_DECISION_VENUE,
       parties: [KEYS.alice],
       nonce: sequencer.nextNonce(KEYS.alice, gold),
     });
@@ -270,7 +271,7 @@ describe("invariant 13: a lock that does not match its demand is not accompanime
       beneficiary: KEYS.mallory,
       quantity: 80n,
       timeout: 90n,
-      decisionVenue: venue.id,
+      decisionVenue: NO_DECISION_VENUE,
       parties: [KEYS.alice],
       nonce: sequencer.nextNonce(KEYS.alice, gold),
     });
@@ -295,7 +296,7 @@ describe("invariant 13: a lock that does not match its demand is not accompanime
         beneficiary: KEYS.backer,
         quantity: 80n,
         timeout: 90n,
-        decisionVenue: venue.id,
+        decisionVenue: NO_DECISION_VENUE,
         parties: [KEYS.bob],
         nonce: sequencer.nextNonce(KEYS.bob, gold),
       },
@@ -362,7 +363,7 @@ describe("one level, no traversal — and what covers the rest", () => {
       beneficiary: KEYS.backer,
       quantity: 20n,
       timeout: 90n,
-      decisionVenue: venue.id,
+      decisionVenue: NO_DECISION_VENUE,
       parties: [KEYS.alice],
       nonce: sequencer.nextNonce(KEYS.alice, gold),
     };
