@@ -75,12 +75,17 @@ the rule still stands.
   a conjunction over a fixed list with constant counts — no disjunction, no
   computed membership. Reliance names backings and chain assets only.
 - **`closure(S)` expands deterministically before hashing**; counts sum where
-  paths meet; the stored object is flat; cap closure size (inv 16). *Only the
-  last two are built:* `makeBacking` stores R flat, sorted and deduplicated, and
-  caps its size, but nothing expands a closure or sums counts where paths meet —
-  R is taken as already closed. Harmless while reliance is inert (a demand on a
-  backing with reliance is refused), and it must land before any presentation
-  moves a leg.
+  paths meet; the stored object is flat; cap closure size (inv 16). `closureOf`
+  in `src/closure.ts` is that macro, and it is a **tool for writing terms, not a
+  rule about them**: §8b makes an unclosed R a readable setting — "the backer
+  takes in a set it cannot fully unwind, usually because it means to sell it" —
+  so `makeBacking` stores what it is handed and `closureStatus` is what a reader
+  asks. Expansion needs the targets' own terms, so it takes a resolver, and every
+  answer is checked against the name it was asked for; that check is also what
+  makes the walk terminate without the cycle detection inv 5 forbids. **A direct
+  count is a floor, not a second contribution** — see [[DECISIONS.md]] for why the
+  other reading cannot be right. Presentation still refuses a demand on a backing
+  with reliance; moving a leg is §C3's prepare-decide-commit and is not built.
 - **An unaccompanied claim is inert, never invalid, and still transferable**
   (inv 17).
 - **Time is a witnessed index, never a clock** (inv 21, 24). Every instant a
