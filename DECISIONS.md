@@ -47,6 +47,10 @@ needs the exchange.
   SET of required signers lives in the lock: a partial object fails at every
   sequencer alike, a superset is harmless, a stranger's signature is noise.
   24b's two departures stay the only two; the commit grew a count.
+  **Provided every lock in the exchange names the full set**: the protocol
+  cannot stop a party naming fewer, only make that party's own lock the one
+  that settles on fewer signatures, so each party checks the others' locks
+  before it signs — the receiver's discipline of 24b, one party further.
 - **The law verifies the commit against its own lock's parties**, so a backing's
   log still replays alone: the entry carries every signature, the lock it
   settled says which had to be there. `commitSatisfies` is the one verifier,
@@ -60,6 +64,22 @@ ring, the second and third `settle` were answered with the first's receipt and
 applied nothing. 24b's bundle spanned two operators and never met it; §C5's
 shared operator would have met it on the first ring. Receipts are keyed by
 (backing, hash) now, one helper, four sites. The ring test pins it.
+
+**Found in the review round (two of eight finders survived the usage limit; the
+rest of the pass was done by hand against the diff):** the log's commit record
+had its own copy of the signature-list framing and no canonical check, so an
+unsorted or seventeen-signer commit entry had a spelling the venue record
+refused; one codec serves both now. And `commitSatisfies` verified before it
+checked presence, so a partial object republished as noise cost up to k−1
+verifies per copy; presence is checked first. And the pin for the log's
+spelling found a latent 24b bug beneath it: `decodePublishedOp` read a backing
+name at the head of every message, but a commit's names none by design, so a
+commit's log record had never decoded at all — never exercised, since commits
+reach the venue as their own record and the log keeps objects. The decoder now
+returns no name for a commit, and ErgoVenue files a nameless record under
+nothing. Recorded, not patched: the
+gate and the withdrawal guard read the venue once per leg for one attempt, and
+the sorted-key-set check now exists in four places in src.
 
 **Not built, and next on this line:** §C3's "a payout paying in claims settles
 as a swap inside the settlement" — the backer locks its paying claims under the
