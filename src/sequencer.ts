@@ -310,7 +310,28 @@ export class Sequencer {
    * and invariant 26 does not care where a request arrived: it is an accepted
    * operation, so it gets the receipt it would have got.
    */
+  /**
+   * Whether this operator may take a gap publication on this backing at all.
+   *
+   * **A demand on a backing with reliance is refused here**, because the legs
+   * cannot come with it: invariant 13 wants q·cᵢ units of each target reserved,
+   * a lock is not a gap leg (recovery.ts), and the law is per backing so nothing
+   * below can see the shortfall. Adopted anyway, a holder settles the set during
+   * a gap and keeps the whole accompaniment — 40 units to the backer with none
+   * of what must accompany them.
+   *
+   * Settling a set locked BEFORE the gap is untouched: each leg's own release is
+   * an ordinary gap leg, so the set resolves wherever it was already reserved.
+   * What is refused is opening a new reliant presentation with no operator to
+   * take the locks — and refusing is §C2b's own posture, since claims "go
+   * illiquid rather than dead" while the operator is away.
+   */
+  private mayAdopt(backing: Backing, op: PublishedOp): boolean {
+    return !(op.kind === "demand" && backing.reliance.length > 0);
+  }
+
   private adoptOne(backing: Backing, op: PublishedOp, at: bigint): void {
+    if (!this.mayAdopt(backing, op)) return;
     const key = bytesToHex(opHashOfEntry(backing.name, op));
     if (this.receipts.has(key)) return;
     let entry: OpLogEntry;
@@ -451,9 +472,8 @@ export class Sequencer {
     if (this.ledger.hasLock(backing, op.demandHash)) {
       throw new SequencerError("that backing is a leg of this demand, not the demand it accompanies");
     }
-    const items = [
-      { backing, op: { kind, demandHash: op.demandHash, nonce: op.nonce, signature } as PublishedOp },
-    ];
+    const head: PublishedOp = { kind, demandHash: op.demandHash, nonce: op.nonce, signature };
+    const items = [{ backing, op: head }];
     // Exactly the backings this demand has locks on, and no others: a leg the
     // set does not name would be resolving somebody else's reservation.
     const expected = new Set(backing.reliance.map((entry) => bytesToHex(entry.target)));
@@ -468,15 +488,13 @@ export class Sequencer {
       if (compareBytes(leg.op.demandHash, op.demandHash) !== 0) {
         throw new SequencerError("a leg must name the demand being settled");
       }
-      items.push({
-        backing: legBacking,
-        op: {
-          kind,
-          demandHash: leg.op.demandHash,
-          nonce: leg.op.nonce,
-          signature: leg.signature,
-        } as PublishedOp,
-      });
+      const legOp: PublishedOp = {
+        kind,
+        demandHash: leg.op.demandHash,
+        nonce: leg.op.nonce,
+        signature: leg.signature,
+      };
+      items.push({ backing: legBacking, op: legOp });
     }
     return this.submit(items);
   }
@@ -517,18 +535,20 @@ export class Sequencer {
       if (compareBytes(supplied.op.beneficiary, backing.obligor) !== 0) {
         throw new SequencerError("a lock must pay the demanded backing's obligor");
       }
-      return {
-        backing: legBacking,
-        op: {
-          kind: "lock",
-          demandHash: supplied.op.demandHash,
-          holder: supplied.op.holder,
-          beneficiary: supplied.op.beneficiary,
-          quantity: supplied.op.quantity,
-          nonce: supplied.op.nonce,
-          signature: supplied.signature,
-        } as PublishedOp,
+      // Built field by field rather than cast: a cast here suppressed the
+      // exhaustiveness that catches a field added to the kind and forgotten,
+      // and the lock's timeout was forgotten exactly that way.
+      const op: PublishedOp = {
+        kind: "lock",
+        demandHash: supplied.op.demandHash,
+        holder: supplied.op.holder,
+        beneficiary: supplied.op.beneficiary,
+        quantity: supplied.op.quantity,
+        timeout: supplied.op.timeout,
+        nonce: supplied.op.nonce,
+        signature: supplied.signature,
       };
+      return { backing: legBacking, op };
     });
   }
 

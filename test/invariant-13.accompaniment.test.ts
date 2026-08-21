@@ -136,6 +136,7 @@ function bareLock(
     holder: full.holder,
     beneficiary: full.beneficiary,
     quantity: full.quantity,
+    timeout: full.timeout,
     nonce: full.nonce,
     signature: ed25519.sign(encodeLock(full), secret),
   };
@@ -159,6 +160,7 @@ function file(sequencer: Sequencer, eur: Backing, gold: Backing, quantity: bigin
     holder: KEYS.alice,
     beneficiary: KEYS.backer,
     quantity: quantity * 2n,
+    timeout: 90n,
     nonce: sequencer.nextNonce(KEYS.alice, gold),
   };
   sequencer.submitDemand(demand, signature, [
@@ -237,6 +239,7 @@ describe("invariant 13: a lock that does not match its demand is not accompanime
       holder: KEYS.alice,
       beneficiary: KEYS.backer,
       quantity: 79n,
+      timeout: 90n,
       nonce: sequencer.nextNonce(KEYS.alice, gold),
     });
     const state = commitWith(venue, sequencer, [
@@ -254,6 +257,7 @@ describe("invariant 13: a lock that does not match its demand is not accompanime
       holder: KEYS.alice,
       beneficiary: KEYS.mallory,
       quantity: 80n,
+      timeout: 90n,
       nonce: sequencer.nextNonce(KEYS.alice, gold),
     });
     const state = commitWith(venue, sequencer, [
@@ -276,6 +280,7 @@ describe("invariant 13: a lock that does not match its demand is not accompanime
         holder: KEYS.bob,
         beneficiary: KEYS.backer,
         quantity: 80n,
+        timeout: 90n,
         nonce: sequencer.nextNonce(KEYS.bob, gold),
       },
       SECRETS.bob,
@@ -340,6 +345,7 @@ describe("one level, no traversal — and what covers the rest", () => {
       holder: KEYS.alice,
       beneficiary: KEYS.backer,
       quantity: 20n,
+      timeout: 90n,
       nonce: sequencer.nextNonce(KEYS.alice, gold),
     };
     sequencer.submitDemand(demand, ed25519.sign(encodeDemand(demand), SECRETS.alice), [

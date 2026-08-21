@@ -76,7 +76,11 @@ the rule still stands.
   (§C3's single-phase, "the whole set and the paying leg inside one operator").
   Two-phase across operators is not built. The law stays per backing, so whether
   a demand's legs were locked is read across the served state by
-  `accompanimentOf`, which the backer asks before it signs an acceptance. Quantities are whole
+  `accompanimentOf`, which the backer asks before it signs an acceptance. **A
+  lock carries §C3's timeout**, and past it the set can no longer settle, so the
+  only exit is withdrawal — a refusal and never a balance, because the clock is
+  undefined on a replay and a lock that freed its own units would make an
+  honest history unreplayable. Quantities are whole
   numbers of the backing's declared unit; counts in R are whole. Reliance is
   a conjunction over a fixed list with constant counts — no disjunction, no
   computed membership. Reliance names backings and chain assets only.

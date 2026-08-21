@@ -148,6 +148,8 @@ export interface LockRecord {
   /** The DEMANDED backing's obligor, signed by the holder in the lock. */
   readonly beneficiary: Uint8Array;
   readonly quantity: bigint;
+  /** §C3's lock timeout: the witnessed index past which this attempt is over. */
+  readonly timeout: bigint;
   readonly nonce: bigint;
 }
 
@@ -438,11 +440,17 @@ export function applyEntry(
       if (spendable(state, entry.holder) < entry.quantity) {
         throw new LedgerError("insufficient balance");
       }
+      // TIME. A lock whose timeout has already passed is an attempt that is over
+      // before it starts, and would reserve units nothing could ever settle.
+      if (clock !== undefined && entry.timeout <= clock) {
+        throw new LedgerError("lock timeout is not ahead of the witnessed index");
+      }
       state.locks.set(bytesToHex(entry.demandHash), {
         demandHash: copyBytes(entry.demandHash),
         holder: copyBytes(entry.holder),
         beneficiary: copyBytes(entry.beneficiary),
         quantity: entry.quantity,
+        timeout: entry.timeout,
         nonce: entry.nonce,
       });
       break;
@@ -481,6 +489,19 @@ export function applyEntry(
       // release, and the beneficiary was fixed when the units were committed.
       const leg = state.locks.get(bytesToHex(entry.demandHash));
       if (leg !== undefined) {
+        // TIME, and the whole of §C3's abort: "every sequencer evaluates one
+        // predicate against the same object: was a valid release witnessed at
+        // or before the lock timeout?" At the timeout is inside; one past is
+        // not. Past it the set can no longer settle, so the only exit left is
+        // withdrawal — which needs nobody's cooperation, and is what "expired
+        // locks unlock unilaterally" comes to here.
+        //
+        // A refusal and never a balance, which is what keeps a replay exact: the
+        // clock is undefined on a replay, so a lock that freed its own units on
+        // expiry would make an operator's correct history unreplayable.
+        if (clock !== undefined && clock > leg.timeout) {
+          throw new LedgerError("the lock timeout has passed: withdraw the set instead");
+        }
         if (heldBy(state, bytesToHex(leg.beneficiary)) + leg.quantity >= MAX_QUANTITY_EXCLUSIVE) {
           throw new LedgerError("settlement would push a balance beyond the quantity bound");
         }
