@@ -13,7 +13,7 @@
 // than out of a holding. See DECISIONS.md.
 
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { backingName, type Backing } from "./backing.js";
+import { paysInClaims, backingName, type Backing } from "./backing.js";
 import { compareBytes } from "./bytes.js";
 import { type Terms } from "./closure.js";
 import { type ServedState } from "./commitment.js";
@@ -98,5 +98,49 @@ export function accompanimentOf(
       if (compareBytes(lock.beneficiary, backing.obligor) !== 0) return "unaccompanied";
     }
     return "accompanied";
+  }, "unreadable");
+}
+
+/**
+ * Whether a standing demand's payout is reserved inside the claim layer: the
+ * backer's lock on the backing P names, q times per-unit units, to the demand
+ * holder, convertible by the holder alone. The holder asks before it releases,
+ * as the backer asks `accompanimentOf` before it accepts — the two sides of
+ * §C3's "neither party can write the other's outcome".
+ *
+ *   - `reserved`     the paying lock stands with the set's terms.
+ *   - `unreserved`   the demand stands and the payout does not.
+ *   - `outside`      P pays outside the claim layer; nothing here to reserve.
+ *   - `unreadable`   the served state does not let the question be answered.
+ */
+export type PayoutStanding = "reserved" | "unreserved" | "outside" | "unreadable";
+
+export function payoutOf(
+  backing: Backing,
+  venue: Venue,
+  terms: Terms,
+  served: ServedState,
+  demandHash: Uint8Array,
+): PayoutStanding {
+  return answering(() => {
+    if (!paysInClaims(backing.payout)) return "outside";
+    const head = replayServedState(backing, venue, served);
+    if (head === undefined) return "unreadable";
+    const demand = head.demands.get(bytesToHex(demandHash));
+    if (demand === undefined) return "unreadable";
+    const paying = terms(backing.payout.backing);
+    if (paying === undefined) return "unreadable";
+    if (compareBytes(backingName(paying), backing.payout.backing) !== 0) return "unreadable";
+    const payingState = replayServedState(paying, venue, served);
+    if (payingState === undefined) return "unreadable";
+    const lock = payingState.locks.get(bytesToHex(demandHash));
+    if (lock === undefined) return "unreserved";
+    if (lock.quantity !== demand.quantity * backing.payout.perUnit) return "unreserved";
+    if (compareBytes(lock.holder, backing.obligor) !== 0) return "unreserved";
+    if (compareBytes(lock.beneficiary, demand.holder) !== 0) return "unreserved";
+    if (lock.parties.length !== 1 || compareBytes(lock.parties[0] as Uint8Array, demand.holder) !== 0) {
+      return "unreserved";
+    }
+    return "reserved";
   }, "unreadable");
 }

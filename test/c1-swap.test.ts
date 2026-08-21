@@ -11,6 +11,7 @@ import {
   decodeCommit,
   encodeCommit,
   encodeLock,
+  encodeRelease,
   signCommit,
   type Commit,
   type LockOp,
@@ -190,9 +191,42 @@ describe("§C1: a ring of three, and what the object tolerates", () => {
     expect(f.one.balance(f.eur, KEYS.bob)).toBe(40n);
   });
 
-  it("a lock whose holder is not among its parties is refused by the law", () => {
+  it("a lock names who may convert it, and the locker's consent is the lock itself", () => {
+    // Slice 26: a backer's paying lock is converted by the demand holder alone,
+    // so the locker need not be among the parties. What the locker signed is the
+    // lock — units, beneficiary, timeout and who may convert them.
     const f = setup();
-    expect(() => lock(f.one, f.eur, f.venue, "alice", KEYS.bob, 40n, [KEYS.bob])).toThrow(/one of its parties/);
+    lock(f.one, f.eur, f.venue, "alice", KEYS.bob, 40n, [KEYS.bob]);
+    f.venue.advance(2n);
+    f.venue.publishCommit(signCommit(SECRETS.bob, ATTEMPT));
+    f.one.settle(f.eur, ATTEMPT);
+    expect(f.one.balance(f.eur, KEYS.bob)).toBe(40n);
+  });
+
+  it("a lock naming several parties settles only on the witnessed object, never on one release", () => {
+    // One release is one signature; "all sign" is the rule for an exchange. The
+    // law itself, read through a replay: a log that releases a two-party lock on
+    // one party's signature is not a history that could have happened, while the
+    // same release of a one-party lock by its party is.
+    const f = setup();
+    prepare(f);
+    const two = f.one.opLog(f.eur);
+    const rel = { backing: f.eur, demandHash: ATTEMPT, nonce: f.one.nextNonce(KEYS.alice, f.eur) };
+    const release = {
+      kind: "release" as const,
+      demandHash: ATTEMPT,
+      nonce: rel.nonce,
+      signature: ed25519.sign(encodeRelease(rel), SECRETS.alice),
+      position: two.length,
+    };
+    expect(replayLog(f.eur, [...two, release])).toBeUndefined();
+
+    const g = setup();
+    lock(g.one, g.eur, g.venue, "alice", KEYS.bob, 40n, [KEYS.alice]);
+    const one = g.one.opLog(g.eur);
+    const rel1 = { backing: g.eur, demandHash: ATTEMPT, nonce: g.one.nextNonce(KEYS.alice, g.eur) };
+    const release1 = { ...release, nonce: rel1.nonce, signature: ed25519.sign(encodeRelease(rel1), SECRETS.alice), position: one.length };
+    expect(replayLog(g.eur, [...one, release1])).toBeDefined();
   });
 
   it("a party set has one spelling: sorted, no repeats, one to sixteen", () => {

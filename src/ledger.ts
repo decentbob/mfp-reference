@@ -320,7 +320,19 @@ function signerOf(state: LedgerState, backing: Backing, entry: PublishedOp): Uin
     // In this backing's own state one of the two exists, never both: a demand
     // where this IS the demanded backing, a lock where it is one of its legs.
     const lock = state.locks.get(bytesToHex(entry.demandHash));
-    if (lock !== undefined) return copyBytes(lock.holder);
+    if (lock !== undefined) {
+      // A withdrawal frees the locker's own units: the locker signs. A release
+      // converts them to the party the lock names: that party signs — the
+      // holder of a bundle or a leg (parties [holder]), the demand holder for a
+      // backer's paying lock (§C3: "void only on the holder's release"). A lock
+      // naming several parties converts only on the witnessed object, where every
+      // signature is: one release is one signature, and "all sign" is the rule.
+      if (entry.kind === "withdrawal") return copyBytes(lock.holder);
+      if (lock.parties.length !== 1) {
+        throw new LedgerError("a lock naming several parties settles only on the witnessed object");
+      }
+      return copyBytes(lock.parties[0] as Uint8Array);
+    }
     return standingDemand(state, entry.demandHash).holder;
   }
   const fromTerms = signerFromTerms(backing, entry);
@@ -496,12 +508,6 @@ export function applyEntry(
       // before it starts, and would reserve units nothing could ever settle.
       if (clock !== undefined && entry.timeout <= clock) {
         throw new LedgerError("lock timeout is not ahead of the witnessed index");
-      }
-      // The holder consents twice, at the lock and on the commit: a lock whose
-      // holder is not among its parties would hand units over on others'
-      // signatures alone.
-      if (!entry.parties.some((party) => compareBytes(party, entry.holder) === 0)) {
-        throw new LedgerError("a lock's holder must be one of its parties");
       }
       state.locks.set(bytesToHex(entry.attemptId), {
         attemptId: copyBytes(entry.attemptId),

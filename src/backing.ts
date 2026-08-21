@@ -17,7 +17,7 @@
 //   magic    "MFPB" (4 bytes)
 //   version  u8 = 0x01
 //   K        u8 tag 0x01 (single Ed25519) || 32-byte verification key
-//   P        u8 tag 0x01 (constant payout)
+//   P        u8 tag 0x01 (constant payout) | 0x02 (claims of a named backing)
 //              || u32 length || thing (UTF-8, exact bytes, no normalization)
 //              || i8 quantumExponent   (settlement quantum = 10^e of thing)
 //              || u32 length || perUnit (unsigned big-endian, minimal)
@@ -79,6 +79,7 @@ const MAGIC = Uint8Array.of(0x4d, 0x46, 0x50, 0x42); // "MFPB"
 const VERSION = 0x01;
 const TAG_OBLIGOR_ED25519 = 0x01;
 const TAG_PAYOUT_CONSTANT = 0x01;
+const TAG_PAYOUT_CLAIMS = 0x02;
 const TAG_TARGET_BACKING = 0x01;
 const TAG_EVIDENCE_TRANSPARENT = 0x01;
 const TAG_EVIDENCE_CLAUSES = 0x05;
@@ -103,6 +104,26 @@ export interface ConstantPayout {
   readonly quantumExponent: number;
   /** Quanta paid per unit of claim quantity. */
   readonly perUnit: bigint;
+}
+
+/**
+ * P paying in claims (§C3: "A payout paying in claims settles as a swap inside
+ * the settlement"): one unit of this backing pays `perUnit` units of `backing`.
+ * The backer reserves them with its acceptance and the holder's release settles
+ * both sides at once. Whole units, so no quantum.
+ */
+export interface ClaimsPayout {
+  /** The backing whose claims pay, by name. */
+  readonly backing: Uint8Array;
+  /** Units of it paid per unit of claim quantity. */
+  readonly perUnit: bigint;
+}
+
+export type Payout = ConstantPayout | ClaimsPayout;
+
+/** Whether this payout settles inside the claim layer. */
+export function paysInClaims(payout: Payout): payout is ClaimsPayout {
+  return "backing" in payout;
 }
 
 export interface RelianceEntry {
@@ -215,7 +236,7 @@ export interface BackingFields {
   /** K: the Ed25519 verification key that owes. */
   readonly obligor: Uint8Array;
   /** P: what one unit pays. */
-  readonly payout: ConstantPayout;
+  readonly payout: Payout;
   /** R: what must be handed over alongside a claim. May be empty. */
   readonly reliance: readonly RelianceEntry[];
   /** E: who says a claim has not already been spent. */
@@ -246,10 +267,16 @@ function encodeFields(b: BackingFields): Uint8Array {
   w.u8(TAG_OBLIGOR_ED25519);
   w.key32(b.obligor, "obligor key");
 
-  w.u8(TAG_PAYOUT_CONSTANT);
-  w.lengthPrefixed(utf8Encoder.encode(b.payout.thing));
-  w.i8(b.payout.quantumExponent);
-  w.lengthPrefixed(bigintToMinimalBytes(b.payout.perUnit));
+  if (paysInClaims(b.payout)) {
+    w.u8(TAG_PAYOUT_CLAIMS);
+    w.key32(b.payout.backing, "payout backing");
+    w.lengthPrefixed(bigintToMinimalBytes(b.payout.perUnit));
+  } else {
+    w.u8(TAG_PAYOUT_CONSTANT);
+    w.lengthPrefixed(utf8Encoder.encode(b.payout.thing));
+    w.i8(b.payout.quantumExponent);
+    w.lengthPrefixed(bigintToMinimalBytes(b.payout.perUnit));
+  }
 
   w.u32(b.reliance.length);
   for (const entry of b.reliance) {
@@ -389,19 +416,26 @@ export function makeBacking(fields: BackingFields): Backing {
     throw new EncodingError("operator key is not a valid non-small-order Ed25519 point");
   }
 
-  const { thing, quantumExponent, perUnit } = fields.payout;
-  // Unpaired surrogates would silently become U+FFFD on encode, collapsing
-  // two distinct things to one name; reject them rather than lose them.
-  if (!thing.isWellFormed()) {
-    throw new EncodingError("payout thing contains unpaired surrogates");
+  if (paysInClaims(fields.payout)) {
+    if (fields.payout.backing.length !== NAME_LENGTH) {
+      throw new EncodingError("payout backing name must be 32 bytes");
+    }
+    validateQuantity(fields.payout.perUnit, "payout per unit");
+  } else {
+    const { thing, quantumExponent, perUnit } = fields.payout;
+    // Unpaired surrogates would silently become U+FFFD on encode, collapsing
+    // two distinct things to one name; reject them rather than lose them.
+    if (!thing.isWellFormed()) {
+      throw new EncodingError("payout thing contains unpaired surrogates");
+    }
+    const thingByteLength = utf8Encoder.encode(thing).length;
+    if (thingByteLength === 0) throw new EncodingError("payout thing is empty");
+    if (thingByteLength > MAX_THING_BYTES) throw new EncodingError("payout thing too long");
+    if (!Number.isInteger(quantumExponent) || quantumExponent < -128 || quantumExponent > 127) {
+      throw new EncodingError("quantum exponent out of range");
+    }
+    validateQuantity(perUnit, "payout per unit");
   }
-  const thingByteLength = utf8Encoder.encode(thing).length;
-  if (thingByteLength === 0) throw new EncodingError("payout thing is empty");
-  if (thingByteLength > MAX_THING_BYTES) throw new EncodingError("payout thing too long");
-  if (!Number.isInteger(quantumExponent) || quantumExponent < -128 || quantumExponent > 127) {
-    throw new EncodingError("quantum exponent out of range");
-  }
-  validateQuantity(perUnit, "payout per unit");
 
   if (fields.reliance.length > MAX_RELIANCE_ENTRIES) {
     throw new EncodingError("too many reliance entries");
@@ -430,7 +464,15 @@ export function makeBacking(fields: BackingFields): Backing {
   // stored name below.
   const canonical: BackingFields = {
     obligor: copyBytes(fields.obligor),
-    payout: Object.freeze({ thing, quantumExponent, perUnit }),
+    payout: Object.freeze(
+      paysInClaims(fields.payout)
+        ? { backing: copyBytes(fields.payout.backing), perUnit: fields.payout.perUnit }
+        : {
+            thing: fields.payout.thing,
+            quantumExponent: fields.payout.quantumExponent,
+            perUnit: fields.payout.perUnit,
+          },
+    ),
     reliance: Object.freeze(reliance),
     evidence: Object.freeze(canonicalEvidence(fields.evidence)),
   };
@@ -472,17 +514,25 @@ export function decodeBacking(bytes: Uint8Array): Backing {
   expectTag(r, TAG_OBLIGOR_ED25519, "obligor");
   const obligor = r.raw(KEY_LENGTH);
 
-  expectTag(r, TAG_PAYOUT_CONSTANT, "payout");
-  const thingBytes = r.lengthPrefixed(MAX_THING_BYTES);
-  if (thingBytes.length === 0) throw new EncodingError("payout thing is empty");
-  let thing: string;
-  try {
-    thing = utf8Decoder.decode(thingBytes);
-  } catch {
-    throw new EncodingError("payout thing is not valid UTF-8");
+  const payoutTag = r.u8();
+  let payout: Payout;
+  if (payoutTag === TAG_PAYOUT_CLAIMS) {
+    const paying = r.raw(NAME_LENGTH);
+    payout = { backing: paying, perUnit: minimalBytesToBigint(r.lengthPrefixed(MAX_QUANTITY_BYTES)) };
+  } else if (payoutTag === TAG_PAYOUT_CONSTANT) {
+    const thingBytes = r.lengthPrefixed(MAX_THING_BYTES);
+    if (thingBytes.length === 0) throw new EncodingError("payout thing is empty");
+    let thing: string;
+    try {
+      thing = utf8Decoder.decode(thingBytes);
+    } catch {
+      throw new EncodingError("payout thing is not valid UTF-8");
+    }
+    const quantumExponent = r.i8();
+    payout = { thing, quantumExponent, perUnit: minimalBytesToBigint(r.lengthPrefixed(MAX_QUANTITY_BYTES)) };
+  } else {
+    throw new EncodingError(`unknown payout tag ${payoutTag}`);
   }
-  const quantumExponent = r.i8();
-  const perUnit = minimalBytesToBigint(r.lengthPrefixed(MAX_QUANTITY_BYTES));
 
   const entryCount = r.u32();
   if (entryCount > MAX_RELIANCE_ENTRIES) {
@@ -543,7 +593,7 @@ export function decodeBacking(bytes: Uint8Array): Backing {
   r.expectEnd();
   return makeBacking({
     obligor,
-    payout: { thing, quantumExponent, perUnit },
+    payout,
     reliance,
     evidence: {
       setting: "transparent",

@@ -55,7 +55,7 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { makeBacking, type Backing } from "./backing.js";
+import { makeBacking, paysInClaims, type Backing } from "./backing.js";
 import { compareBytes, copyBytes } from "./bytes.js";
 import { signCommitment, stateRoot, type Commitment } from "./commitment.js";
 import {
@@ -368,7 +368,15 @@ export class Sequencer {
    * illiquid rather than dead" while the operator is away.
    */
   private mayAdopt(backing: Backing, op: PublishedOp): boolean {
-    return !(op.kind === "demand" && backing.reliance.length > 0);
+    // A set has legs where R names any, and a payout leg where P pays in claims.
+    // In a gap the venue holds operations one at a time, never a set, so a
+    // presentation with legs neither opens nor settles here (24a refused the
+    // demand; slice 26 refuses the head's release and any leg's, since a paying
+    // lock released alone would hand the holder the payout for nothing).
+    const hasLegs = backing.reliance.length > 0 || paysInClaims(backing.payout);
+    if (op.kind === "demand") return !hasLegs;
+    if (op.kind === "release") return !hasLegs && !this.ledger.hasLock(backing, op.demandHash);
+    return true;
   }
 
   private adoptOne(backing: Backing, op: PublishedOp, at: bigint): void {
@@ -548,12 +556,75 @@ export class Sequencer {
     return this.submit([{ backing: held, op: asOp(witnessed.commit) }], witnessed.at);
   }
 
-  submitAcceptance(op: AcceptanceOp, signature: Uint8Array): Receipt {
+  /**
+   * Answer a demand — and, where P pays in claims, reserve the payout in the
+   * same act. §C3: "The acceptance names the claims... that will pay, and the
+   * release executes as one atomic exchange, surrendered set against paying
+   * claims." The backer signs the lock: its units, to the demand holder, q
+   * times P's per-unit, under the demand's hash, convertible by the holder alone
+   * (parties [holder]) — so the holder's release settles both sides and the
+   * backer cannot take the set and not pay. The lock must outlast the
+   * acceptance, or the answer could expire with the payout already gone.
+   */
+  submitAcceptance(
+    op: AcceptanceOp,
+    signature: Uint8Array,
+    paying: readonly { readonly op: LockOp; readonly signature: Uint8Array }[] = [],
+  ): Receipt {
     const backing = this.served(op.backing);
     const { demandHash: hash, instant, deadline, nonce } = op;
+    const answer: PublishedOp = { kind: "acceptance", demandHash: hash, instant, deadline, nonce, signature };
+    const demand = this.ledger.demandOf(backing, hash);
+    const terms = demand === undefined ? undefined : this.payoutTerms(backing, demand.holder, demand.quantity);
+    if (terms === undefined) {
+      // Nothing to reserve inside the claim layer (or no demand stands, and the
+      // law says so): a paying lock here would be a reservation for nothing.
+      if (paying.length !== 0) throw new SequencerError("this backing's payout settles outside the claim layer");
+      return this.submit([{ backing, op: answer }]);
+    }
+    const [target, want] = terms;
+    const supplied = paying[0];
+    if (paying.length !== 1 || supplied === undefined) {
+      throw new SequencerError("an acceptance of this backing reserves its payout: exactly one paying lock");
+    }
+    const payingBacking = this.served(supplied.op.backing);
+    if (payingBacking.nameHex !== target) throw new SequencerError("the paying lock is not on the backing P names");
+    if (compareBytes(supplied.op.attemptId, hash) !== 0) throw new SequencerError("the paying lock must name the demand it pays");
+    const why = legMismatch(supplied.op, want);
+    if (why !== undefined) throw new SequencerError(why);
+    if (supplied.op.parties.length !== 1 || compareBytes(supplied.op.parties[0] as Uint8Array, want.beneficiary) !== 0) {
+      throw new SequencerError("the paying lock is the demand holder's to convert, and nobody else's");
+    }
+    if (supplied.op.timeout < deadline) throw new SequencerError("the paying lock must outlast the acceptance");
+    const lock: PublishedOp = {
+      kind: "lock",
+      attemptId: supplied.op.attemptId,
+      holder: supplied.op.holder,
+      beneficiary: supplied.op.beneficiary,
+      quantity: supplied.op.quantity,
+      timeout: supplied.op.timeout,
+      decisionVenue: supplied.op.decisionVenue,
+      parties: supplied.op.parties,
+      nonce: supplied.op.nonce,
+      signature: supplied.signature,
+    };
     return this.submit([
-      { backing, op: { kind: "acceptance", demandHash: hash, instant, deadline, nonce, signature } },
+      { backing, op: answer },
+      { backing: payingBacking, op: lock },
     ]);
+  }
+
+  /**
+   * The paying lock a demand on this backing calls for, where P pays in claims:
+   * the target's name hex and the terms (q times per-unit units, the backer's
+   * own, to the demand holder). Undefined where the payout settles outside.
+   */
+  private payoutTerms(backing: Backing, holder: Uint8Array, quantity: bigint): [string, LegTerms] | undefined {
+    if (!paysInClaims(backing.payout)) return undefined;
+    return [
+      bytesToHex(backing.payout.backing),
+      { quantity: quantity * backing.payout.perUnit, holder: backing.obligor, beneficiary: holder },
+    ];
   }
 
   /**
@@ -615,6 +686,10 @@ export class Sequencer {
     const demand = this.ledger.demandOf(backing, op.demandHash);
     const terms =
       demand === undefined ? undefined : this.legTerms(backing, demand.holder, demand.quantity);
+    // And the backer's paying lock, where P pays in claims: released by the holder
+    // in the same set (its one party), so surrendered set and payout move together.
+    const payout = demand === undefined ? undefined : this.payoutTerms(backing, demand.holder, demand.quantity);
+    if (terms !== undefined && payout !== undefined) terms.set(payout[0], payout[1]);
     // Standing means the DEMAND HOLDER'S lock under the hash: a stranger's lock
     // there is a squat, not a leg (found reviewing 24c), and a head that is a
     // bundle lock has no legs at all.
@@ -625,6 +700,7 @@ export class Sequencer {
       return owner !== undefined && lock !== undefined && compareBytes(lock.holder, owner) === 0;
     };
     const targets = backing.reliance.map((entry) => bytesToHex(entry.target));
+    if (kind === "release" && payout !== undefined) targets.push(payout[0]);
     const expected = new Set(kind === "release" ? targets : targets.filter(standing));
     if (legs.length !== expected.size) {
       throw new SequencerError(

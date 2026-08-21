@@ -7,6 +7,7 @@ import {
   encodeBacking,
   makeBacking,
   type BackingFields,
+  type ConstantPayout,
 } from "../src/backing.js";
 import { EncodingError } from "../src/bytes.js";
 
@@ -188,7 +189,7 @@ describe("invariant 1: the name is the hash of a canonical encoding", () => {
       payout: { thing: "﻿EUR", quantumExponent: -2, perUnit: 100n },
     });
     const decoded = decodeBacking(encodeBacking(withBom));
-    expect(decoded.payout.thing).toBe("﻿EUR");
+    expect((decoded.payout as ConstantPayout).thing).toBe("﻿EUR");
     expect(bytesToHex(backingName(decoded))).toBe(bytesToHex(backingName(withBom)));
   });
 
