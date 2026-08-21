@@ -315,7 +315,7 @@ export function stateIsAuthentic(backing: Backing, venue: Venue, served: ServedS
  * shared body behind stateIsAuthentic and provesHolding, so a caller that needs
  * the numbers does not verify twice.
  */
-function replayServedState(
+export function replayServedState(
   backing: Backing,
   venue: Venue,
   served: ServedState,
