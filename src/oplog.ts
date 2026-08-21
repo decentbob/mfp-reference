@@ -244,7 +244,11 @@ export function opHashOfEntry(backingName: Uint8Array, entry: PublishedOp): Uint
  * this record is that message with the signature that authorised it.
  *
  * The backing name is inside the message, so a record stands alone: nothing
- * beside it says which backing it belongs to and can disagree.
+ * beside it says which backing it belongs to and can disagree. The one
+ * exception is the commit's record: its message names no backing by design
+ * (the same bytes are this operation in every log of an exchange), so the log
+ * it sits in is what says which backing it belongs to — and decodePublishedOp
+ * hands back no name for it.
  */
 export function encodePublishedOp(backingName: Uint8Array, op: PublishedOp): Uint8Array {
   const w = new ByteWriter();

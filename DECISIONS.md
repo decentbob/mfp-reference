@@ -79,7 +79,8 @@ reach the venue as their own record and the log keeps objects. The decoder now
 returns no name for a commit, and ErgoVenue files a nameless record under
 nothing. Recorded, not patched: the
 gate and the withdrawal guard read the venue once per leg for one attempt, and
-the sorted-key-set check now exists in four places in src.
+the sorted-key-set check is one function here (`validateKeySet`, three call
+sites) but backing.ts and commitment.ts still carry their own inline copies.
 
 **Not built, and next on this line:** §C3's "a payout paying in claims settles
 as a swap inside the settlement" — the backer locks its paying claims under the
