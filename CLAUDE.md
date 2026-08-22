@@ -337,6 +337,14 @@ for speed anywhere else; this is a reference implementation, not a product.
   code over clever code everywhere.
 - **Small commits, one slice per branch.** Run `/code-review` before merging
   to main. Never push without asking.
+- **Review agents run on Opus.** Every agent spawned for a review — the
+  `/code-review` finder angles, the verify pass, the regression reviews of a
+  fix round — is started with `model: "opus"`; the session model does the
+  synthesis, the verdicts and the fixes. A review is judgement work and a
+  weaker model would miss the shape these rounds keep finding, but it does not
+  need the session model's cost at every angle. Fan out eight angles for a
+  slice that touches the law or an encoding, three or four otherwise.
+  Bob's call on 2026-08-22, for token efficiency.
 
 ## Toolchain
 
